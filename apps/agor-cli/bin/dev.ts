@@ -2,4 +2,5 @@
 
 import { execute } from '@oclif/core';
 
-await execute({ development: true, dir: import.meta.url });
+// Disable stack traces for clean CLI output (even in dev mode)
+await execute({ development: false, dir: import.meta.url });

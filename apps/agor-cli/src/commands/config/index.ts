@@ -61,9 +61,38 @@ export default class ConfigIndex extends Command {
         this.log(`  short ID len:  ${chalk.gray(String(config.display.shortIdLength))}`);
       }
 
+      // Credentials (only show keys that are set)
+      if (config.credentials && Object.keys(config.credentials).length > 0) {
+        this.log(chalk.bold('\nCredentials:'));
+        for (const [key, value] of Object.entries(config.credentials)) {
+          if (value) {
+            this.log(`  ${key.padEnd(20)}: ${chalk.gray('***' + value.slice(-4))}`);
+          }
+        }
+      }
+
       // Config File Path
       this.log(chalk.bold('\nConfig File:'));
       this.log(`  ${chalk.dim(getConfigPath())}`);
+
+      // Available Configuration Keys
+      this.log(chalk.bold('\nAvailable Configuration Keys:'));
+      this.log(chalk.dim('  Use `agor config set <key> <value>` to set any of these:'));
+      this.log('');
+      this.log(chalk.cyan('  Context (temporary, cleared with `agor config clear`):'));
+      this.log('    board, session, repo, agent');
+      this.log('');
+      this.log(chalk.cyan('  Defaults:'));
+      this.log('    defaults.board, defaults.agent');
+      this.log('');
+      this.log(chalk.cyan('  Display:'));
+      this.log('    display.tableStyle, display.colorOutput, display.shortIdLength');
+      this.log('');
+      this.log(chalk.cyan('  Credentials:'));
+      this.log('    credentials.ANTHROPIC_API_KEY');
+      this.log('    credentials.OPENAI_API_KEY');
+      this.log('    credentials.CURSOR_API_KEY');
+      this.log('    credentials.GOOGLE_API_KEY');
 
       this.log('');
     } catch (error) {
