@@ -63,12 +63,17 @@ export interface Repository<T> {
  * Drizzle Service Adapter
  *
  * Implements FeathersJS service methods using a Drizzle repository.
+ * Emits events for real-time WebSocket broadcasting.
  */
 // biome-ignore lint/suspicious/noExplicitAny: Generic service adapter needs default any type
 export class DrizzleService<T = any, D = Partial<T>, P extends Params = Params> {
   id: string;
   paginate?: PaginationOptions;
   multi: boolean | string[];
+
+  // Event emitter for FeathersJS (will be injected by framework)
+  // biome-ignore lint/suspicious/noExplicitAny: FeathersJS event system
+  emit?: (event: string, ...args: any[]) => boolean;
 
   constructor(
     private repository: Repository<T>,
@@ -238,13 +243,22 @@ export class DrizzleService<T = any, D = Partial<T>, P extends Params = Params> 
   /**
    * Create one or more records
    */
-  async create(data: D | D[], _params?: P): Promise<T | T[]> {
+  async create(data: D | D[], params?: P): Promise<T | T[]> {
     if (Array.isArray(data)) {
       // Bulk create
-      return Promise.all(data.map((item) => this.repository.create(item as Partial<T>)));
+      const results = await Promise.all(
+        data.map(item => this.repository.create(item as Partial<T>))
+      );
+      // Emit created event for each item
+      for (const result of results) {
+        this.emit?.('created', result, params);
+      }
+      return results;
     }
 
-    return this.repository.create(data as Partial<T>);
+    const result = await this.repository.create(data as Partial<T>);
+    this.emit?.('created', result, params);
+    return result;
   }
 
   /**
@@ -257,7 +271,10 @@ export class DrizzleService<T = any, D = Partial<T>, P extends Params = Params> 
       throw new Error(`No record found for id '${id}'`);
     }
 
-    return this.repository.update(String(id), data as Partial<T>);
+    const result = await this.repository.update(String(id), data as Partial<T>);
+    this.emit?.('updated', result, params);
+    this.emit?.('patched', result, params); // Also emit patched for consistency
+    return result;
   }
 
   /**
@@ -275,14 +292,21 @@ export class DrizzleService<T = any, D = Partial<T>, P extends Params = Params> 
       let records = await this.repository.findAll();
       records = this.filterData(records, query);
 
-      return Promise.all(
-        records.map((record) =>
+      const results = await Promise.all(
+        records.map(record =>
           this.repository.update(
             (record as Record<string, unknown>)[this.id] as string,
             data as Partial<T>
           )
         )
       );
+
+      // Emit events for each patched record
+      for (const result of results) {
+        this.emit?.('patched', result, params);
+      }
+
+      return results;
     }
 
     // Single patch
@@ -291,7 +315,9 @@ export class DrizzleService<T = any, D = Partial<T>, P extends Params = Params> 
       throw new Error(`No record found for id '${id}'`);
     }
 
-    return this.repository.update(String(id), data as Partial<T>);
+    const result = await this.repository.update(String(id), data as Partial<T>);
+    this.emit?.('patched', result, params);
+    return result;
   }
 
   /**
@@ -310,7 +336,12 @@ export class DrizzleService<T = any, D = Partial<T>, P extends Params = Params> 
       records = this.filterData(records, query);
 
       // biome-ignore lint/suspicious/noExplicitAny: Need to access ID field dynamically
-      await Promise.all(records.map((record) => this.repository.delete((record as any)[this.id])));
+      await Promise.all(records.map(record => this.repository.delete((record as any)[this.id])));
+
+      // Emit removed event for each record
+      for (const record of records) {
+        this.emit?.('removed', record, params);
+      }
 
       return records;
     }
@@ -322,6 +353,7 @@ export class DrizzleService<T = any, D = Partial<T>, P extends Params = Params> 
     }
 
     await this.repository.delete(String(id));
+    this.emit?.('removed', existing, params);
     return existing;
   }
 }

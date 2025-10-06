@@ -25,6 +25,7 @@ import {
 import React from 'react';
 import type { Session, Task } from '../../types';
 import TaskListItem from '../TaskListItem';
+import { ToolIcon } from '../ToolIcon';
 import './SessionCard.css';
 
 const { Text } = Typography;
@@ -71,15 +72,6 @@ const SessionCard = ({
       onUpdate?.(session.session_id, { description: values.title });
       setSettingsOpen(false);
     });
-  };
-  const getAgentIcon = () => {
-    const agentIcons: Record<string, string> = {
-      'claude-code': '🤖',
-      cursor: '✏️',
-      codex: '💻',
-      gemini: '💎',
-    };
-    return agentIcons[session.agent] || '🤖';
   };
 
   // Show last 5 tasks (oldest to newest)
@@ -154,7 +146,7 @@ const SessionCard = ({
         }}
       >
         <Space size={8} align="center" className="nodrag">
-          <span style={{ fontSize: 20 }}>{getAgentIcon()}</span>
+          <ToolIcon tool={session.agent} size={32} />
           <Text strong>{session.agent}</Text>
           {session.status === 'running' ? (
             <Spin indicator={<LoadingOutlined spin style={{ fontSize: 14 }} />} />

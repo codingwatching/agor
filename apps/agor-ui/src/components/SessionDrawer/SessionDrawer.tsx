@@ -26,6 +26,7 @@ import {
 } from 'antd';
 import React from 'react';
 import type { Session, Task } from '../../types';
+import { ToolIcon } from '../ToolIcon';
 import './SessionDrawer.css';
 
 const { Title, Text, Paragraph } = Typography;
@@ -86,16 +87,6 @@ const SessionDrawer = ({
     }
   };
 
-  const getAgentIcon = () => {
-    const agentIcons: Record<string, string> = {
-      'claude-code': '🤖',
-      cursor: '✏️',
-      codex: '💻',
-      gemini: '💎',
-    };
-    return agentIcons[session.agent] || '🤖';
-  };
-
   const getTaskStatusIcon = (status: Task['status']) => {
     switch (status) {
       case 'completed':
@@ -136,7 +127,7 @@ const SessionDrawer = ({
     <Drawer
       title={
         <Space size={12} align="center">
-          <span style={{ fontSize: 24 }}>{getAgentIcon()}</span>
+          <ToolIcon tool={session.agent} size={40} />
           <div>
             <div>
               <Text strong style={{ fontSize: 16 }}>
@@ -225,13 +216,17 @@ const SessionDrawer = ({
                 </>
               ) : session.repo.repo_slug ? (
                 <Text code>{session.repo.repo_slug}</Text>
-              ) : (
+              ) : session.repo.cwd ? (
                 <Text code>{session.repo.cwd.split('/').pop() || session.repo.cwd}</Text>
+              ) : (
+                <Text type="secondary">No repository</Text>
               )}
             </Text>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              <CodeOutlined /> {session.repo.cwd}
-            </Text>
+            {session.repo.cwd && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                <CodeOutlined /> {session.repo.cwd}
+              </Text>
+            )}
           </Space>
         </div>
       )}

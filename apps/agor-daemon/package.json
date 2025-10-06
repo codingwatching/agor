@@ -17,7 +17,8 @@
     "@feathersjs/feathers": "^5.0.29",
     "@feathersjs/socketio": "^5.0.29",
     "@types/cors": "^2.8.19",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

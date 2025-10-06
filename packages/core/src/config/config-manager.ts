@@ -167,3 +167,95 @@ export async function initConfig(): Promise<void> {
     await saveConfig(getDefaultConfig());
   }
 }
+
+/**
+ * Get a nested config value using dot notation
+ *
+ * @param key - Config key (e.g., "credentials.ANTHROPIC_API_KEY")
+ * @returns Value or undefined if not set
+ */
+export async function getConfigValue(key: string): Promise<string | boolean | number | undefined> {
+  const config = await loadConfig();
+  const parts = key.split('.');
+
+  // biome-ignore lint/suspicious/noExplicitAny: Dynamic config access
+  let value: any = config;
+  for (const part of parts) {
+    if (value && typeof value === 'object' && part in value) {
+      value = value[part];
+    } else {
+      return undefined;
+    }
+  }
+
+  return value;
+}
+
+/**
+ * Set a nested config value using dot notation
+ *
+ * @param key - Config key (e.g., "credentials.ANTHROPIC_API_KEY")
+ * @param value - Value to set
+ */
+export async function setConfigValue(key: string, value: string | boolean | number): Promise<void> {
+  const config = await loadConfig();
+  const parts = key.split('.');
+
+  if (parts.length === 1) {
+    // Top-level key (context key)
+    if (!config.context) {
+      config.context = {};
+    }
+    // biome-ignore lint/suspicious/noExplicitAny: Dynamic config access
+    (config.context as any)[parts[0]] = value;
+  } else {
+    // Nested key (e.g., "credentials.ANTHROPIC_API_KEY")
+    const section = parts[0];
+    const subKey = parts.slice(1).join('.');
+
+    // biome-ignore lint/suspicious/noExplicitAny: Dynamic config access
+    if (!(config as any)[section]) {
+      // biome-ignore lint/suspicious/noExplicitAny: Dynamic config access
+      (config as any)[section] = {};
+    }
+
+    // For now, only support one level of nesting
+    if (parts.length === 2) {
+      // biome-ignore lint/suspicious/noExplicitAny: Dynamic config access
+      (config as any)[section][parts[1]] = value;
+    } else {
+      throw new Error(`Nested keys beyond one level not supported: ${key}`);
+    }
+  }
+
+  await saveConfig(config);
+}
+
+/**
+ * Unset a nested config value using dot notation
+ *
+ * @param key - Config key to clear
+ */
+export async function unsetConfigValue(key: string): Promise<void> {
+  const config = await loadConfig();
+  const parts = key.split('.');
+
+  if (parts.length === 1) {
+    // Top-level key (context key)
+    if (config.context && parts[0] in config.context) {
+      // biome-ignore lint/suspicious/noExplicitAny: Dynamic config access
+      delete (config.context as any)[parts[0]];
+    }
+  } else if (parts.length === 2) {
+    const section = parts[0];
+    const subKey = parts[1];
+
+    // biome-ignore lint/suspicious/noExplicitAny: Dynamic config access
+    if ((config as any)[section] && subKey in (config as any)[section]) {
+      // biome-ignore lint/suspicious/noExplicitAny: Dynamic config access
+      delete (config as any)[section][subKey];
+    }
+  }
+
+  await saveConfig(config);
+}

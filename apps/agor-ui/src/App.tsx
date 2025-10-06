@@ -89,11 +89,22 @@ function App() {
 
   // Handle session creation
   const handleCreateSession = async (
-    config: Parameters<React.ComponentProps<typeof AgorApp>['onCreateSession']>[0]
+    config: Parameters<React.ComponentProps<typeof AgorApp>['onCreateSession']>[0],
+    boardId: string
   ) => {
     const session = await createSession(config);
     if (session) {
-      message.success('Session created successfully!');
+      // Add session to the current board using custom endpoint
+      try {
+        await client?.service(`boards/${boardId}/sessions`).create({
+          sessionId: session.session_id,
+        });
+        message.success('Session created and added to board!');
+      } catch (error) {
+        message.error(
+          `Failed to add session to board: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
     } else {
       message.error('Failed to create session');
     }
@@ -119,10 +130,25 @@ function App() {
     }
   };
 
-  // Handle send prompt (placeholder for future agent integration)
+  // Handle send prompt - calls Claude via daemon
   const handleSendPrompt = async (sessionId: string, prompt: string) => {
-    message.info('Agent integration not yet implemented. Prompt logged to console.');
-    console.log('Send prompt to session:', sessionId, prompt);
+    if (!client) return;
+
+    try {
+      message.loading({ content: 'Sending prompt to Claude...', key: 'prompt', duration: 0 });
+
+      await client.service(`sessions/${sessionId}/prompt`).create({
+        prompt,
+      });
+
+      message.success({ content: 'Response received!', key: 'prompt' });
+    } catch (error) {
+      message.error({
+        content: `Failed to send prompt: ${error instanceof Error ? error.message : String(error)}`,
+        key: 'prompt',
+      });
+      console.error('Prompt error:', error);
+    }
   };
 
   // Handle update session
@@ -234,6 +260,7 @@ function App() {
         repos={repos}
         worktreeOptions={worktreeOptions}
         repoOptions={repoOptions}
+        initialBoardId={boards[0]?.board_id}
         onCreateSession={handleCreateSession}
         onForkSession={handleForkSession}
         onSpawnSession={handleSpawnSession}

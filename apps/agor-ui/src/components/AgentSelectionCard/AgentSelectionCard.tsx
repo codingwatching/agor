@@ -1,6 +1,7 @@
 import { CheckCircleOutlined, DownloadOutlined } from '@ant-design/icons';
 import { Button, Card, Space, Tag, Typography } from 'antd';
 import type { Agent } from '../../types';
+import { ToolIcon } from '../ToolIcon';
 
 const { Text } = Typography;
 
@@ -36,7 +37,7 @@ export const AgentSelectionCard: React.FC<AgentSelectionCardProps> = ({
       <Space direction="vertical" style={{ width: '100%' }} size={4}>
         <Space style={{ width: '100%', justifyContent: 'space-between' }} size={8}>
           <Space size={8}>
-            <Text style={{ fontSize: '18px' }}>{agent.icon}</Text>
+            <ToolIcon tool={agent.id} size={24} />
             <Text strong style={{ fontSize: '14px' }}>
               {agent.name}
             </Text>

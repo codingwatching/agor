@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/e34f3d25-71dd-4084-8f3e-4f1c73381c66" alt="Agor Logo" width="200" />
+</div>
+
 # Agor: Agent Orchestrator
 
 > **Agor — Next-gen agent orchestration**
@@ -143,6 +147,7 @@ Your Project:
 ## Current Status
 
 **✅ Completed:**
+
 - Backend daemon (FeathersJS + Drizzle + LibSQL)
 - CLI tool (session management, repo/worktree operations)
 - Claude Code session import with task extraction
@@ -150,6 +155,7 @@ Your Project:
 - Data architecture (Messages → Tasks event sourcing)
 
 **🚧 In Progress:**
+
 - Agent integration framework
 - UI ↔ Backend connection
 - Real-time updates
@@ -240,6 +246,7 @@ Agor's knowledge is organized into modular concept files:
 **Goal:** Full-featured local agent orchestrator with GUI + CLI
 
 **Core Capabilities:**
+
 - Multi-agent session management (Claude Code, Cursor, Codex, Gemini)
 - Visual session tree canvas with fork/spawn genealogy
 - Git worktree integration for isolated parallel sessions
@@ -248,6 +255,7 @@ Agor's knowledge is organized into modular concept files:
 - Local-only (no cloud, SQLite-based)
 
 **Deliverables:**
+
 - Desktop app (Electron or Tauri)
 - Standalone CLI binary (`agor`)
 - Documentation + tutorials
@@ -259,6 +267,7 @@ Agor's knowledge is organized into modular concept files:
 **Goal:** Real-time collaborative agent orchestration
 
 **New Capabilities:**
+
 - Cloud-hosted sessions (migrate LibSQL → PostgreSQL)
 - Real-time multiplayer (multiple devs, same session tree)
 - Shared concept libraries (team knowledge bases)

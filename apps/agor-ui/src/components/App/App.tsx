@@ -25,7 +25,7 @@ export interface AppProps {
   worktreeOptions: RepoReferenceOption[];
   repoOptions: RepoReferenceOption[];
   initialBoardId?: string;
-  onCreateSession?: (config: NewSessionConfig) => void;
+  onCreateSession?: (config: NewSessionConfig, boardId: string) => void;
   onForkSession?: (sessionId: string, prompt: string) => void;
   onSpawnSession?: (sessionId: string, prompt: string) => void;
   onSendPrompt?: (sessionId: string, prompt: string) => void;
@@ -71,8 +71,8 @@ export const App: React.FC<AppProps> = ({
   const [currentBoardId, setCurrentBoardId] = useState(initialBoardId || boards[0]?.board_id || '');
 
   const handleCreateSession = (config: NewSessionConfig) => {
-    console.log('Creating session with config:', config);
-    onCreateSession?.(config);
+    console.log('Creating session with config:', config, 'for board:', currentBoardId);
+    onCreateSession?.(config, currentBoardId);
     setModalOpen(false);
   };
 
@@ -80,8 +80,13 @@ export const App: React.FC<AppProps> = ({
     setSelectedSessionId(sessionId);
   };
 
-  const handleSendPrompt = (prompt: string) => {
+  const handleSendPrompt = async (prompt: string) => {
     if (selectedSessionId) {
+      // Show loading state
+      console.log('Sending prompt to Claude...', { sessionId: selectedSessionId, prompt });
+
+      // Call the prompt endpoint
+      // Note: onSendPrompt should be implemented in the parent to call the daemon
       onSendPrompt?.(selectedSessionId, prompt);
     }
   };

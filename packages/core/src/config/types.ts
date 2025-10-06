@@ -47,6 +47,23 @@ export interface AgorDisplaySettings {
 }
 
 /**
+ * Tool credentials (API keys, tokens, etc.)
+ */
+export interface AgorCredentials {
+  /** Anthropic API key for Claude Code */
+  ANTHROPIC_API_KEY?: string;
+
+  /** Cursor API key (if needed) */
+  CURSOR_API_KEY?: string;
+
+  /** OpenAI API key for Codex */
+  OPENAI_API_KEY?: string;
+
+  /** Google API key for Gemini */
+  GOOGLE_API_KEY?: string;
+}
+
+/**
  * Complete Agor configuration
  */
 export interface AgorConfig {
@@ -58,6 +75,9 @@ export interface AgorConfig {
 
   /** Display settings */
   display?: AgorDisplaySettings;
+
+  /** Tool credentials (API keys, tokens) */
+  credentials?: AgorCredentials;
 }
 
 /**
@@ -71,4 +91,5 @@ export type ContextKey = keyof AgorContext;
 export type ConfigKey =
   | ContextKey
   | `defaults.${keyof AgorDefaults}`
-  | `display.${keyof AgorDisplaySettings}`;
+  | `display.${keyof AgorDisplaySettings}`
+  | `credentials.${keyof AgorCredentials}`;
