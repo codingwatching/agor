@@ -35,6 +35,11 @@
       "types": "./dist/claude/index.d.ts",
       "import": "./dist/claude/index.js",
       "require": "./dist/claude/index.cjs"
+    },
+    "./config": {
+      "types": "./dist/config/index.d.ts",
+      "import": "./dist/config/index.js",
+      "require": "./dist/config/index.cjs"
     }
   },
   "scripts": {

@@ -8,6 +8,7 @@ export default defineConfig({
     'git/index': 'src/git/index.ts',
     'api/index': 'src/api/index.ts',
     'claude/index': 'src/claude/index.ts',
+    'config/index': 'src/config/index.ts',
   },
   format: ['cjs', 'esm'],
   dts: true,
