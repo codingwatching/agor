@@ -48,6 +48,77 @@ export const useBoardObjects = ({
   );
 
   /**
+   * Delete a zone with session cleanup options
+   */
+  const deleteZone = useCallback(
+    async (objectId: string, deleteAssociatedSessions: boolean) => {
+      if (!board || !client) return;
+
+      // Mark as deleted to prevent re-appearance during WebSocket updates
+      deletedObjectsRef.current.add(objectId);
+
+      // Find sessions that will be affected (for optimistic update)
+      const zoneObject = board.objects?.[objectId];
+      if (!zoneObject || zoneObject.type !== 'zone') return;
+
+      const zoneBounds = {
+        x: zoneObject.x,
+        y: zoneObject.y,
+        width: zoneObject.width,
+        height: zoneObject.height,
+      };
+
+      // Find affected sessions
+      const affectedSessionIds: string[] = [];
+      for (const sessionId of board.sessions) {
+        const position = board.layout?.[sessionId];
+        if (position) {
+          const isInZone =
+            position.x >= zoneBounds.x &&
+            position.x <= zoneBounds.x + zoneBounds.width &&
+            position.y >= zoneBounds.y &&
+            position.y <= zoneBounds.y + zoneBounds.height;
+
+          if (isInZone) {
+            affectedSessionIds.push(sessionId);
+          }
+        }
+      }
+
+      // Optimistic removal of zone
+      setNodes(nodes => {
+        let updatedNodes = nodes.filter(n => n.id !== objectId);
+
+        // If deleting associated sessions, remove them too
+        if (deleteAssociatedSessions) {
+          updatedNodes = updatedNodes.filter(n => !affectedSessionIds.includes(n.id));
+        }
+
+        return updatedNodes;
+      });
+
+      try {
+        await client.service('boards').patch(board.board_id, {
+          _action: 'deleteZone',
+          objectId,
+          deleteAssociatedSessions,
+        });
+
+        // After successful deletion, we can remove from the tracking set
+        setTimeout(() => {
+          deletedObjectsRef.current.delete(objectId);
+        }, 1000);
+      } catch (error) {
+        console.error('Failed to delete zone:', error);
+        // Rollback: remove from deleted set
+        deletedObjectsRef.current.delete(objectId);
+        // Note: WebSocket update should restore the actual state
+      }
+    },
+    [board, client, setNodes, deletedObjectsRef]
+  );
+
+  /**
    * Convert board.objects to React Flow nodes
    */
   const getBoardObjectNodes = useCallback((): Node[] => {
@@ -69,6 +140,32 @@ export const useBoardObjects = ({
         return hasValidPosition;
       })
       .map(([objectId, objectData]) => {
+        // Calculate session count for this zone
+        let sessionCount = 0;
+        if (objectData.type === 'zone') {
+          const zoneBounds = {
+            x: objectData.x,
+            y: objectData.y,
+            width: objectData.width,
+            height: objectData.height,
+          };
+
+          for (const sessionId of board.sessions) {
+            const position = board.layout?.[sessionId];
+            if (position) {
+              const isInZone =
+                position.x >= zoneBounds.x &&
+                position.x <= zoneBounds.x + zoneBounds.width &&
+                position.y >= zoneBounds.y &&
+                position.y <= zoneBounds.y + zoneBounds.height;
+
+              if (isInZone) {
+                sessionCount++;
+              }
+            }
+          }
+        }
+
         // Zone node
         return {
           id: objectId,
@@ -91,11 +188,13 @@ export const useBoardObjects = ({
             x: objectData.x, // Include position in data for updates
             y: objectData.y,
             trigger: objectData.type === 'zone' ? objectData.trigger : undefined,
+            sessionCount,
             onUpdate: handleUpdateObject,
+            onDelete: deleteZone,
           },
         };
       });
-  }, [board?.objects, handleUpdateObject, eraserMode]);
+  }, [board?.objects, board?.sessions, board?.layout, handleUpdateObject, deleteZone, eraserMode]);
 
   /**
    * Add a zone node at the specified position
@@ -238,6 +337,7 @@ export const useBoardObjects = ({
     getBoardObjectNodes,
     addZoneNode,
     deleteObject,
+    deleteZone,
     batchUpdateObjectPositions,
   };
 };

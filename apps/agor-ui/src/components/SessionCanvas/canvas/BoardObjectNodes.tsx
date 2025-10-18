@@ -2,11 +2,12 @@
  * Custom React Flow node components for board objects (text labels, zones, etc.)
  */
 
-import { SettingOutlined } from '@ant-design/icons';
+import { DeleteOutlined, SettingOutlined } from '@ant-design/icons';
 import { theme } from 'antd';
 import React, { useEffect, useRef, useState } from 'react';
 import { NodeResizer, useViewport } from 'reactflow';
 import type { BoardObject } from '../../types';
+import { DeleteZoneModal } from './DeleteZoneModal';
 import { ZoneConfigModal } from './ZoneConfigModal';
 
 /**
@@ -36,7 +37,9 @@ interface ZoneNodeData {
   x: number;
   y: number;
   trigger?: BoardObject extends { type: 'zone'; trigger?: infer T } ? T : never;
+  sessionCount?: number;
   onUpdate?: (objectId: string, objectData: BoardObject) => void;
+  onDelete?: (objectId: string, deleteAssociatedSessions: boolean) => void;
 }
 
 const ZoneNodeComponent = ({ data, selected }: { data: ZoneNodeData; selected?: boolean }) => {
@@ -45,6 +48,7 @@ const ZoneNodeComponent = ({ data, selected }: { data: ZoneNodeData; selected?: 
   const [isEditingLabel, setIsEditingLabel] = useState(false);
   const [label, setLabel] = useState(data.label);
   const [configModalOpen, setConfigModalOpen] = useState(false);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [toolbarVisible, setToolbarVisible] = useState(false);
   const labelInputRef = useRef<HTMLInputElement>(null);
   const colors = getColorPalette(token);
@@ -258,6 +262,47 @@ const ZoneNodeComponent = ({ data, selected }: { data: ZoneNodeData; selected?: 
           >
             <SettingOutlined style={{ fontSize: '12px', color: token.colorText }} />
           </button>
+          <button
+            type="button"
+            onPointerDown={e => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            onPointerUp={e => {
+              e.preventDefault();
+              e.stopPropagation();
+              setDeleteModalOpen(true);
+            }}
+            onClick={e => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.color = token.colorError;
+              e.currentTarget.style.borderColor = token.colorError;
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.color = token.colorTextSecondary;
+              e.currentTarget.style.borderColor = token.colorBorder;
+            }}
+            style={{
+              width: '20px',
+              height: '20px',
+              borderRadius: '3px',
+              backgroundColor: token.colorBgContainer,
+              border: `1px solid ${token.colorBorder}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              userSelect: 'none',
+              cursor: 'pointer',
+              padding: 0,
+              color: token.colorTextSecondary,
+            }}
+            title="Delete zone"
+          >
+            <DeleteOutlined style={{ fontSize: '12px' }} />
+          </button>
         </div>
         <div
           style={{
@@ -321,6 +366,18 @@ const ZoneNodeComponent = ({ data, selected }: { data: ZoneNodeData; selected?: 
         objectId={data.objectId}
         onUpdate={data.onUpdate || (() => {})}
         zoneData={createObjectData({})}
+      />
+      <DeleteZoneModal
+        open={deleteModalOpen}
+        onCancel={() => setDeleteModalOpen(false)}
+        onConfirm={deleteAssociatedSessions => {
+          setDeleteModalOpen(false);
+          if (data.onDelete) {
+            data.onDelete(data.objectId, deleteAssociatedSessions);
+          }
+        }}
+        zoneName={data.label}
+        sessionCount={data.sessionCount || 0}
       />
     </>
   );

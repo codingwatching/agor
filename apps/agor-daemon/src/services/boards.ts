@@ -122,6 +122,18 @@ export class BoardsService extends DrizzleService<Board, Partial<Board>, BoardPa
   ): Promise<Board> {
     return this.boardRepo.batchUpsertBoardObjects(boardId, objects);
   }
+
+  /**
+   * Custom method: Delete a zone and handle associated sessions
+   */
+  async deleteZone(
+    boardId: string,
+    objectId: string,
+    deleteAssociatedSessions: boolean,
+    _params?: BoardParams
+  ): Promise<{ board: Board; affectedSessions: string[] }> {
+    return this.boardRepo.deleteZone(boardId, objectId, deleteAssociatedSessions);
+  }
 }
 
 /**

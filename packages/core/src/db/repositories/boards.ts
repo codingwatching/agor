@@ -418,4 +418,91 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
       );
     }
   }
+
+  /**
+   * Delete a zone and handle associated sessions
+   *
+   * @param boardId - Board ID containing the zone
+   * @param objectId - Zone object ID to delete
+   * @param deleteAssociatedSessions - If true, remove sessions from board; if false, unpin them
+   * @returns Updated board and list of affected session IDs
+   */
+  async deleteZone(
+    boardId: string,
+    objectId: string,
+    deleteAssociatedSessions: boolean
+  ): Promise<{ board: Board; affectedSessions: string[] }> {
+    try {
+      const fullId = await this.resolveId(boardId);
+      const current = await this.findById(fullId);
+      if (!current) {
+        throw new EntityNotFoundError('Board', boardId);
+      }
+
+      // Check if object exists and is a zone
+      const zoneObject = current.objects?.[objectId];
+      if (!zoneObject) {
+        throw new EntityNotFoundError('Zone', objectId);
+      }
+      if (zoneObject.type !== 'zone') {
+        throw new RepositoryError(`Object ${objectId} is not a zone`);
+      }
+
+      // Find sessions pinned to this zone (sessions positioned within zone bounds)
+      const affectedSessions: string[] = [];
+      const zoneBounds = {
+        x: zoneObject.x,
+        y: zoneObject.y,
+        width: zoneObject.width,
+        height: zoneObject.height,
+      };
+
+      // Check each session's position
+      for (const sessionId of current.sessions) {
+        const position = current.layout?.[sessionId];
+        if (position) {
+          // Check if session is within zone bounds
+          const isInZone =
+            position.x >= zoneBounds.x &&
+            position.x <= zoneBounds.x + zoneBounds.width &&
+            position.y >= zoneBounds.y &&
+            position.y <= zoneBounds.y + zoneBounds.height;
+
+          if (isInZone) {
+            affectedSessions.push(sessionId);
+          }
+        }
+      }
+
+      // Remove the zone object
+      const updatedObjects = { ...(current.objects || {}) };
+      delete updatedObjects[objectId];
+
+      // Handle affected sessions
+      let updatedSessions = current.sessions;
+      if (deleteAssociatedSessions && affectedSessions.length > 0) {
+        // Remove affected sessions from board
+        updatedSessions = current.sessions.filter(id => !affectedSessions.includes(id));
+      }
+      // If not deleting, sessions remain on board (just unpinned from zone)
+
+      // Update board
+      const updatedBoard = await this.update(fullId, {
+        objects: updatedObjects,
+        sessions: updatedSessions,
+      });
+
+      return {
+        board: updatedBoard,
+        affectedSessions,
+      };
+    } catch (error) {
+      if (error instanceof RepositoryError) throw error;
+      if (error instanceof EntityNotFoundError) throw error;
+      throw new RepositoryError(
+        `Failed to delete zone: ${error instanceof Error ? error.message : String(error)}`,
+        error
+      );
+    }
+  }
 }

@@ -309,7 +309,8 @@ async function main() {
         async context => {
           // Handle atomic board object operations via _action parameter
           // biome-ignore lint/suspicious/noExplicitAny: Data type depends on action
-          const { _action, objectId, objectData, objects } = (context.data || {}) as any;
+          const { _action, objectId, objectData, objects, deleteAssociatedSessions } =
+            (context.data || {}) as any;
 
           if (_action === 'upsertObject') {
             if (!objectId || !objectData) {
@@ -346,6 +347,18 @@ async function main() {
             app.service('boards').emit('patched', result);
             // Skip normal patch flow to prevent double emit
             context.dispatch = result;
+            return context;
+          }
+
+          if (_action === 'deleteZone' && objectId) {
+            const result = await boardsService.deleteZone(
+              context.id,
+              objectId,
+              deleteAssociatedSessions ?? false
+            );
+            context.result = result.board;
+            // Manually emit 'patched' event for WebSocket broadcasting
+            app.service('boards').emit('patched', result.board);
             return context;
           }
 
