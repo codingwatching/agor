@@ -386,7 +386,7 @@ export class ClaudePromptService {
     }
 
     // Add optional resume if session exists
-    if (resume && session.sdk_session_id) {
+    if (resume && session?.sdk_session_id) {
       options.resume = session.sdk_session_id;
     }
 
@@ -403,24 +403,25 @@ export class ClaudePromptService {
 
         // 1. Global servers (always included)
         console.log('🔌 Fetching MCP servers with hierarchical scoping...');
-        const globalServers = await this.mcpServerRepo.findAll({
+        const globalServers = await this.mcpServerRepo?.findAll({
           scope: 'global',
           enabled: true,
         });
-        console.log(`   📍 Global scope: ${globalServers.length} server(s)`);
-        for (const server of globalServers) {
+        console.log(`   📍 Global scope: ${globalServers?.length ?? 0} server(s)`);
+        for (const server of globalServers ?? []) {
           allServers.push({ server, source: 'global' });
         }
 
         // 2. Repo-scoped servers (if session has a repo)
-        if (session.repo?.repo_id) {
-          const repoServers = await this.mcpServerRepo.findAll({
+        const repoId = session?.repo?.repo_id;
+        if (repoId) {
+          const repoServers = await this.mcpServerRepo?.findAll({
             scope: 'repo',
-            scopeId: session.repo.repo_id,
+            scopeId: repoId,
             enabled: true,
           });
-          console.log(`   📍 Repo scope: ${repoServers.length} server(s)`);
-          for (const server of repoServers) {
+          console.log(`   📍 Repo scope: ${repoServers?.length ?? 0} server(s)`);
+          for (const server of repoServers ?? []) {
             allServers.push({ server, source: 'repo' });
           }
         }
@@ -439,10 +440,14 @@ export class ClaudePromptService {
         // }
 
         // 4. Session-specific servers (from join table)
-        const sessionServers = await this.sessionMCPRepo.listServers(sessionId, true); // enabledOnly
-        console.log(`   📍 Session scope: ${sessionServers.length} server(s)`);
-        for (const server of sessionServers) {
-          allServers.push({ server, source: 'session' });
+        if (session && this.sessionMCPRepo) {
+          const sessionServers = await this.sessionMCPRepo!.listServers(sessionId, true); // enabledOnly
+          console.log(`   📍 Session scope: ${sessionServers.length} server(s)`);
+          for (const server of sessionServers) {
+            allServers.push({ server, source: 'session' });
+          }
+        } else {
+          console.log('   📍 Session scope: 0 server(s)');
         }
 
         // 5. Deduplicate by server ID (later scopes override earlier ones)

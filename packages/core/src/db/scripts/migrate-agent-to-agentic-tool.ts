@@ -10,6 +10,7 @@
  * Safe to run - backs up data before modifying.
  */
 
+import { sql } from 'drizzle-orm';
 import { createDatabase } from '../index';
 
 const DB_PATH = process.env.AGOR_DB_PATH || 'file:~/.agor/agor.db';
@@ -39,12 +40,15 @@ async function migrate() {
     console.log('3️⃣  Updating JSON data fields...');
 
     // Get all sessions
-    const sessions = await db.all('SELECT session_id, data FROM sessions');
+    const sessions = (await db.all('SELECT session_id, data FROM sessions')) as Array<{
+      session_id: string;
+      data: string;
+    }>;
     console.log(`   Found ${sessions.length} sessions to update`);
 
     let updated = 0;
     for (const session of sessions) {
-      const data = JSON.parse(session.data);
+      const data = JSON.parse(session.data) as Record<string, unknown>;
       let modified = false;
 
       // Rename agent_version → agentic_tool_version
@@ -62,10 +66,11 @@ async function migrate() {
       }
 
       if (modified) {
-        await db.run('UPDATE sessions SET data = ? WHERE session_id = ?', [
-          JSON.stringify(data),
-          session.session_id,
-        ]);
+        await db.run(
+          sql.raw(
+            `UPDATE sessions SET data = '${JSON.stringify(data).replace(/'/g, "''")}' WHERE session_id = '${session.session_id}'`
+          )
+        );
         updated++;
       }
     }

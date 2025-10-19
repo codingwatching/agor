@@ -13,7 +13,7 @@
  *   npm run test:integration
  */
 
-import type { Session } from '../../types';
+import type { Session, TaskID } from '../../types';
 import { createDatabase } from '../client';
 import { formatShortId, generateId } from '../ids';
 import { initializeDatabase, seedInitialData } from '../migrate';
@@ -72,7 +72,7 @@ async function testSessionRepository(db: ReturnType<typeof createDatabase>) {
 
   // Create session
   const session = await repo.create({
-    agent: 'claude-code',
+    agentic_tool: 'claude-code',
     status: 'idle',
     repo: {
       cwd: '/Users/test/project',
@@ -104,7 +104,7 @@ async function testSessionRepository(db: ReturnType<typeof createDatabase>) {
   console.log(`  ✅ Resolved short ID: ${shortId} → ${session.session_id}`);
 
   // Test JSON data integrity
-  if (found.agent !== 'claude-code') {
+  if (found.agentic_tool !== 'claude-code') {
     throw new Error('JSON data not preserved');
   }
 
@@ -269,7 +269,7 @@ async function testGenealogy(db: ReturnType<typeof createDatabase>) {
 
   // Create parent session
   const parent = await repo.create({
-    agent: 'claude-code',
+    agentic_tool: 'claude-code',
     status: 'completed',
     repo: { cwd: '/test', managed_worktree: false },
     git_state: { ref: 'main', base_sha: 'abc', current_sha: 'def' },
@@ -280,7 +280,7 @@ async function testGenealogy(db: ReturnType<typeof createDatabase>) {
 
   // Create forked child
   const fork = await repo.create({
-    agent: 'claude-code',
+    agentic_tool: 'claude-code',
     status: 'idle',
     repo: { cwd: '/test', managed_worktree: false },
     git_state: { ref: 'main', base_sha: 'def', current_sha: 'def' },
@@ -295,7 +295,7 @@ async function testGenealogy(db: ReturnType<typeof createDatabase>) {
 
   // Create spawned child
   const spawn = await repo.create({
-    agent: 'cursor',
+    agentic_tool: 'cursor',
     status: 'idle',
     repo: { cwd: '/test', managed_worktree: false },
     git_state: { ref: 'main', base_sha: 'def', current_sha: 'def' },

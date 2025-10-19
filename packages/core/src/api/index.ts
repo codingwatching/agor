@@ -9,6 +9,7 @@ import type {
   ContextFileDetail,
   ContextFileListItem,
   MCPServer,
+  Message,
   Repo,
   Session,
   Task,
@@ -56,7 +57,7 @@ export interface AgorService<T> {
   get(id: string, params?: Params): Promise<T>;
   create(data: Partial<T>, params?: Params): Promise<T>;
   update(id: string, data: T, params?: Params): Promise<T>;
-  patch(id: string, data: Partial<T>, params?: Params): Promise<T>;
+  patch(id: string | null, data: Partial<T>, params?: Params): Promise<T>;
   remove(id: string, params?: Params): Promise<T>;
 
   // Event emitter methods (for real-time updates)
@@ -65,16 +66,99 @@ export interface AgorService<T> {
 }
 
 /**
+ * Sessions service with custom methods for forking, spawning, and genealogy
+ */
+export interface SessionsService extends AgorService<Session> {
+  /**
+   * Fork a session at a decision point
+   * Creates a new session branching from the parent at a specific task
+   */
+  fork(id: string, data: { prompt: string; task_id?: string }, params?: Params): Promise<Session>;
+
+  /**
+   * Spawn a child session from a parent
+   * Creates a new session with the parent's context
+   */
+  spawn(
+    id: string,
+    data: { prompt: string; agent?: string; task_id?: string },
+    params?: Params
+  ): Promise<Session>;
+
+  /**
+   * Get genealogy tree for a session
+   * Returns the full ancestor/descendant tree
+   */
+  getGenealogy(id: string, params?: Params): Promise<unknown>;
+}
+
+/**
+ * Tasks service with bulk creation support
+ */
+export interface TasksService extends AgorService<Task> {
+  /**
+   * Create multiple tasks in a single request
+   * Returns array of created tasks with IDs
+   */
+  createMany(data: Partial<Task>[]): Promise<Task[]>;
+
+  /**
+   * Mark a task as completed
+   */
+  complete(id: string, data: { report?: unknown }, params?: Params): Promise<Task>;
+
+  /**
+   * Mark a task as failed
+   */
+  fail(id: string, data: { error: string }, params?: Params): Promise<Task>;
+}
+
+/**
+ * Messages service with bulk creation support
+ */
+export interface MessagesService extends AgorService<Message> {
+  /**
+   * Create multiple messages in a single request
+   * Returns array of created messages with IDs
+   */
+  createMany(data: Partial<Message>[]): Promise<Message[]>;
+}
+
+/**
+ * Repos service with worktree management
+ */
+export interface ReposService extends AgorService<Repo> {
+  /**
+   * Clone a repository and register it
+   */
+  clone(data: { url: string; name?: string }, params?: Params): Promise<Repo>;
+}
+
+/**
  * Agor client with socket.io connection exposed for lifecycle management
  */
 export interface AgorClient extends Omit<Application<ServiceTypes>, 'service'> {
   io: Socket;
 
-  // Override service method to return our typed AgorService
+  // Typed service overloads for services with custom methods
+  service(path: 'sessions'): SessionsService;
+  service(path: 'tasks'): TasksService;
+  service(path: 'messages'): MessagesService;
+  service(path: 'repos'): ReposService;
+
+  // Bulk operation endpoints
+  service(path: 'messages/bulk'): MessagesService;
+  service(path: 'tasks/bulk'): TasksService;
+
+  // Standard services (CRUD only)
+  service(path: 'boards'): AgorService<Board>;
+  service(path: 'users'): AgorService<User>;
+  service(path: 'mcp-servers'): AgorService<MCPServer>;
+  service(path: 'context'): AgorService<ContextFileListItem | ContextFileDetail>;
+
+  // Generic fallback for custom routes and dynamic paths
   service<K extends keyof ServiceTypes>(path: K): AgorService<ServiceTypes[K]>;
-  // Allow dynamic service paths for custom routes
-  // biome-ignore lint/suspicious/noExplicitAny: Dynamic service paths require unknown type
-  service(path: string): AgorService<any>;
+  service(path: string): AgorService<unknown>;
 
   // Authentication methods (from @feathersjs/authentication-client)
   authenticate(credentials?: {
