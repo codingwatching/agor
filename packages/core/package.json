@@ -41,12 +41,22 @@
       "import": "./dist/config/index.js",
       "require": "./dist/config/index.cjs"
     },
+    "./config/browser": {
+      "types": "./dist/config/browser.d.ts",
+      "import": "./dist/config/browser.js",
+      "require": "./dist/config/browser.cjs"
+    },
     "./tools": {
       "types": "./dist/tools/index.d.ts",
       "import": "./dist/tools/index.js",
       "require": "./dist/tools/index.cjs"
     },
     "./tools/models": {
+      "types": "./dist/tools/models.d.ts",
+      "import": "./dist/tools/models.js",
+      "require": "./dist/tools/models.cjs"
+    },
+    "./tools/claude/models": {
       "types": "./dist/tools/claude/models.d.ts",
       "import": "./dist/tools/claude/models.js",
       "require": "./dist/tools/claude/models.cjs"

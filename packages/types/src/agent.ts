@@ -1,13 +1,17 @@
 // src/types/agent.ts
+
+import type { AgenticToolName } from './agentic-tool';
 import type { AgentID } from './id';
 
-export type AgentName = 'claude-code' | 'cursor' | 'codex' | 'gemini';
-
+/**
+ * Agent represents a UI configuration for an agentic tool
+ */
 export interface Agent {
   /** Unique agent configuration identifier (UUIDv7) */
   id: AgentID;
 
-  name: AgentName;
+  /** Agentic tool name (claude-code, cursor, codex, gemini) */
+  name: AgenticToolName;
   icon: string;
   installed: boolean;
   version?: string;

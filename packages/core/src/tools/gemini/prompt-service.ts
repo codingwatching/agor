@@ -33,8 +33,9 @@ import { DEFAULT_GEMINI_MODEL, type GeminiModel } from './models';
 /**
  * GeminiClient with internal config property exposed
  * The SDK doesn't expose this in types, but we need it for executeToolCall()
+ * Note: config is private in GeminiClient, so we use unknown cast
  */
-interface GeminiClientWithConfig extends GeminiClient {
+interface GeminiClientWithConfig {
   config: Config;
 }
 
@@ -109,7 +110,7 @@ export class GeminiPromptService {
     const model = (session.model_config?.model as GeminiModel) || DEFAULT_GEMINI_MODEL;
 
     // Prepare initial prompt (just text for now - can enhance with file paths later)
-    let parts = [{ text: prompt }];
+    let parts: Part[] = [{ text: prompt }];
 
     // Create abort controller for cancellation support
     const abortController = new AbortController();
@@ -295,7 +296,7 @@ export class GeminiPromptService {
         // We need to manually execute the tools using SDK's executeToolCall() and send results back.
 
         // Get config for executeToolCall
-        const config = (client as GeminiClientWithConfig).config;
+        const config = (client as unknown as GeminiClientWithConfig).config;
 
         // Execute all pending tool calls using SDK's executeToolCall function
         const functionResponseParts: Part[] = [];
@@ -308,7 +309,17 @@ export class GeminiPromptService {
             );
 
             // Use SDK's executeToolCall function instead of manually calling tool.execute()
-            const response = await executeToolCall(config, toolCall, abortController.signal);
+            const response = await executeToolCall(
+              config,
+              {
+                callId: toolCall.callId,
+                name: toolCall.name,
+                args: toolCall.args,
+                isClientInitiated: false,
+                prompt_id: promptId,
+              },
+              abortController.signal
+            );
             console.debug(`[Gemini Loop] Tool ${toolCall.name} executed successfully`);
 
             // Add the response parts from the SDK (already formatted correctly)
@@ -327,7 +338,7 @@ export class GeminiPromptService {
 
         // Prepare next message with tool results
         // Send the function responses back to the model to get its response
-        parts = functionResponseParts; // SDK expects PartListUnion (Part[])
+        parts = functionResponseParts;
         console.debug(
           `[Gemini Loop] Sending ${functionResponseParts.length} tool result parts back to model...`
         );
@@ -417,7 +428,7 @@ export class GeminiPromptService {
     if (this.sessionClients.has(sessionId)) {
       const existingClient = this.sessionClients.get(sessionId)!;
       // Update approval mode on existing client (in case it changed)
-      const config = (existingClient as GeminiClientWithConfig).config;
+      const config = (existingClient as unknown as GeminiClientWithConfig).config;
       if (config && typeof config.setApprovalMode === 'function') {
         config.setApprovalMode(approvalMode);
         console.log(`🔄 [Gemini] Updated approval mode for existing client: ${approvalMode}`);

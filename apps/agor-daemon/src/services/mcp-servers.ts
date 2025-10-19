@@ -8,11 +8,14 @@
 import { type Database, MCPServerRepository } from '@agor/core/db';
 import type {
   CreateMCPServerInput,
+  MCPScope,
   MCPServer,
   MCPServerFilters,
+  MCPSource,
+  MCPTransport,
   UpdateMCPServerInput,
 } from '@agor/core/types';
-import type { Params } from '@feathersjs/feathers';
+import type { Paginated, Params } from '@feathersjs/feathers';
 import { DrizzleService } from '../adapters/drizzle';
 
 /**
@@ -63,14 +66,11 @@ export class MCPServersService extends DrizzleService<
     const filters: MCPServerFilters = {};
 
     if (params?.query) {
-      // biome-ignore lint/suspicious/noExplicitAny: Query parameter type conversion
-      if (params.query.scope) filters.scope = params.query.scope as any;
+      if (params.query.scope) filters.scope = params.query.scope as MCPScope;
       if (params.query.scopeId) filters.scopeId = params.query.scopeId;
-      // biome-ignore lint/suspicious/noExplicitAny: Query parameter type conversion
-      if (params.query.transport) filters.transport = params.query.transport as any;
+      if (params.query.transport) filters.transport = params.query.transport as MCPTransport;
       if (params.query.enabled !== undefined) filters.enabled = params.query.enabled;
-      // biome-ignore lint/suspicious/noExplicitAny: Query parameter type conversion
-      if (params.query.source) filters.source = params.query.source as any;
+      if (params.query.source) filters.source = params.query.source as MCPSource;
     }
 
     const servers = await this.mcpServerRepo.findAll(filters);
@@ -91,8 +91,7 @@ export class MCPServersService extends DrizzleService<
       };
     }
 
-    // biome-ignore lint/suspicious/noExplicitAny: Return type varies based on pagination
-    return data as any;
+    return data as MCPServer[] | Paginated<MCPServer>;
   }
 
   /**

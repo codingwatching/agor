@@ -1,4 +1,4 @@
-import { getRepoReferenceOptions } from '@agor/core/config';
+import { getRepoReferenceOptions } from '@agor/core/config/browser';
 import { Alert, App as AntApp, ConfigProvider, Spin, theme } from 'antd';
 import { App as AgorApp } from './components/App';
 import { LoginPage } from './components/LoginPage';

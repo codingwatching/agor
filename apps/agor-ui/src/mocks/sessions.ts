@@ -3,13 +3,13 @@ import type { Session, SessionID, TaskID } from '../types';
 
 export const mockSessionA: Session = {
   session_id: 'abc123' as SessionID,
-  agent: 'claude-code',
-  agent_version: '1.2.3',
+  agentic_tool: 'claude-code',
+  agentic_tool_version: '1.2.3',
   status: 'running',
-  title: 'Build authentication system',
   description: 'Initial attempt at implementing JWT-based auth with refresh tokens',
   created_at: '2025-10-01T10:00:00Z',
   last_updated: '2025-10-01T10:30:00Z',
+  created_by: 'user-123',
   repo: {
     cwd: '../my-project-auth',
     managed_worktree: true,
@@ -19,7 +19,7 @@ export const mockSessionA: Session = {
     base_sha: 'a4f2e91',
     current_sha: 'b3e4d12-dirty',
   },
-  concepts: ['auth', 'security', 'api-design'],
+  contextFiles: ['auth.md', 'security.md', 'api-design.md'],
   genealogy: {
     children: ['def456' as SessionID, 'ghi789' as SessionID],
   },
@@ -31,13 +31,13 @@ export const mockSessionA: Session = {
 // Fork example
 export const mockSessionB: Session = {
   session_id: 'def456' as SessionID,
-  agent: 'claude-code',
-  agent_version: '1.2.3',
+  agentic_tool: 'claude-code',
+  agentic_tool_version: '1.2.3',
   status: 'idle',
-  title: 'Try OAuth 2.0 instead',
   description: 'Forked from abc123 to explore OAuth 2.0 flow as alternative approach',
   created_at: '2025-10-01T10:20:00Z',
   last_updated: '2025-10-01T10:35:00Z',
+  created_by: 'user-123',
   repo: {
     cwd: '../my-project-oauth',
     managed_worktree: true,
@@ -47,7 +47,7 @@ export const mockSessionB: Session = {
     base_sha: 'a4f2e91',
     current_sha: 'c5f6e23',
   },
-  concepts: ['auth', 'security', 'api-design'],
+  contextFiles: ['auth.md', 'security.md', 'api-design.md'],
   genealogy: {
     forked_from_session_id: 'abc123' as SessionID,
     fork_point_task_id: 'task-001' as TaskID,
@@ -61,13 +61,13 @@ export const mockSessionB: Session = {
 // Spawn example
 export const mockSessionC: Session = {
   session_id: 'ghi789' as SessionID,
-  agent: 'gemini',
-  agent_version: '2.0',
+  agentic_tool: 'gemini',
+  agentic_tool_version: '2.0',
   status: 'completed',
-  title: 'Design user database schema',
   description: 'Spawned from abc123 to design database schema with Gemini',
   created_at: '2025-10-01T10:18:00Z',
   last_updated: '2025-10-01T10:28:00Z',
+  created_by: 'user-123',
   repo: {
     cwd: '../my-project-database',
     managed_worktree: true,
@@ -77,7 +77,7 @@ export const mockSessionC: Session = {
     base_sha: 'b3e4d12',
     current_sha: 'd7g8h34',
   },
-  concepts: ['database', 'security'],
+  contextFiles: ['database.md', 'security.md'],
   genealogy: {
     parent_session_id: 'abc123' as SessionID,
     spawn_point_task_id: 'task-002' as TaskID,

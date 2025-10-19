@@ -9,7 +9,7 @@
  * Used in both NewSessionModal and SessionSettingsModal
  */
 
-import type { AgentName, MCPServer } from '@agor/core/types';
+import type { AgenticToolName, MCPServer } from '@agor/core/types';
 import { getDefaultPermissionMode } from '@agor/core/types';
 import { Form } from 'antd';
 import { MCPServerSelect } from '../MCPServerSelect';
@@ -18,7 +18,7 @@ import { PermissionModeSelector } from '../PermissionModeSelector';
 
 export interface AgenticToolConfigFormProps {
   /** The agentic tool being configured */
-  agenticTool: AgentName;
+  agenticTool: AgenticToolName;
   /** Available MCP servers */
   mcpServers: MCPServer[];
   /** Whether to show help text under each field */

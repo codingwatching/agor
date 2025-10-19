@@ -1,8 +1,8 @@
-import type { MCPServer, PermissionMode } from '@agor/core/types';
+import type { AgenticToolName, MCPServer, PermissionMode } from '@agor/core/types';
 import { DownOutlined } from '@ant-design/icons';
 import { Checkbox, Collapse, Form, Input, Modal, Radio, Select, Space, Typography } from 'antd';
 import { useEffect, useState } from 'react';
-import type { Agent, AgentName } from '../../types';
+import type { Agent } from '../../types';
 import { AgenticToolConfigForm } from '../AgenticToolConfigForm';
 import { AgentSelectionCard } from '../AgentSelectionCard';
 import type { ModelConfig } from '../ModelSelector';
@@ -370,7 +370,7 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
               label: <Text strong>Agentic Tool Configuration</Text>,
               children: (
                 <AgenticToolConfigForm
-                  agenticTool={(selectedAgent as AgentName) || 'claude-code'}
+                  agenticTool={(selectedAgent as AgenticToolName) || 'claude-code'}
                   mcpServers={mcpServers}
                   showHelpText={true}
                 />

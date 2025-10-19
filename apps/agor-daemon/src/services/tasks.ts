@@ -7,7 +7,7 @@
 
 import { type Database, TaskRepository } from '@agor/core/db';
 import type { Task } from '@agor/core/types';
-import type { Params } from '@feathersjs/feathers';
+import type { Paginated, Params } from '@feathersjs/feathers';
 import { DrizzleService } from '../adapters/drizzle';
 
 /**
@@ -47,8 +47,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
   /**
    * Override find to support session-based filtering
    */
-  // biome-ignore lint/suspicious/noExplicitAny: Returns Paginated<Task> or Task[] depending on pagination
-  async find(params?: TaskParams): Promise<any> {
+  async find(params?: TaskParams): Promise<Task[] | Paginated<Task>> {
     // If filtering by session_id, use repository method
     if (params?.query?.session_id) {
       const tasks = await this.taskRepo.findBySession(params.query.session_id);

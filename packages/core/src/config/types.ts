@@ -98,8 +98,8 @@ export interface AgorCredentials {
   /** OpenAI API key for Codex */
   OPENAI_API_KEY?: string;
 
-  /** Google API key for Gemini */
-  GOOGLE_API_KEY?: string;
+  /** Google Gemini API key */
+  GEMINI_API_KEY?: string;
 }
 
 /**

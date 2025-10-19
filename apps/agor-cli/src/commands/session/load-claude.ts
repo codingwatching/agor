@@ -88,7 +88,7 @@ export default class SessionLoadClaude extends Command {
       // Create Agor session
       const agorSession: Partial<Session> & { session_id: SessionID; created_by: string } = {
         session_id: generateId() as SessionID,
-        agent: 'claude-code',
+        agentic_tool: 'claude-code',
         status: 'completed',
         description: description,
         created_at: new Date().toISOString(),

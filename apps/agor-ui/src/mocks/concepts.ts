@@ -2,7 +2,11 @@
 import type { Concept } from '../types';
 
 export const mockConceptAuth: Concept = {
+  path: 'auth.md',
   name: 'auth',
+  type: 'core',
+  created_at: '2025-10-01T09:00:00Z',
+  last_updated: '2025-10-01T10:00:00Z',
   content: `# Authentication
 
 Related: [[security]], [[api-design]], [[database]]
@@ -26,11 +30,15 @@ See [[database]] for secure password storage patterns.
 1. Always use HTTPS (see [[security]])
 2. Implement rate limiting (see [[api-design]])
 3. Use prepared statements (see [[database]])`,
-  related: ['security', 'api-design', 'database'],
+  related: ['security.md', 'api-design.md', 'database.md'],
 };
 
 export const mockConceptSecurity: Concept = {
+  path: 'security.md',
   name: 'security',
+  type: 'core',
+  created_at: '2025-10-01T09:00:00Z',
+  last_updated: '2025-10-01T10:00:00Z',
   content: `# Security
 
 Related: [[auth]], [[api-design]], [[database]]
@@ -45,11 +53,15 @@ Related: [[auth]], [[api-design]], [[database]]
 1. Principle of least privilege
 2. Defense in depth
 3. Security by default`,
-  related: ['auth', 'api-design', 'database'],
+  related: ['auth.md', 'api-design.md', 'database.md'],
 };
 
 export const mockConceptDatabase: Concept = {
+  path: 'database.md',
   name: 'database',
+  type: 'core',
+  created_at: '2025-10-01T09:00:00Z',
+  last_updated: '2025-10-01T10:00:00Z',
   content: `# Database
 
 Related: [[auth]], [[security]], [[api-design]]
@@ -63,7 +75,7 @@ Related: [[auth]], [[security]], [[api-design]]
 - Prepared statements
 - Secure password storage (bcrypt, argon2)
 - Row-level security`,
-  related: ['auth', 'security', 'api-design'],
+  related: ['auth.md', 'security.md', 'api-design.md'],
 };
 
 export const mockConcepts: Concept[] = [mockConceptAuth, mockConceptSecurity, mockConceptDatabase];

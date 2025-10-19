@@ -9,7 +9,9 @@ export default defineConfig({
     'api/index': 'src/api/index.ts',
     'claude/index': 'src/claude/index.ts',
     'config/index': 'src/config/index.ts',
+    'config/browser': 'src/config/browser.ts', // Browser-safe config utilities
     'tools/index': 'src/tools/index.ts',
+    'tools/models': 'src/tools/models.ts', // Browser-safe model constants
     'tools/claude/models': 'src/tools/claude/models.ts',
     'permissions/index': 'src/permissions/index.ts',
   },
@@ -17,6 +19,15 @@ export default defineConfig({
   dts: true,
   clean: true,
   splitting: false,
-  // Don't bundle the Agent SDK - it needs to resolve its own internal files
-  external: ['@anthropic-ai/claude-agent-sdk'],
+  // Don't bundle agent SDKs and Node.js-only dependencies
+  external: [
+    '@anthropic-ai/claude-agent-sdk',
+    '@openai/codex-sdk',
+    '@google/gemini-cli-core',
+    'node:fs',
+    'node:fs/promises',
+    'node:path',
+    'node:os',
+    'node:url',
+  ],
 });

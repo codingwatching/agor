@@ -21,6 +21,20 @@ import socketio from '@feathersjs/socketio-client';
 import io, { type Socket } from 'socket.io-client';
 
 /**
+ * Authentication result from Feathers authentication
+ */
+export interface AuthenticationResult {
+  accessToken: string;
+  authentication: {
+    strategy: string;
+    accessToken?: string;
+    payload?: Record<string, unknown>;
+  };
+  user?: User;
+  [key: string]: unknown;
+}
+
+/**
  * Service interfaces for type safety
  */
 export interface ServiceTypes {
@@ -34,22 +48,43 @@ export interface ServiceTypes {
 }
 
 /**
- * Feathers service with find method properly typed
+ * Feathers service with find method properly typed and event emitter methods
  */
 export interface AgorService<T> {
+  // CRUD methods
   find(params?: Params): Promise<Paginated<T> | T[]>;
   get(id: string, params?: Params): Promise<T>;
   create(data: Partial<T>, params?: Params): Promise<T>;
   update(id: string, data: T, params?: Params): Promise<T>;
   patch(id: string, data: Partial<T>, params?: Params): Promise<T>;
   remove(id: string, params?: Params): Promise<T>;
+
+  // Event emitter methods (for real-time updates)
+  on(event: string, handler: (data: T) => void): void;
+  removeListener(event: string, handler: (data: T) => void): void;
 }
 
 /**
  * Agor client with socket.io connection exposed for lifecycle management
  */
-export interface AgorClient extends Application<ServiceTypes> {
+export interface AgorClient extends Omit<Application<ServiceTypes>, 'service'> {
   io: Socket;
+
+  // Override service method to return our typed AgorService
+  service<K extends keyof ServiceTypes>(path: K): AgorService<ServiceTypes[K]>;
+  // Allow dynamic service paths for custom routes
+  // biome-ignore lint/suspicious/noExplicitAny: Dynamic service paths require unknown type
+  service(path: string): AgorService<any>;
+
+  // Authentication methods (from @feathersjs/authentication-client)
+  authenticate(credentials?: {
+    strategy?: string;
+    email?: string;
+    password?: string;
+    accessToken?: string;
+  }): Promise<AuthenticationResult>;
+  logout(): Promise<AuthenticationResult | null>;
+  reAuthenticate(force?: boolean): Promise<AuthenticationResult>;
 }
 
 /**

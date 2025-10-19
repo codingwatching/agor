@@ -6,7 +6,7 @@
  */
 
 import { BoardRepository, type Database } from '@agor/core/db';
-import type { Board, BoardObject } from '@agor/core/types';
+import type { Board, BoardObject, SessionID } from '@agor/core/types';
 import type { Params } from '@feathersjs/feathers';
 import { DrizzleService } from '../adapters/drizzle';
 
@@ -58,16 +58,14 @@ export class BoardsService extends DrizzleService<Board, Partial<Board>, BoardPa
     const sessions = board.sessions || [];
 
     // Avoid duplicates
-    // biome-ignore lint/suspicious/noExplicitAny: SessionID is branded UUID string
-    if (sessions.includes(sessionId as any)) {
+    if (sessions.includes(sessionId as SessionID)) {
       return board;
     }
 
     return this.patch(
       id,
       {
-        // biome-ignore lint/suspicious/noExplicitAny: SessionID is branded UUID string
-        sessions: [...sessions, sessionId as any],
+        sessions: [...sessions, sessionId as SessionID],
       },
       params
     ) as Promise<Board>;

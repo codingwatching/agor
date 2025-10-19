@@ -5,7 +5,7 @@
  */
 
 import type { AgorClient } from '@agor/core/api';
-import type { AgentName, Repo, Session, SessionID } from '@agor/core/types';
+import type { AgenticToolName, Repo, Session, SessionID } from '@agor/core/types';
 import { getDefaultPermissionMode } from '@agor/core/types';
 import { useState } from 'react';
 import type { NewSessionConfig } from '../components/NewSessionModal';
@@ -101,7 +101,7 @@ export function useSessionActions(client: AgorClient | null): UseSessionActionsR
       }
 
       // Create session with repo/worktree data
-      const agenticTool = config.agent as AgentName;
+      const agenticTool = config.agent as AgenticToolName;
       const newSession = await client.service('sessions').create({
         agentic_tool: agenticTool,
         status: 'idle' as const,

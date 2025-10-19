@@ -6,7 +6,7 @@
  */
 
 import { type Database, SessionRepository } from '@agor/core/db';
-import type { Session } from '@agor/core/types';
+import type { Session, TaskID } from '@agor/core/types';
 import type { Paginated, Params } from '@feathersjs/feathers';
 import { DrizzleService } from '../adapters/drizzle';
 
@@ -67,8 +67,7 @@ export class SessionsService extends DrizzleService<Session, Partial<Session>, S
         git_state: { ...parent.git_state },
         genealogy: {
           forked_from_session_id: parent.session_id,
-          // biome-ignore lint/suspicious/noExplicitAny: TaskID is branded UUID string
-          fork_point_task_id: data.task_id as any,
+          fork_point_task_id: data.task_id as TaskID,
           children: [],
         },
         contextFiles: [...(parent.contextFiles || [])],
@@ -119,8 +118,7 @@ export class SessionsService extends DrizzleService<Session, Partial<Session>, S
         git_state: { ...parent.git_state },
         genealogy: {
           parent_session_id: parent.session_id,
-          // biome-ignore lint/suspicious/noExplicitAny: TaskID is branded UUID string
-          spawn_point_task_id: data.task_id as any,
+          spawn_point_task_id: data.task_id as TaskID,
           children: [],
         },
         contextFiles: [...(parent.contextFiles || [])],

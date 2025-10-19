@@ -6,10 +6,15 @@
 
 import type {
   CreateMCPServerInput,
+  MCPScope,
   MCPServer,
   MCPServerFilters,
   MCPServerID,
+  SessionID,
+  TeamID,
   UpdateMCPServerInput,
+  UserID,
+  UUID,
 } from '@agor/core/types';
 import { and, eq, like } from 'drizzle-orm';
 import type { Database } from '../client';
@@ -55,15 +60,11 @@ export class MCPServerRepository
       url: row.data.url,
       env: row.data.env,
 
-      // Scope foreign keys (nullable UUID strings)
-      // biome-ignore lint/suspicious/noExplicitAny: Type conversion for optional foreign keys
-      owner_user_id: row.owner_user_id as any,
-      // biome-ignore lint/suspicious/noExplicitAny: Type conversion for optional foreign keys
-      team_id: row.team_id as any,
-      // biome-ignore lint/suspicious/noExplicitAny: Type conversion for optional foreign keys
-      repo_id: row.repo_id as any,
-      // biome-ignore lint/suspicious/noExplicitAny: Type conversion for optional foreign keys
-      session_id: row.session_id as any,
+      // Scope foreign keys (nullable UUID strings - DB stores null, types expect undefined)
+      owner_user_id: (row.owner_user_id as UserID | null) ?? undefined,
+      team_id: (row.team_id as TeamID | null) ?? undefined,
+      repo_id: (row.repo_id as UUID | null) ?? undefined,
+      session_id: (row.session_id as SessionID | null) ?? undefined,
 
       // Capabilities
       tools: row.data.tools,
@@ -257,8 +258,7 @@ export class MCPServerRepository
    * Find MCP servers by scope
    */
   async findByScope(scope: string, scopeId?: string): Promise<MCPServer[]> {
-    // biome-ignore lint/suspicious/noExplicitAny: Type conversion for scope filter
-    return this.findAll({ scope: scope as any, scopeId });
+    return this.findAll({ scope: scope as MCPScope, scopeId });
   }
 
   /**

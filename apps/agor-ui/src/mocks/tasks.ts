@@ -17,6 +17,7 @@ export const mockTask001: Task = {
     sha_at_start: 'a4f2e91',
     sha_at_end: 'a4f2e91',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   report: {
     template: 'design.md',
@@ -42,6 +43,7 @@ export const mockTask002: Task = {
     sha_at_start: 'a4f2e91',
     sha_at_end: 'b3e4d12-dirty',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T10:15:00Z',
 };
@@ -63,6 +65,7 @@ export const mockTask003: Task = {
     sha_at_end: 'c5f6e23',
     commit_message: 'feat: implement OAuth 2.0 authentication',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   report: {
     template: 'feature.md',
@@ -90,6 +93,7 @@ export const mockTask004: Task = {
     sha_at_end: 'd7g8h34',
     commit_message: 'feat: add user schema with secure password storage',
   },
+  created_by: 'user-123',
   model: 'gemini-2.0',
   report: {
     template: 'design.md',
@@ -114,6 +118,7 @@ export const mockTask005: Task = {
   git_state: {
     sha_at_start: 'b3e4d12',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T10:30:00Z',
 };
@@ -134,6 +139,7 @@ export const mockTaskLongPrompt: Task = {
     sha_at_start: 'b3e4d12',
     sha_at_end: 'b3e4d12-dirty',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T10:35:00Z',
 };
@@ -162,6 +168,7 @@ Also, I'm not sure if we should store the reset tokens in the database or use JW
     sha_at_end: 'e8h9i45',
     commit_message: 'feat: implement password reset with email tokens',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   report: {
     template: 'feature.md',
@@ -189,6 +196,7 @@ export const mockTask008: Task = {
     sha_at_end: 'f9j0k56',
     commit_message: 'fix: configure CORS for production domains',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T11:15:00Z',
   completed_at: '2025-10-01T11:35:00Z',
@@ -210,6 +218,7 @@ export const mockTask009: Task = {
     sha_at_start: 'f9j0k56',
     sha_at_end: 'g0k1l67',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T11:40:00Z',
   completed_at: '2025-10-01T12:00:00Z',
@@ -231,6 +240,7 @@ export const mockTask010: Task = {
     sha_at_start: 'g0k1l67',
     sha_at_end: 'h1l2m78',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T12:05:00Z',
   completed_at: '2025-10-01T12:30:00Z',
@@ -252,6 +262,7 @@ export const mockTask011: Task = {
     sha_at_start: 'h1l2m78',
     sha_at_end: 'i2m3n89',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T12:35:00Z',
   completed_at: '2025-10-01T12:55:00Z',
@@ -273,6 +284,7 @@ export const mockTask012: Task = {
     sha_at_start: 'i2m3n89',
     sha_at_end: 'j3n4o90',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T13:00:00Z',
   completed_at: '2025-10-01T13:45:00Z',
@@ -294,6 +306,7 @@ export const mockTask013: Task = {
     sha_at_start: 'j3n4o90',
     sha_at_end: 'k4o5p01',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T13:50:00Z',
   completed_at: '2025-10-01T14:25:00Z',
@@ -315,6 +328,7 @@ export const mockTask014: Task = {
     sha_at_start: 'k4o5p01',
     sha_at_end: 'l5p6q12',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T14:30:00Z',
   completed_at: '2025-10-01T15:20:00Z',
@@ -336,6 +350,7 @@ export const mockTask015: Task = {
     sha_at_start: 'l5p6q12',
     sha_at_end: 'l5p6q12',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T15:25:00Z',
   completed_at: '2025-10-01T15:50:00Z',
@@ -357,6 +372,7 @@ export const mockTask016: Task = {
     sha_at_start: 'l5p6q12',
     sha_at_end: 'm6q7r23',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T15:55:00Z',
   completed_at: '2025-10-01T16:30:00Z',
@@ -376,6 +392,7 @@ export const mockTask017: Task = {
   git_state: {
     sha_at_start: 'm6q7r23',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T16:35:00Z',
 };
@@ -394,6 +411,7 @@ export const mockTask018: Task = {
   git_state: {
     sha_at_start: 'm6q7r23',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T16:40:00Z',
 };
@@ -415,6 +433,7 @@ export const mockTask019: Task = {
     sha_at_start: 'c5f6e23',
     sha_at_end: 'c5f6e23',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T10:36:00Z',
   completed_at: '2025-10-01T10:55:00Z',
@@ -434,6 +453,7 @@ export const mockTask020: Task = {
   git_state: {
     sha_at_start: 'c5f6e23',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T11:00:00Z',
 };
@@ -455,6 +475,7 @@ export const mockTask021: Task = {
     sha_at_start: 'd7g8h34',
     sha_at_end: 'e8i9j45',
   },
+  created_by: 'user-123',
   model: 'gemini-2.0',
   created_at: '2025-10-01T10:29:00Z',
   completed_at: '2025-10-01T10:38:00Z',
@@ -476,6 +497,7 @@ export const mockTask022: Task = {
     sha_at_start: 'e8i9j45',
     sha_at_end: 'f9j0k56',
   },
+  created_by: 'user-123',
   model: 'gemini-2.0',
   created_at: '2025-10-01T10:40:00Z',
   completed_at: '2025-10-01T10:55:00Z',
@@ -500,6 +522,7 @@ export const mockTaskWithSummary001: Task = {
     sha_at_start: 'a4f2e91',
     sha_at_end: 'a4f2e91',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T10:00:00Z',
   completed_at: '2025-10-01T10:10:00Z',
@@ -528,6 +551,7 @@ Also, I'm not sure if we should store the reset tokens in the database or use JW
     sha_at_start: 'a4f2e91',
     sha_at_end: 'b5c6d23',
   },
+  created_by: 'user-123',
   model: 'claude-sonnet-4',
   created_at: '2025-10-01T10:15:00Z',
   completed_at: '2025-10-01T10:45:00Z',

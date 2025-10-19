@@ -1,5 +1,8 @@
-import { GEMINI_MODELS, type GeminiModel } from '@agor/core/tools';
-import { AVAILABLE_CLAUDE_MODEL_ALIASES } from '@agor/core/tools/models';
+import {
+  AVAILABLE_CLAUDE_MODEL_ALIASES,
+  GEMINI_MODELS,
+  type GeminiModel,
+} from '@agor/core/tools/models';
 import { InfoCircleOutlined } from '@ant-design/icons';
 import { Input, Radio, Select, Space, Tooltip, Typography } from 'antd';
 import { useState } from 'react';

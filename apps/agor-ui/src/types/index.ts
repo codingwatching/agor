@@ -1,11 +1,6 @@
 // src/types/index.ts
+// Re-export all types from @agor/core for consistency
+// Only keep UI-specific types in this directory
 
-export * from './agent';
-export * from './board';
-export * from './concept';
-export * from './id';
-export * from './repo';
-export * from './report';
-export * from './session';
-export * from './task';
+export * from '@agor/core/types';
 export * from './ui';
