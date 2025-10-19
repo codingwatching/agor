@@ -46,6 +46,9 @@ export function useAuth(): UseAuthReturn {
     const MAX_RETRIES = 5;
     setState(prev => ({ ...prev, loading: true, error: null }));
 
+    // Move client outside try block so it's accessible in finally
+    let client: ReturnType<typeof createClient> | null = null;
+
     try {
       const storedAccessToken = localStorage.getItem(ACCESS_TOKEN_KEY);
       const storedRefreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
@@ -62,7 +65,8 @@ export function useAuth(): UseAuthReturn {
       }
 
       // Create temporary client
-      const client = createClient(getDaemonUrl());
+      console.log('🔌 useAuth: Creating temporary client for authentication');
+      client = createClient(getDaemonUrl());
 
       // Connect the client first (since autoConnect is false)
       client.io.connect();
@@ -104,7 +108,6 @@ export function useAuth(): UseAuthReturn {
             error: null,
           });
 
-          client.io.close();
           return;
         } catch (accessTokenError) {
           // Access token expired or invalid, try refresh token
@@ -135,7 +138,6 @@ export function useAuth(): UseAuthReturn {
           });
 
           console.log('✓ Token refreshed successfully after daemon restart');
-          client.io.close();
           return;
         } catch (refreshError) {
           // Refresh token also expired or invalid
@@ -159,7 +161,6 @@ export function useAuth(): UseAuthReturn {
         loading: false,
         error: null,
       });
-      client.io.close();
     } catch (error) {
       // Connection or authentication error - retry if daemon just restarted
       const errorMessage =
@@ -206,9 +207,13 @@ export function useAuth(): UseAuthReturn {
         loading: false,
         error: isConnectionError ? 'Connection lost - waiting for daemon...' : null,
       });
-
-      // CRITICAL: Close the client connection to prevent leaks
-      client.io.close();
+    } finally {
+      // CRITICAL: Always close the client connection to prevent leaks
+      if (client?.io) {
+        console.log('🔌 useAuth: Closing temporary client connection');
+        client.io.removeAllListeners();
+        client.io.close();
+      }
     }
   }, []);
 
@@ -271,8 +276,11 @@ export function useAuth(): UseAuthReturn {
         return;
       }
 
+      let client: ReturnType<typeof createClient> | null = null;
+
       try {
-        const client = createClient(getDaemonUrl());
+        console.log('🔌 useAuth.autoRefresh: Creating temporary client for token refresh');
+        client = createClient(getDaemonUrl());
         client.io.connect();
 
         await new Promise<void>((resolve, reject) => {
@@ -309,7 +317,6 @@ export function useAuth(): UseAuthReturn {
         }));
 
         console.log('✓ Token auto-refreshed successfully');
-        client.io.close();
       } catch (error) {
         console.error('Failed to auto-refresh token:', error);
         // Token refresh failed, user needs to login again
@@ -322,8 +329,13 @@ export function useAuth(): UseAuthReturn {
           loading: false,
           error: 'Session expired, please login again',
         });
-        // CRITICAL: Close the client connection to prevent leaks
-        client.io.close();
+      } finally {
+        // CRITICAL: Always close the client connection to prevent leaks
+        if (client?.io) {
+          console.log('🔌 useAuth.autoRefresh: Closing temporary client connection');
+          client.io.removeAllListeners();
+          client.io.close();
+        }
       }
     }, REFRESH_INTERVAL);
 
@@ -336,9 +348,12 @@ export function useAuth(): UseAuthReturn {
   const login = async (email: string, password: string): Promise<boolean> => {
     setState(prev => ({ ...prev, loading: true, error: null }));
 
+    let client: ReturnType<typeof createClient> | null = null;
+
     try {
       // Create temporary client for login
-      const client = createClient(getDaemonUrl());
+      console.log('🔌 useAuth.login: Creating temporary client for login');
+      client = createClient(getDaemonUrl());
 
       // Connect the client first (since autoConnect is false)
       client.io.connect();
@@ -401,9 +416,6 @@ export function useAuth(): UseAuthReturn {
         error: null,
       });
 
-      // Clean up temporary client
-      client.io.close();
-
       return true;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Login failed';
@@ -412,9 +424,14 @@ export function useAuth(): UseAuthReturn {
         loading: false,
         error: errorMessage,
       }));
-      // CRITICAL: Close the client connection to prevent leaks
-      client.io.close();
       return false;
+    } finally {
+      // CRITICAL: Always close the client connection to prevent leaks
+      if (client?.io) {
+        console.log('🔌 useAuth.login: Closing temporary client connection');
+        client.io.removeAllListeners();
+        client.io.close();
+      }
     }
   };
 

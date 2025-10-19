@@ -145,6 +145,15 @@ async function main() {
             `🔌 Socket.io connection established: ${socket.id} (total: ${activeConnections})`
           );
 
+          // Log connection lifespan after 5 seconds to identify long-lived connections
+          setTimeout(() => {
+            if (socket.connected) {
+              console.log(
+                `⏱️  Socket ${socket.id} still connected after 5s (likely persistent connection)`
+              );
+            }
+          }, 5000);
+
           // Helper to get user ID from socket's Feathers connection
           const getUserId = () => {
             // In FeathersJS, the authenticated user is stored in socket.feathers

@@ -67,6 +67,7 @@ export const ToolUseRenderer: React.FC<ToolUseRendererProps> = ({ toolUse, toolR
   };
 
   const resultText = getResultText();
+  const hasContent = resultText.trim().length > 0;
 
   // Simple content renderer (no ThoughtChain wrapper - that's handled by parent)
   return toolResult ? (
@@ -87,9 +88,13 @@ export const ToolUseRenderer: React.FC<ToolUseRendererProps> = ({ toolUse, toolR
             fontSize: 11,
             whiteSpace: 'pre-wrap',
             margin: 0,
+            ...((!hasContent && {
+              fontStyle: 'italic',
+              color: token.colorTextSecondary,
+            }) as React.CSSProperties),
           }}
         >
-          {resultText}
+          {hasContent ? resultText : '(no output)'}
         </Paragraph>
       </div>
 

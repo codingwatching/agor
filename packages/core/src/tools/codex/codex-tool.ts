@@ -122,13 +122,14 @@ export class CodexTool implements ITool {
       }
 
       // Handle partial streaming events (token-level chunks)
+      // NOTE: Based on official OpenAI sample, partial events are never emitted by Codex SDK
+      // agent_message text arrives all at once in the 'complete' event, not streamed incrementally
+      // This code is kept for future compatibility if OpenAI adds true streaming
       if (event.type === 'partial' && event.textChunk) {
         // Start new message if needed
         if (!currentMessageId) {
           currentMessageId = generateId() as MessageID;
           firstTokenTime = Date.now();
-          const ttfb = firstTokenTime - streamStartTime;
-          console.debug(`⏱️  [Codex] TTFB: ${ttfb}ms`);
 
           if (streamingCallbacks) {
             streamingCallbacks.onStreamStart(currentMessageId, {
@@ -145,36 +146,90 @@ export class CodexTool implements ITool {
           streamingCallbacks.onStreamChunk(currentMessageId, event.textChunk);
         }
       }
-      // Handle complete message (save to database)
-      else if (event.type === 'complete' && event.content) {
-        // End streaming if active
-        if (currentMessageId && streamingCallbacks) {
-          const streamEndTime = Date.now();
-          streamingCallbacks.onStreamEnd(currentMessageId);
-          const totalTime = streamEndTime - streamStartTime;
-          const streamingTime = firstTokenTime ? streamEndTime - firstTokenTime : 0;
-          console.debug(
-            `⏱️  [Streaming] Complete - TTFB: ${firstTokenTime ? firstTokenTime - streamStartTime : 0}ms, streaming: ${streamingTime}ms, total: ${totalTime}ms`
-          );
-        }
+      // Handle tool completion (create message immediately for live updates)
+      else if (event.type === 'tool_complete') {
+        // Create a message for this tool use immediately
+        const toolMessageId = generateId() as MessageID;
+        const toolContent = [
+          {
+            type: 'tool_use',
+            id: event.toolUse.id,
+            name: event.toolUse.name,
+            input: event.toolUse.input,
+          },
+          ...(event.toolUse.output !== undefined || event.toolUse.status
+            ? [
+                {
+                  type: 'tool_result',
+                  tool_use_id: event.toolUse.id,
+                  content: event.toolUse.output || `[${event.toolUse.status}]`,
+                  is_error: event.toolUse.status === 'failed' || event.toolUse.status === 'error',
+                },
+              ]
+            : []),
+        ];
 
-        // Use existing message ID or generate new one
-        const assistantMessageId = currentMessageId || (generateId() as MessageID);
-
-        // Create complete message in DB
         await this.createAssistantMessage(
           sessionId,
-          assistantMessageId,
-          event.content,
-          event.toolUses,
+          toolMessageId,
+          toolContent as Array<{
+            type: string;
+            text?: string;
+            id?: string;
+            name?: string;
+            input?: Record<string, unknown>;
+          }>,
+          [
+            {
+              id: event.toolUse.id,
+              name: event.toolUse.name,
+              input: event.toolUse.input,
+            },
+          ],
           taskId,
           nextIndex++,
           resolvedModel
         );
-        assistantMessageIds.push(assistantMessageId);
+        assistantMessageIds.push(toolMessageId);
+      }
+      // Handle complete message (save to database)
+      else if (event.type === 'complete' && event.content) {
+        // Filter out tool_use and tool_result blocks (already saved via tool_complete events)
+        // But KEEP text blocks - these contain the response
+        const textOnlyContent = event.content.filter(
+          block => block.type === 'text' // Only keep text blocks
+        );
 
-        // Reset for next message
-        currentMessageId = null;
+        // Only create message if there's text content (not just tools)
+        if (textOnlyContent.length > 0) {
+          // Extract full text for client-side streaming
+          const fullText = textOnlyContent
+            .map(block => (block as { text?: string }).text || '')
+            .join('');
+
+          // Use existing message ID from streaming (if any) or generate new
+          const assistantMessageId = currentMessageId || (generateId() as MessageID);
+
+          // NOTE: Codex SDK doesn't support true streaming for text responses
+          // It only emits item.completed with the full text, no item.updated events
+          // Text is displayed immediately when the complete event arrives
+
+          // Create complete message in DB (text only, tools already saved)
+          await this.createAssistantMessage(
+            sessionId,
+            assistantMessageId,
+            textOnlyContent,
+            undefined, // No tool uses in this message (already saved separately)
+            taskId,
+            nextIndex++,
+            resolvedModel
+          );
+          assistantMessageIds.push(assistantMessageId);
+
+          // Reset for next message
+          currentMessageId = null;
+        }
+
         streamStartTime = Date.now();
         firstTokenTime = null;
       }

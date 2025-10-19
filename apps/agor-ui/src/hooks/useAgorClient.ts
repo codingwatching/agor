@@ -52,6 +52,7 @@ export function useAgorClient(options: UseAgorClientOptions = {}): UseAgorClient
       setConnecting(true);
       setError(null);
 
+      console.log('🔌 useAgorClient: Creating new client (autoConnect: false)');
       // Create client (autoConnect: false, so we control connection timing)
       client = createClient(url, false);
       clientRef.current = client;
@@ -117,6 +118,7 @@ export function useAgorClient(options: UseAgorClientOptions = {}): UseAgorClient
       });
 
       // Now manually connect the socket
+      console.log('🔌 useAgorClient: Manually connecting socket');
       client.io.connect();
 
       // Wait for connection before authenticating

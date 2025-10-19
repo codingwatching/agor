@@ -76,7 +76,7 @@
     "@google/gemini-cli-core": "^0.9.0",
     "@google/genai": "^1.25.0",
     "@libsql/client": "^0.14.0",
-    "@openai/codex-sdk": "^0.46.0",
+    "@openai/codex-sdk": "^0.47.0",
     "bcryptjs": "^2.4.3",
     "drizzle-orm": "^0.44.6",
     "js-yaml": "^4.1.0",

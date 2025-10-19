@@ -338,7 +338,6 @@ approval_policy = "${approvalPolicy}"
       }> = [];
       let threadId = session.sdk_session_id || '';
       let resolvedModel: string | undefined;
-      let previousText = ''; // Track previous text to emit only diffs
       let allToolUses: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
 
       for await (const event of events) {
@@ -349,21 +348,14 @@ approval_policy = "${approvalPolicy}"
           break;
         }
 
-        // Log ALL events to understand what we're getting
-        console.debug('🔔 Codex event type:', event.type, 'keys:', Object.keys(event));
-
         switch (event.type) {
           case 'turn.started':
-            console.debug('🔄 Codex turn started');
-            previousText = ''; // Reset on new turn
-            allToolUses = []; // Reset tool uses
+            allToolUses = []; // Reset tool uses for new turn
             break;
 
           case 'item.started':
             // Emit tool_start events for tool items
             if (event.item) {
-              console.debug('▶️  Codex item started:', event.item.type, event.item.id);
-
               const toolUseStart = this.itemToToolUse(event.item, 'started');
               if (toolUseStart) {
                 yield {
@@ -376,44 +368,15 @@ approval_policy = "${approvalPolicy}"
             break;
 
           case 'item.updated':
-            // Extract text chunks from item updates
-            // IMPORTANT: event.item.text is the FULL accumulated text, not a chunk!
-            // We need to emit only the new portion (diff from previous)
-            console.debug('🔔 Codex item.updated:', {
-              itemType: event.item?.type,
-              hasText: event.item && 'text' in event.item,
-              textLength:
-                event.item && 'text' in event.item ? (event.item.text as string).length : 0,
-              previousLength: previousText.length,
-            });
-
-            // Only stream agent_message items (not command_execution, file_change, etc.)
-            if (
-              event.item &&
-              event.item.type === 'agent_message' &&
-              'text' in event.item &&
-              event.item.text
-            ) {
-              const fullText = event.item.text as string;
-              if (fullText.length > previousText.length) {
-                const textChunk = fullText.substring(previousText.length);
-                previousText = fullText;
-                console.debug(`📡 Streaming agent_message chunk (${textChunk.length} chars)`);
-                yield {
-                  type: 'partial',
-                  textChunk,
-                  threadId: thread.id || undefined,
-                  resolvedModel,
-                };
-              }
-            }
+            // NOTE: Based on official OpenAI sample, item.updated is only emitted for todo_list items
+            // agent_message, reasoning, command_execution, file_change only emit item.started/item.completed
+            // We could handle todo_list progress here if needed in the future
+            // For now, we ignore item.updated since we don't track todo lists
             break;
 
           case 'item.completed':
             // Collect completed items and emit tool_complete events
             if (event.item) {
-              console.debug('✅ Codex item completed:', event.item.type, event.item.id);
-
               // Emit tool_complete for tool items
               const toolUseComplete = this.itemToToolUse(event.item, 'completed');
               if (toolUseComplete) {
@@ -432,14 +395,21 @@ approval_policy = "${approvalPolicy}"
                   input: toolUseComplete.input,
                 });
 
-                // Add tool_result block if we have output (for UI rendering)
+                // Add tool_result block if we have output OR status (for UI rendering)
                 if (toolUseComplete.output !== undefined || toolUseComplete.status) {
                   const isError =
                     toolUseComplete.status === 'failed' || toolUseComplete.status === 'error';
+
+                  // Build content: prefer output, fall back to status message
+                  let content = toolUseComplete.output || '';
+                  if (!content && toolUseComplete.status) {
+                    content = `[${toolUseComplete.status}]`;
+                  }
+
                   currentMessage.push({
                     type: 'tool_result',
                     tool_use_id: toolUseComplete.id,
-                    content: toolUseComplete.output || '',
+                    content,
                     is_error: isError,
                   });
                 }
@@ -463,14 +433,7 @@ approval_policy = "${approvalPolicy}"
 
           case 'turn.completed': {
             // Turn complete, emit final message
-            console.debug('✅ Codex turn completed');
             threadId = thread.id || '';
-
-            // Extract token usage if available
-            const inputTokens = event.usage?.input_tokens || 0;
-            const outputTokens = event.usage?.output_tokens || 0;
-            console.debug(`📊 Tokens: ${inputTokens} input, ${outputTokens} output`);
-            console.debug(`🔧 Tool uses: ${allToolUses.length}`);
 
             // Yield complete message with all tool uses
             yield {
@@ -492,7 +455,8 @@ approval_policy = "${approvalPolicy}"
             throw new Error(`Codex execution failed: ${event.error}`);
 
           default:
-            console.debug('🔔 Codex event:', event.type);
+            // Ignore other event types silently
+            break;
         }
       }
     } catch (error) {
