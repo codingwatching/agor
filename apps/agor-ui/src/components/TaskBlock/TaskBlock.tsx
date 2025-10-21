@@ -232,7 +232,7 @@ export const TaskBlock: React.FC<TaskBlockProps> = ({
             )}
             {task.git_state.sha_at_start && task.git_state.sha_at_start !== 'unknown' && (
               <GitStatePill
-                ref={task.git_state.ref_at_start}
+                branch={task.git_state.ref_at_start}
                 sha={task.git_state.sha_at_start}
                 style={{ fontSize: 11 }}
               />

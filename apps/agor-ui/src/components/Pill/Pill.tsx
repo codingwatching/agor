@@ -98,13 +98,13 @@ export const GitShaPill: React.FC<GitShaPillProps> = ({
 };
 
 interface GitStatePillProps extends BasePillProps {
-  ref?: string; // Branch name
+  branch?: string; // Branch name (renamed from 'ref' to avoid React reserved word)
   sha: string;
   showDirtyIndicator?: boolean;
 }
 
 export const GitStatePill: React.FC<GitStatePillProps> = ({
-  ref,
+  branch,
   sha,
   showDirtyIndicator = true,
   style,
@@ -120,7 +120,7 @@ export const GitStatePill: React.FC<GitStatePillProps> = ({
       color={isDirty && showDirtyIndicator ? PILL_COLORS.warning : 'cyan'}
       style={style}
     >
-      {ref && <span>{ref} : </span>}
+      {branch && <span>{branch} : </span>}
       <span style={{ fontFamily: token.fontFamilyCode }}>{displaySha}</span>
       {isDirty && showDirtyIndicator && ' (dirty)'}
     </Tag>
