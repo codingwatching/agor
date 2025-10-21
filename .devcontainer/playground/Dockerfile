@@ -16,10 +16,11 @@ WORKDIR /build
 COPY . .
 
 # Install and build - verbose for debugging
+# Note: We exclude agor-ui since this is a backend-focused playground
 RUN echo "=== Starting pnpm install ===" && \
     pnpm install && \
     echo "=== Install complete, starting build ===" && \
-    pnpm -r build && \
+    pnpm --filter '!agor-ui' -r build && \
     echo "=== Build complete ==="
 
 # Production stage
