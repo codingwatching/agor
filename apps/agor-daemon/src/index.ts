@@ -746,13 +746,15 @@ async function main() {
       const startTimestamp = new Date().toISOString();
 
       // Get current git state from session's working directory
-      const { getGitState } = await import('@agor/core/git');
+      const { getGitState, getCurrentBranch } = await import('@agor/core/git');
       let gitStateAtStart = 'unknown';
+      let refAtStart: string | undefined;
       if (session.worktree_id) {
         try {
           const worktreesService = app.service('worktrees');
           const worktree = await worktreesService.get(session.worktree_id, params);
           gitStateAtStart = await getGitState(worktree.path);
+          refAtStart = await getCurrentBranch(worktree.path);
         } catch (error) {
           console.warn(`Failed to get git state for worktree ${session.worktree_id}:`, error);
         }
@@ -773,6 +775,7 @@ async function main() {
           },
           tool_use_count: 0, // Will be updated after assistant message
           git_state: {
+            ref_at_start: refAtStart,
             sha_at_start: gitStateAtStart,
           },
         },

@@ -4,6 +4,7 @@ export {
   DirtyStatePill,
   ForkPill,
   GitShaPill,
+  GitStatePill,
   MessageCountPill,
   PILL_COLORS,
   RepoPill,

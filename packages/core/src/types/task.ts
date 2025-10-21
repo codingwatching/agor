@@ -45,6 +45,7 @@ export interface Task {
 
   // Git state
   git_state: {
+    ref_at_start?: string; // Branch name at task start
     sha_at_start: string;
     sha_at_end?: string;
     commit_message?: string;

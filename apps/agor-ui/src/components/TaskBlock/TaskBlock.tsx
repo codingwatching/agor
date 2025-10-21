@@ -33,6 +33,7 @@ import { AgentChain } from '../AgentChain';
 import { MessageBlock } from '../MessageBlock';
 import { CreatedByTag } from '../metadata/CreatedByTag';
 import { PermissionRequestBlock } from '../PermissionRequestBlock';
+import { GitStatePill } from '../Pill';
 import { ToolIcon } from '../ToolIcon';
 
 const { Text, Paragraph } = Typography;
@@ -230,11 +231,11 @@ export const TaskBlock: React.FC<TaskBlockProps> = ({
               </Text>
             )}
             {task.git_state.sha_at_start && task.git_state.sha_at_start !== 'unknown' && (
-              <Text type="secondary" style={{ fontSize: 12 }} title="Git SHA at task start">
-                <GithubOutlined />{' '}
-                {task.git_state.sha_at_start.replace('-dirty', '').substring(0, 7)}
-                {task.git_state.sha_at_start.endsWith('-dirty') && ' (dirty)'}
-              </Text>
+              <GitStatePill
+                ref={task.git_state.ref_at_start}
+                sha={task.git_state.sha_at_start}
+                style={{ fontSize: 11 }}
+              />
             )}
             {task.report && (
               <Tag icon={<FileTextOutlined />} color="green" style={{ fontSize: 11 }}>

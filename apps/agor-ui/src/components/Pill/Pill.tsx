@@ -97,6 +97,36 @@ export const GitShaPill: React.FC<GitShaPillProps> = ({
   );
 };
 
+interface GitStatePillProps extends BasePillProps {
+  ref?: string; // Branch name
+  sha: string;
+  showDirtyIndicator?: boolean;
+}
+
+export const GitStatePill: React.FC<GitStatePillProps> = ({
+  ref,
+  sha,
+  showDirtyIndicator = true,
+  style,
+}) => {
+  const { token } = theme.useToken();
+  const isDirty = sha.endsWith('-dirty');
+  const cleanSha = sha.replace('-dirty', '');
+  const displaySha = cleanSha.substring(0, 7);
+
+  return (
+    <Tag
+      icon={<ForkOutlined />}
+      color={isDirty && showDirtyIndicator ? PILL_COLORS.warning : 'cyan'}
+      style={style}
+    >
+      {ref && <span>{ref} : </span>}
+      <span style={{ fontFamily: token.fontFamilyCode }}>{displaySha}</span>
+      {isDirty && showDirtyIndicator && ' (dirty)'}
+    </Tag>
+  );
+};
+
 interface SessionIdPillProps extends BasePillProps {
   sessionId: string;
   showCopy?: boolean;

@@ -34,10 +34,7 @@ import { ConversationView } from '../ConversationView';
 import { CreatedByTag } from '../metadata';
 import { PermissionModeSelector } from '../PermissionModeSelector';
 import {
-  BranchPill,
-  ConceptPill,
   ForkPill,
-  GitShaPill,
   MessageCountPill,
   RepoPill,
   SessionIdPill,
@@ -212,10 +209,6 @@ const SessionDrawer = ({
   const isForked = !!session.genealogy.forked_from_session_id;
   const isSpawned = !!session.genealogy.parent_session_id;
 
-  // Check if git state is dirty
-  const isDirty = session.git_state.current_sha.endsWith('-dirty');
-  const _cleanSha = session.git_state.current_sha.replace('-dirty', '');
-
   // Check if session is currently running (disable prompts to avoid confusion)
   const isRunning = session.status === 'running';
 
@@ -301,32 +294,22 @@ const SessionDrawer = ({
         </div>
       )}
 
-      {/* Git & Repo Info */}
-      <div style={{ marginBottom: token.sizeUnit }}>
-        <Space size={4} wrap>
-          {(() => {
-            // Find worktree and repo from session.worktree_id
-            const worktree = worktrees.find(w => w.worktree_id === session.worktree_id);
-            const repo = worktree ? repos.find(r => r.repo_id === worktree.repo_id) : null;
+      {/* Worktree Info */}
+      {(() => {
+        // Find worktree and repo from session.worktree_id
+        const worktree = worktrees.find(w => w.worktree_id === session.worktree_id);
+        const repo = worktree ? repos.find(r => r.repo_id === worktree.repo_id) : null;
 
-            return (
-              <>
-                {worktree && repo && (
-                  <RepoPill
-                    repoName={repo.slug}
-                    worktreeName={worktree.name}
-                    onClick={
-                      onOpenWorktree ? () => onOpenWorktree(worktree.worktree_id) : undefined
-                    }
-                  />
-                )}
-                <BranchPill branch={session.git_state.ref} />
-                <GitShaPill sha={session.git_state.current_sha} isDirty={isDirty} />
-              </>
-            );
-          })()}
-        </Space>
-      </div>
+        return worktree && repo ? (
+          <div style={{ marginBottom: token.sizeUnit }}>
+            <RepoPill
+              repoName={repo.slug}
+              worktreeName={worktree.name}
+              onClick={onOpenWorktree ? () => onOpenWorktree(worktree.worktree_id) : undefined}
+            />
+          </div>
+        ) : null;
+      })()}
 
       {/* Concepts - TODO: Re-implement with contextFiles */}
       {/* {session.contextFiles && session.contextFiles.length > 0 && (
