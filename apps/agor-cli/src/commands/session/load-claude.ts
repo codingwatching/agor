@@ -25,6 +25,7 @@ import type {
   Worktree,
   WorktreeID,
 } from '@agor/core/types';
+import { TaskStatus } from '@agor/core/types';
 import { Args, Command, Flags } from '@oclif/core';
 import chalk from 'chalk';
 
@@ -151,7 +152,7 @@ export default class SessionLoadClaude extends Command {
       const agorSession: Partial<Session> & { session_id: SessionID; created_by: string } = {
         session_id: generateId() as SessionID,
         agentic_tool: 'claude-code',
-        status: 'completed',
+        status: TaskStatus.COMPLETED,
         description: description,
         created_at: new Date().toISOString(),
         last_updated: new Date().toISOString(),

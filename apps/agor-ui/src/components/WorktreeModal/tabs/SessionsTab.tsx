@@ -1,6 +1,7 @@
 import { MessageOutlined, ToolOutlined } from '@ant-design/icons';
 import { Button, Empty, List, Space, Tag, Typography } from 'antd';
 import type { Session, Worktree } from '../../../types';
+import { TaskStatus } from '../../../types';
 
 const { Text } = Typography;
 
@@ -10,9 +11,9 @@ interface SessionsTabProps {
 }
 
 export const SessionsTab: React.FC<SessionsTabProps> = ({ worktree, sessions }) => {
-  const activeSessions = sessions.filter(s => s.status === 'running');
-  const completedSessions = sessions.filter(s => s.status === 'completed');
-  const failedSessions = sessions.filter(s => s.status === 'failed');
+  const activeSessions = sessions.filter(s => s.status === TaskStatus.RUNNING);
+  const completedSessions = sessions.filter(s => s.status === TaskStatus.COMPLETED);
+  const failedSessions = sessions.filter(s => s.status === TaskStatus.FAILED);
 
   const getAgentIcon = (agenticTool: string) => {
     const agentIcons: Record<string, string> = {

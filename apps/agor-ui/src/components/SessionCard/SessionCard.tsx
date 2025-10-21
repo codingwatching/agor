@@ -12,6 +12,7 @@ import {
 } from '@ant-design/icons';
 import { App, Badge, Button, Card, Collapse, Space, Spin, Tag, Typography } from 'antd';
 import type { Session, Task, User } from '../../types';
+import { TaskStatus } from '../../types';
 import { CreatedByTag } from '../metadata';
 import TaskListItem from '../TaskListItem';
 import { ToolIcon } from '../ToolIcon';
@@ -147,14 +148,14 @@ const SessionCard = ({
           <Text strong className="nodrag">
             {session.agentic_tool}
           </Text>
-          {session.status === 'running' ? (
+          {session.status === TaskStatus.RUNNING ? (
             <Spin indicator={<LoadingOutlined spin style={{ fontSize: 14 }} />} />
           ) : (
             <Badge
               status={
-                session.status === 'completed'
+                session.status === TaskStatus.COMPLETED
                   ? 'success'
-                  : session.status === 'failed'
+                  : session.status === TaskStatus.FAILED
                     ? 'error'
                     : 'default'
               }

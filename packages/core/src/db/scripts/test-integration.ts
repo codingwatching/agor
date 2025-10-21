@@ -15,6 +15,7 @@
 
 import { formatShortId, generateId } from '../../lib/ids';
 import type { Session, TaskID, UserID, WorktreeID } from '../../types';
+import { TaskStatus } from '../../types';
 import { createDatabase } from '../client';
 import { initializeDatabase, seedInitialData } from '../migrate';
 import {
@@ -110,15 +111,15 @@ async function testSessionRepository(db: ReturnType<typeof createDatabase>) {
   console.log('  ✅ JSON data preserved correctly');
 
   // Test update
-  const updated = await repo.update(session.session_id, { status: 'running' });
-  if (updated.status !== 'running') {
+  const updated = await repo.update(session.session_id, { status: TaskStatus.RUNNING });
+  if (updated.status !== TaskStatus.RUNNING) {
     throw new Error('Update failed');
   }
 
   console.log('  ✅ Update successful');
 
   // Test findByStatus
-  const running = await repo.findByStatus('running');
+  const running = await repo.findByStatus(TaskStatus.RUNNING);
   if (running.length !== 1) {
     throw new Error('findByStatus failed');
   }
@@ -138,7 +139,7 @@ async function testTaskRepository(db: ReturnType<typeof createDatabase>, session
     session_id: session.session_id,
     description: 'Test task',
     full_prompt: 'This is a test task',
-    status: 'created',
+    status: TaskStatus.CREATED,
     message_range: {
       start_index: 0,
       end_index: 1,
@@ -163,11 +164,11 @@ async function testTaskRepository(db: ReturnType<typeof createDatabase>, session
 
   // Test update
   const updated = await repo.update(task.task_id, {
-    status: 'completed',
+    status: TaskStatus.COMPLETED,
     completed_at: new Date().toISOString(),
   });
 
-  if (updated.status !== 'completed' || !updated.completed_at) {
+  if (updated.status !== TaskStatus.COMPLETED || !updated.completed_at) {
     throw new Error('Task update failed');
   }
 
@@ -254,7 +255,7 @@ async function testGenealogy(db: ReturnType<typeof createDatabase>) {
   // Create parent session
   const parent = await repo.create({
     agentic_tool: 'claude-code',
-    status: 'completed',
+    status: TaskStatus.COMPLETED,
     created_by: 'test-user' as UserID,
     worktree_id: 'test-worktree-id' as WorktreeID,
     git_state: { ref: 'main', base_sha: 'abc', current_sha: 'def' },

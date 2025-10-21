@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react';
 import { mockSessionA, mockSessionB, mockSessionC } from '../../mocks/sessions';
+import { TaskStatus } from '../../types';
 import SessionHeader from './SessionHeader';
 
 const meta = {
@@ -32,7 +33,7 @@ export const Completed: Story = {
   args: {
     session: {
       ...mockSessionA,
-      status: 'completed',
+      status: TaskStatus.COMPLETED,
     },
     showCounts: true,
   },
@@ -42,7 +43,7 @@ export const Failed: Story = {
   args: {
     session: {
       ...mockSessionA,
-      status: 'failed',
+      status: TaskStatus.FAILED,
     },
     showCounts: true,
   },

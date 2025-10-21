@@ -7,6 +7,7 @@
 
 import { type Database, TaskRepository } from '@agor/core/db';
 import type { Paginated, QueryParams, Task } from '@agor/core/types';
+import { TaskStatus } from '@agor/core/types';
 import { DrizzleService } from '../adapters/drizzle';
 
 /**
@@ -62,7 +63,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
     }
 
     // If filtering by status
-    if (params?.query?.status === 'running') {
+    if (params?.query?.status === TaskStatus.RUNNING) {
       const tasks = await this.taskRepo.findRunning();
 
       if (this.paginate) {
@@ -109,7 +110,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
     return this.patch(
       id,
       {
-        status: 'completed',
+        status: TaskStatus.COMPLETED,
         completed_at: new Date().toISOString(),
         report: data.report,
       },
@@ -124,7 +125,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
     return this.patch(
       id,
       {
-        status: 'failed',
+        status: TaskStatus.FAILED,
         completed_at: new Date().toISOString(),
         // Don't set report for failed tasks - error info should be in task description
       },

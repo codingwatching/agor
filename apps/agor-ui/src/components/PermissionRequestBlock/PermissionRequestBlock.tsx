@@ -13,6 +13,7 @@ import { Button, Card, Descriptions, Radio, Space, Tag, Typography, theme } from
 import type React from 'react';
 import { useState } from 'react';
 import type { Task } from '../../types';
+import { TaskStatus } from '../../types';
 
 const { Text, Title } = Typography;
 
@@ -43,8 +44,8 @@ export const PermissionRequestBlock: React.FC<PermissionRequestBlockProps> = ({
   // Determine the state: active, approved, or denied
   // Note: Backend sets approved_by/approved_at for BOTH approve and deny decisions
   // We distinguish by task status: failed = denied, anything else = approved
-  const isApproved = !isActive && approved_by && task.status !== 'failed';
-  const isDenied = !isActive && approved_by && task.status === 'failed';
+  const isApproved = !isActive && approved_by && task.status !== TaskStatus.FAILED;
+  const isDenied = !isActive && approved_by && task.status === TaskStatus.FAILED;
 
   // State-based styling
   const getStateStyle = () => {

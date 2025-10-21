@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react';
 import { useState } from 'react';
 import { mockSessionA, mockSessionB, mockSessionC } from '../../mocks/sessions';
 import { mockTasksBySession } from '../../mocks/tasks';
+import { TaskStatus } from '../../types';
 import SessionDrawer from '../SessionDrawer';
 import SessionCard from './SessionCard';
 
@@ -57,7 +58,7 @@ export const Interactive: Story = {
 
 export const CompletedSession: Story = {
   args: {
-    session: { ...mockSessionC, status: 'completed' },
+    session: { ...mockSessionC, status: TaskStatus.COMPLETED },
     tasks: mockTasksBySession.ghi789,
   },
 };

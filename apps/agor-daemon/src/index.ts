@@ -967,7 +967,7 @@ async function main() {
 
             // Mark task as failed and set session back to idle
             await tasksService.patch(task.task_id, {
-              status: 'failed',
+              status: TaskStatus.FAILED,
             });
             await sessionsService.patch(id, {
               status: 'idle',

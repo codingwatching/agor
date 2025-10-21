@@ -12,6 +12,7 @@ import {
 } from 'antd';
 import { useState } from 'react';
 import type { Repo, Session, Worktree } from '../../../types';
+import { TaskStatus } from '../../../types';
 
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -61,8 +62,8 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({
     onDelete?.(worktree.worktree_id);
   };
 
-  const activeSessions = sessions.filter(s => s.status === 'running');
-  const _completedSessions = sessions.filter(s => s.status === 'completed');
+  const activeSessions = sessions.filter(s => s.status === TaskStatus.RUNNING);
+  const _completedSessions = sessions.filter(s => s.status === TaskStatus.COMPLETED);
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%', padding: '0 24px' }}>

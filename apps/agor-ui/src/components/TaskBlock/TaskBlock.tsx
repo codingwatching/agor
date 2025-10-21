@@ -29,6 +29,7 @@ import { Avatar, Collapse, Space, Spin, Tag, Typography, theme } from 'antd';
 import type React from 'react';
 import { useMemo } from 'react';
 import type { Message, Task, User } from '../../types';
+import { TaskStatus } from '../../types';
 import { AgentChain } from '../AgentChain';
 import { MessageBlock } from '../MessageBlock';
 import { CreatedByTag } from '../metadata/CreatedByTag';
@@ -284,7 +285,7 @@ export const TaskBlock: React.FC<TaskBlockProps> = ({
                       agentic_tool={agentic_tool}
                       users={users}
                       currentUserId={task.created_by}
-                      isTaskRunning={task.status === 'running'}
+                      isTaskRunning={task.status === TaskStatus.RUNNING}
                     />
                   );
                 }
@@ -297,7 +298,7 @@ export const TaskBlock: React.FC<TaskBlockProps> = ({
               })}
 
               {/* Show typing indicator whenever task is actively running */}
-              {task.status === 'running' && (
+              {task.status === TaskStatus.RUNNING && (
                 <div style={{ margin: `${token.sizeUnit}px 0` }}>
                   <Bubble
                     placement="start"
@@ -322,7 +323,7 @@ export const TaskBlock: React.FC<TaskBlockProps> = ({
               {task.permission_request && (
                 <PermissionRequestBlock
                   task={task}
-                  isActive={task.status === 'awaiting_permission'}
+                  isActive={task.status === TaskStatus.AWAITING_PERMISSION}
                   onApprove={(taskId, scope) => {
                     if (task.permission_request && sessionId) {
                       onPermissionDecision?.(

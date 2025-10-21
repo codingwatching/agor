@@ -3,6 +3,7 @@ import { Button } from 'antd';
 import { useState } from 'react';
 import { mockSessionA, mockSessionB, mockSessionC } from '../../mocks/sessions';
 import { mockTasksBySession } from '../../mocks/tasks';
+import { TaskStatus } from '../../types';
 import SessionDrawer from './SessionDrawer';
 
 const meta = {
@@ -100,7 +101,7 @@ export const CompletedSession = () => {
         Open Completed Session
       </Button>
       <SessionDrawer
-        session={{ ...mockSessionC, status: 'completed' }}
+        session={{ ...mockSessionC, status: TaskStatus.COMPLETED }}
         tasks={mockTasksBySession.ghi789}
         open={open}
         onClose={() => setOpen(false)}

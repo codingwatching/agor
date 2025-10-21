@@ -30,6 +30,7 @@ import type {
   User,
   Worktree,
 } from '../../types';
+import { TaskStatus } from '../../types';
 import { ConversationView } from '../ConversationView';
 import { CreatedByTag } from '../metadata';
 import { PermissionModeSelector } from '../PermissionModeSelector';
@@ -210,7 +211,7 @@ const SessionDrawer = ({
   const isSpawned = !!session.genealogy.parent_session_id;
 
   // Check if session is currently running (disable prompts to avoid confusion)
-  const isRunning = session.status === 'running';
+  const isRunning = session.status === TaskStatus.RUNNING;
 
   return (
     <Drawer

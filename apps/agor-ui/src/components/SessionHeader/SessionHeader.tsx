@@ -7,6 +7,7 @@ import {
 } from '@ant-design/icons';
 import { Badge, Space, Spin, Tag, Typography, theme } from 'antd';
 import type { Session } from '../../types';
+import { TaskStatus } from '../../types';
 
 const { Text } = Typography;
 
@@ -87,7 +88,7 @@ const SessionHeader = ({
           <Text strong style={{ textTransform: 'capitalize' }}>
             {session.agentic_tool}
           </Text>
-          {session.status === 'running' ? (
+          {session.status === TaskStatus.RUNNING ? (
             <Spin indicator={<LoadingOutlined spin style={{ fontSize: 12 }} />} />
           ) : (
             <Badge status={getStatusColor()} text={session.status.toUpperCase()} />

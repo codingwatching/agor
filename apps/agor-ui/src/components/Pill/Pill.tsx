@@ -14,6 +14,7 @@ import {
 } from '@ant-design/icons';
 import { message, Tag, theme } from 'antd';
 import type React from 'react';
+import { TaskStatus } from '../../types';
 
 /**
  * Standardized color palette for pills/badges
@@ -167,14 +168,26 @@ export const SessionIdPill: React.FC<SessionIdPillProps> = ({
 };
 
 interface StatusPillProps extends BasePillProps {
-  status: 'completed' | 'failed' | 'running' | 'pending';
+  status: (typeof TaskStatus)[keyof typeof TaskStatus] | 'pending';
 }
 
 export const StatusPill: React.FC<StatusPillProps> = ({ status, style }) => {
   const config = {
-    completed: { icon: <CheckCircleOutlined />, color: PILL_COLORS.success, text: 'Completed' },
-    failed: { icon: <CloseCircleOutlined />, color: PILL_COLORS.error, text: 'Failed' },
-    running: { icon: <ToolOutlined />, color: PILL_COLORS.processing, text: 'Running' },
+    [TaskStatus.COMPLETED]: {
+      icon: <CheckCircleOutlined />,
+      color: PILL_COLORS.success,
+      text: 'Completed',
+    },
+    [TaskStatus.FAILED]: {
+      icon: <CloseCircleOutlined />,
+      color: PILL_COLORS.error,
+      text: 'Failed',
+    },
+    [TaskStatus.RUNNING]: {
+      icon: <ToolOutlined />,
+      color: PILL_COLORS.processing,
+      text: 'Running',
+    },
     pending: { icon: <ToolOutlined />, color: PILL_COLORS.session, text: 'Pending' },
   }[status];
 
