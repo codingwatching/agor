@@ -166,6 +166,12 @@ export class SDKMessageProcessor {
     // Log message type for debugging
     console.debug(`📨 SDK message ${this.state.messageCount}: type=${msg.type}`);
 
+    // Add detailed logging for debugging SDK behavior
+    if (process.env.DEBUG_SDK_MESSAGES === 'true') {
+      console.log(`🔍 [DEBUG] Full SDK message ${this.state.messageCount}:`);
+      console.log(JSON.stringify(msg, null, 2));
+    }
+
     // Capture session ID from first message that has it
     if (!this.state.capturedAgentSessionId && 'session_id' in msg && msg.session_id) {
       const events = this.captureSessionId(msg.session_id);

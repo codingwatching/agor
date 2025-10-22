@@ -13,12 +13,14 @@
  * as green message bubbles, NOT in AgentChain.
  */
 
+import type { Message } from '@agor/core/types';
 import {
   BulbOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
   DownOutlined,
   FileTextOutlined,
+  LoadingOutlined,
   RightOutlined,
 } from '@ant-design/icons';
 import type { ThoughtChainProps } from '@ant-design/x';
@@ -26,7 +28,6 @@ import { ThoughtChain } from '@ant-design/x';
 import { Space, Tag, Tooltip, Typography, theme } from 'antd';
 import type React from 'react';
 import { useMemo, useState } from 'react';
-import type { Message } from '@agor/core/types';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 import { ToolIcon } from '../ToolIcon';
 import { ToolUseRenderer } from '../ToolUseRenderer';
@@ -75,6 +76,20 @@ export const AgentChain: React.FC<AgentChainProps> = ({ messages }) => {
   const chainItems = useMemo(() => {
     const items: ChainItem[] = [];
 
+    // First pass: collect ALL tool results from ALL messages (including user messages)
+    const globalToolResultMap = new Map<string, ToolResultBlock>();
+    for (const message of messages) {
+      if (Array.isArray(message.content)) {
+        for (const block of message.content) {
+          if (block.type === 'tool_result') {
+            const toolResult = block as unknown as ToolResultBlock;
+            globalToolResultMap.set(toolResult.tool_use_id, toolResult);
+          }
+        }
+      }
+    }
+
+    // Second pass: process each message
     for (const message of messages) {
       if (typeof message.content === 'string') {
         // Simple text thought
@@ -91,13 +106,12 @@ export const AgentChain: React.FC<AgentChainProps> = ({ messages }) => {
       if (!Array.isArray(message.content)) continue;
 
       const toolUseMap = new Map<string, ToolUseBlock>();
-      const toolResultMap = new Map<string, ToolResultBlock>();
       const textBlocksBeforeTools: string[] = [];
       const textBlocksAfterTools: string[] = [];
 
       let hasSeenTool = false;
 
-      // First pass: collect blocks and track order
+      // Collect blocks from this message
       for (const block of message.content) {
         if (block.type === 'text') {
           const text = (block as unknown as TextBlock).text.trim();
@@ -112,10 +126,8 @@ export const AgentChain: React.FC<AgentChainProps> = ({ messages }) => {
           const toolUse = block as unknown as ToolUseBlock;
           toolUseMap.set(toolUse.id, toolUse);
           hasSeenTool = true;
-        } else if (block.type === 'tool_result') {
-          const toolResult = block as unknown as ToolResultBlock;
-          toolResultMap.set(toolResult.tool_use_id, toolResult);
         }
+        // Skip tool_result here - we collected them globally above
       }
 
       // Add thoughts (text blocks BEFORE tools)
@@ -127,13 +139,13 @@ export const AgentChain: React.FC<AgentChainProps> = ({ messages }) => {
         });
       }
 
-      // Add tool uses
+      // Add tool uses with globally matched results
       for (const [id, toolUse] of toolUseMap.entries()) {
         items.push({
           type: 'tool',
           content: {
             toolUse,
-            toolResult: toolResultMap.get(id),
+            toolResult: globalToolResultMap.get(id), // Look up from global map
           },
           message,
         });
@@ -280,14 +292,45 @@ export const AgentChain: React.FC<AgentChainProps> = ({ messages }) => {
         </pre>
       );
 
+      // Determine status and icon
+      const status = !toolResult ? 'pending' : isError ? 'error' : 'success';
+      const icon = !toolResult ? (
+        <LoadingOutlined key="loading" spin style={{ fontSize: 14 }} />
+      ) : isError ? (
+        <CloseCircleOutlined key="error" style={{ fontSize: 14, color: token.colorError }} />
+      ) : (
+        <CheckCircleOutlined key="success" style={{ fontSize: 14, color: token.colorSuccess }} />
+      );
+
+      // Build additional details line (e.g., command for Bash)
+      let detailsLine: string | null = null;
+      if (toolUse.name === 'Bash' && toolUse.input.command) {
+        detailsLine = String(toolUse.input.command);
+      } else if (['Read', 'Write', 'Edit'].includes(toolUse.name) && toolUse.input.file_path) {
+        // For file operations, show full path as details
+        detailsLine = String(toolUse.input.file_path);
+      } else if (toolUse.name === 'Grep' && toolUse.input.pattern) {
+        detailsLine = `Pattern: ${toolUse.input.pattern}`;
+      } else if (toolUse.name === 'Glob' && toolUse.input.pattern) {
+        detailsLine = `Pattern: ${toolUse.input.pattern}`;
+      }
+
       return {
         title: (
           <Tooltip title={tooltipContent} placement="right" mouseEnterDelay={0.3}>
-            <span style={{ cursor: 'help' }}>{toolUse.name}</span>
+            <span style={{ cursor: 'help' }}>
+              <strong>{toolUse.name}</strong>
+              {description && <>: {description}</>}
+            </span>
           </Tooltip>
         ),
-        description: description || undefined,
-        status: !toolResult ? 'pending' : isError ? 'error' : 'success',
+        description: detailsLine ? (
+          <Text code type="secondary" ellipsis>
+            {detailsLine}
+          </Text>
+        ) : undefined,
+        status,
+        icon,
         // Only include content if we have a tool result
         ...(toolResult && {
           content: <ToolUseRenderer toolUse={toolUse} toolResult={toolResult} />,
