@@ -15,12 +15,23 @@ if [ ! -d "node_modules" ]; then
   echo ""
 fi
 
-# Verify core package is built
-if [ ! -d "/workspaces/agor/packages/core/dist" ]; then
+# Verify core package is built (check for actual build artifacts)
+if [ ! -f "/workspaces/agor/packages/core/dist/index.js" ]; then
   echo "⚠️  Core package not built - building now..."
   cd /workspaces/agor/packages/core
   pnpm build
+
+  # Verify build succeeded
+  if [ ! -f "dist/index.js" ]; then
+    echo "❌ Core package build failed!"
+    echo "   Check: cd /workspaces/agor/packages/core && pnpm build"
+    exit 1
+  fi
+
   echo "✅ Core package built"
+  echo ""
+else
+  echo "✅ Core package already built"
   echo ""
 fi
 
