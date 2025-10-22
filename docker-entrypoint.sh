@@ -15,9 +15,7 @@ fi
 # Initialize database if it doesn't exist
 if [ ! -f /root/.agor/agor.db ]; then
   echo "📦 Initializing database..."
-  cd /app/packages/core
-  pnpm exec tsx src/db/scripts/setup-db.ts
-  cd /app
+  pnpm exec tsx packages/core/src/db/scripts/setup-db.ts
 
   # Wait a moment for database to be fully written
   sleep 1
@@ -41,9 +39,7 @@ daemon:
 EOF
 
   # Create admin user via CLI (uses defaults: admin@agor.live / admin)
-  cd /app/apps/agor-cli
-  pnpm exec tsx bin/dev.ts user create-admin
-  cd /app
+  pnpm --filter @agor/cli exec tsx bin/dev.ts user create-admin
 else
   echo "📦 Database already exists"
 fi
