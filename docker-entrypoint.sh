@@ -4,8 +4,9 @@ set -e
 echo "🚀 Starting Agor development environment..."
 
 # Always run pnpm install on startup (fast if deps already installed, fixes worktree mounts)
+# Use CI=true to disable interactive prompts
 echo "📦 Checking dependencies..."
-pnpm install
+CI=true pnpm install --reporter=append-only
 
 # Initialize database if it doesn't exist
 if [ ! -f /root/.agor/agor.db ]; then
