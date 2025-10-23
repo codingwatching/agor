@@ -11,7 +11,7 @@ import {
   Typography,
   theme,
 } from 'antd';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -39,6 +39,19 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({
   const [issueUrl, setIssueUrl] = useState(worktree.issue_url || '');
   const [prUrl, setPrUrl] = useState(worktree.pull_request_url || '');
   const [notes, setNotes] = useState(worktree.notes || '');
+
+  // Sync local state with prop changes (from WebSocket updates)
+  useEffect(() => {
+    setIssueUrl(worktree.issue_url || '');
+  }, [worktree.issue_url]);
+
+  useEffect(() => {
+    setPrUrl(worktree.pull_request_url || '');
+  }, [worktree.pull_request_url]);
+
+  useEffect(() => {
+    setNotes(worktree.notes || '');
+  }, [worktree.notes]);
 
   const handleSaveIssue = () => {
     onUpdate?.(worktree.worktree_id, { issue_url: issueUrl || undefined });
