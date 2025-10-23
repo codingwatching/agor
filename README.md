@@ -91,7 +91,7 @@ See the [Architecture Guide](https://mistercrunch.github.io/agor/guide/architect
 
 ## Roadmap
 
-- **Deeper SDK Integrations** — Push beyond basic agent orchestration to match CLI-native features as SDKs evolve, closing feature gaps across Claude, Codex, and Gemini implementations
+- **Match CLI-Native Features** — SDKs are evolving rapidly and exposing more functionality. Our goal is to push integrations deeper to match all key features available in the underlying CLIs, closing the gap between SDK-based orchestration and native tool capabilities
 - **Session Forking & Subtask Spawning** — Fork sessions to explore alternative approaches or spawn subtasks with fresh context windows, all with full genealogy tracking and interactive visualization
 - **Automated Reports** — AI-generated summaries after task completion, capturing outcomes, decisions made, and artifacts produced for future reference
 - **Context Management System** — Modular markdown-based context files that compose into session-specific knowledge, keeping every agent's worldview focused and version-controlled
