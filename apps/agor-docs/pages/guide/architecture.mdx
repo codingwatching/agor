@@ -15,19 +15,19 @@ graph TB
     Client[Feathers Client<br/>REST + WebSocket]
 
     subgraph "Agor Daemon"
-        Feathers[FeathersJS Server]
+        Feathers["<b>FeathersJS Server</b>"]
 
-        Services[Sessions, Tasks, Messages<br/>Boards, Worktrees, Repos<br/>Users, MCP, Context, Health]
+        Services["<b>Services</b><br/>Sessions, Tasks, Messages<br/>Boards, Worktrees, Repos<br/>Users, MCP, Context, Health"]
 
-        AgentSDKs[Agent SDKs<br/>Claude, Codex, Gemini]
+        AgentSDKs["<b>Agent SDKs</b><br/>Claude, Codex, Gemini"]
 
-        ORM[Drizzle ORM<br/>Type-safe queries]
+        ORM["<b>Drizzle ORM</b><br/>Type-safe queries"]
     end
 
     subgraph Storage
-        DB[(LibSQL Database<br/>~/.agor/agor.db)]
-        Git[Git Worktrees<br/>~/.agor/worktrees/]
-        Config[Config<br/>~/.agor/config.yaml]
+        DB[("<b>LibSQL Database</b><br/>~/.agor/agor.db")]
+        Git["<b>Git Worktrees</b><br/>~/.agor/worktrees/"]
+        Config["<b>Config</b><br/>~/.agor/config.yaml"]
     end
 
     CLI --> Client
