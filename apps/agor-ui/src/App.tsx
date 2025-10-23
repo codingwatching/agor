@@ -481,6 +481,8 @@ function AppContent() {
         query: { deleteFromFilesystem },
       });
       message.success('Worktree deleted successfully!');
+      // Close the modal explicitly after successful deletion
+      setWorktreeModalWorktreeId(null);
     } catch (error) {
       message.error(
         `Failed to delete worktree: ${error instanceof Error ? error.message : String(error)}`

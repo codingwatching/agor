@@ -36,7 +36,7 @@ export interface SettingsModalProps {
   onCreateRepo?: (data: { url: string; slug: string }) => void;
   onUpdateRepo?: (repoId: string, updates: Partial<Repo>) => void;
   onDeleteRepo?: (repoId: string) => void;
-  onDeleteWorktree?: (worktreeId: string) => void;
+  onDeleteWorktree?: (worktreeId: string, deleteFromFilesystem: boolean) => void;
   onUpdateWorktree?: (worktreeId: string, updates: Partial<Worktree>) => void;
   onCreateWorktree?: (
     repoId: string,
@@ -97,6 +97,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleWorktreeModalClose = () => {
     setWorktreeModalOpen(false);
     setSelectedWorktree(null);
+  };
+
+  // Wrapper to close modal after deletion
+  const handleDeleteWorktreeWithClose = (worktreeId: string, deleteFromFilesystem: boolean) => {
+    onDeleteWorktree?.(worktreeId, deleteFromFilesystem);
+    handleWorktreeModalClose();
   };
 
   // Get repo for selected worktree
@@ -181,7 +187,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         client={client}
         onUpdateWorktree={onUpdateWorktree}
         onUpdateRepo={onUpdateRepo}
-        onDelete={onDeleteWorktree}
+        onDelete={handleDeleteWorktreeWithClose}
         onOpenSettings={onClose} // Close worktree modal and keep settings modal open
       />
     </Modal>
