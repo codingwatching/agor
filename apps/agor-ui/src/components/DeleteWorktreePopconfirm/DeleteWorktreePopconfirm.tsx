@@ -1,6 +1,8 @@
 import type { Worktree } from '@agor/core/types';
-import { Checkbox, Popconfirm, theme } from 'antd';
+import { Checkbox, Popconfirm, Typography, theme } from 'antd';
 import { type ReactNode, useState } from 'react';
+
+const { Text } = Typography;
 
 interface DeleteWorktreePopconfirmProps {
   worktree: Worktree;
@@ -40,9 +42,12 @@ export const DeleteWorktreePopconfirm: React.FC<DeleteWorktreePopconfirmProps> =
           >
             Also delete worktree from filesystem
           </Checkbox>
-          <p style={{ color: token.colorTextSecondary, marginTop: 4, marginBottom: 0 }}>
-            Path: {worktree.path}
-          </p>
+          <div style={{ marginTop: 4, marginBottom: 0 }}>
+            <Text type="secondary">Path: </Text>
+            <Text code copyable style={{ fontSize: 11 }}>
+              {worktree.path}
+            </Text>
+          </div>
         </div>
       }
       onConfirm={handleConfirm}
