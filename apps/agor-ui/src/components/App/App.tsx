@@ -138,7 +138,6 @@ export const App: React.FC<AppProps> = ({
   const [newSessionWorktreeId, setNewSessionWorktreeId] = useState<string | null>(null);
   const [newWorktreeModalOpen, setNewWorktreeModalOpen] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const [listDrawerOpen, setListDrawerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [sessionSettingsId, setSessionSettingsId] = useState<string | null>(null);
@@ -375,16 +374,6 @@ export const App: React.FC<AppProps> = ({
           setWorktreeModalWorktreeId(worktreeId);
         }}
         onUpdateSession={onUpdateSession}
-      />
-      <SessionListDrawer
-        open={listDrawerOpen}
-        onClose={() => setListDrawerOpen(false)}
-        boards={boards}
-        currentBoardId={currentBoardId}
-        onBoardChange={setCurrentBoardId}
-        sessions={sessions}
-        worktrees={worktrees}
-        onSessionClick={setSelectedSessionId}
       />
       <SettingsModal
         open={settingsOpen}
