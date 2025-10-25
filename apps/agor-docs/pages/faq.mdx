@@ -78,7 +78,40 @@ You're not exploring alternative implementations (they'd conflict on disk!) - yo
 
 ## What happens when I "spawn" a subtask?
 
-**Spawning creates a child session** - like forking, but with parent-child hierarchy instead of siblings.
+**Spawning creates a child session with a FRESH context window** - the calling agent packages only the relevant context from the current session based on your spawn prompt.
+
+### How it differs from forking:
+
+**Fork**: Copies entire conversation history (all 100+ messages)
+**Spawn**: Parent agent curates what's relevant, starts fresh context
+
+Your parent session might have:
+- Useful context for the subtask (implementation details, design decisions)
+- Lots of noise (debugging, unrelated topics, log reading, tool uses from other work)
+
+When you spawn, the calling agent packages just what the subtask needs. The spawned session gets a clean context window without all the parent's clutter.
+
+**Key benefit**: Work in the subsession doesn't pollute the parent's context.
+
+### How Agor differs from Claude Code's Task tool
+
+In Claude Code CLI, when you use the [Task tool](https://docs.claude.com/en/docs/agent/tools/task) or spawn a subagent:
+- Parent agent **waits** for subtask to complete
+- Subtask **reports back** to parent with results
+- Subtask history is **not** kept after completion
+
+In Agor (currently):
+- Parent agent **does NOT wait** (fire-and-forget, may change in future)
+- Subtask **does NOT report back** automatically (may add callback option in future)
+- Subtask history **IS kept** - you can:
+  - Inspect the full conversation
+  - Post-prompt the subsession
+  - Fork from the subsession
+  - Spawn nested subsessions
+
+**You can still close the loop manually** if needed - just post-prompt the parent session with findings from the subtask.
+
+**Note**: You can still use Claude Code's Task tool and subagent workflows in Agor exactly like the CLI - those follow the normal Claude Code flow with waiting and callbacks.
 
 ### Common use cases:
 
@@ -100,7 +133,7 @@ Parent (Claude): "Refactor legacy codebase"
 └─ Spawn (Claude): "Extract common utilities"
 ```
 
-Parent orchestrates, children execute focused subtasks.
+Parent orchestrates, children execute focused subtasks with clean context.
 
 ---
 
@@ -108,12 +141,15 @@ Parent orchestrates, children execute focused subtasks.
 
 | | **Fork** | **Spawn** |
 |---|---|---|
-| **What's copied** | Context snapshot at fork time | Context snapshot at spawn time |
-| **After fork** | Independent conversations that diverge | Independent conversations that diverge |
+| **Context window** | Full copy of parent's conversation history | Fresh context with curated subset from parent |
+| **Who decides context** | Automatic (SDK copies everything) | Parent agent packages what's relevant |
+| **Context size** | Large (entire parent history) | Small (only what's needed) |
+| **After creation** | Independent conversations that diverge | Independent conversations that diverge |
 | **Worktree** | **SHARED** (same filesystem) | **SHARED** (same filesystem) |
 | **Relationship** | Sibling (parallel work) | Child (delegated work) |
-| **Use case** | Parallel tasks with same starting context | Break down complex work hierarchically |
-| **Key constraint** | Must not conflict on disk | Must not conflict on disk |
+| **Use case** | Parallel tasks with same starting context | Delegate focused subtask with clean context |
+| **Parent waits?** | No | No (currently, may change) |
+| **Reports back?** | No | No (currently, may add callback) |
 
 ---
 
