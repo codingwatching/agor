@@ -405,6 +405,7 @@ interface CommentNodeData {
 
 const CommentNodeComponent = ({ data }: { data: CommentNodeData }) => {
   const { token } = theme.useToken();
+  const { zoom } = useViewport();
   const { comment, replyCount, user, onClick } = data;
   const [isHovered, setIsHovered] = useState(false);
 
@@ -415,6 +416,9 @@ const CommentNodeComponent = ({ data }: { data: CommentNodeData }) => {
   const pinColor = comment.resolved ? token.colorSuccess : token.colorPrimary;
   const totalCount = 1 + replyCount; // Thread root + replies
 
+  // Inverse scale to keep pin at constant size regardless of zoom
+  const scale = 1 / zoom;
+
   return (
     <div
       onClick={() => onClick?.(comment.comment_id)}
@@ -423,36 +427,56 @@ const CommentNodeComponent = ({ data }: { data: CommentNodeData }) => {
       style={{
         position: 'relative',
         cursor: 'pointer',
+        transform: `scale(${scale})`,
+        transformOrigin: 'center bottom',
         transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
       }}
     >
-      {/* Pin bubble - always visible */}
+      {/* Pin shape - teardrop/location pin */}
       <div
         style={{
-          width: '32px',
-          height: '32px',
-          borderRadius: '50%',
-          background: pinColor,
-          border: `2px solid ${token.colorBgContainer}`,
-          boxShadow: isHovered ? token.boxShadow : token.boxShadowSecondary,
+          position: 'relative',
+          width: '36px',
+          height: '48px',
           display: 'flex',
-          alignItems: 'center',
+          alignItems: 'flex-start',
           justifyContent: 'center',
-          transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-          transform: isHovered ? 'scale(1.1)' : 'scale(1)',
-          fontSize: '18px',
         }}
       >
-        {user?.emoji || '💬'}
+        {/* Circular top part */}
+        <div
+          style={{
+            width: '36px',
+            height: '36px',
+            borderRadius: '50% 50% 50% 0',
+            background: pinColor,
+            border: `2px solid ${token.colorBgContainer}`,
+            boxShadow: isHovered ? token.boxShadow : token.boxShadowSecondary,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+            transform: `rotate(-45deg) ${isHovered ? 'scale(1.1)' : 'scale(1)'}`,
+            fontSize: '18px',
+            position: 'absolute',
+            top: '0',
+            left: '0',
+          }}
+        >
+          {/* Emoji (counter-rotate to keep upright) */}
+          <div style={{ transform: 'rotate(45deg)' }}>{user?.emoji || '💬'}</div>
+        </div>
+
+        {/* Reply count badge */}
         {totalCount > 1 && (
           <div
             style={{
               position: 'absolute',
               top: '-4px',
               right: '-4px',
-              minWidth: '18px',
-              height: '18px',
-              borderRadius: '9px',
+              minWidth: '20px',
+              height: '20px',
+              borderRadius: '10px',
               background: token.colorError,
               border: `2px solid ${token.colorBgContainer}`,
               color: token.colorBgContainer,
@@ -462,6 +486,7 @@ const CommentNodeComponent = ({ data }: { data: CommentNodeData }) => {
               alignItems: 'center',
               justifyContent: 'center',
               padding: '0 4px',
+              zIndex: 1,
             }}
           >
             {totalCount}
