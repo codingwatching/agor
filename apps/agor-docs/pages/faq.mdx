@@ -153,6 +153,156 @@ Figma revolutionized design collaboration with:
 
 You wouldn't manage a large codebase without a file tree. Why manage AI sessions without spatial organization?
 
+## Zones? Zone "triggers"?
+
+**Zones are spatial regions on your board that trigger templated prompts when you drop a worktree into them.**
+
+Think: drag a worktree to "Ready for Review" → auto-prompts for code review. Drag to "Needs Tests" → auto-prompts for test generation.
+
+### How it works
+
+When you drop a worktree into a zone:
+
+1. **Session selection** - which session gets the prompt?
+   - **Always create new session** (default) - clean slate for the zone's task
+   - **Let me pick** - choose which session in the tree has the right context
+   - **Most recently active** - usually the session you were just working in
+
+2. **Templated prompt executes** - the zone's prompt template renders with dynamic data
+
+### Why templates?
+
+Zone prompts need **dynamism and complexity**. You don't just want "write tests" - you want:
+
+```
+"Review this implementation of {{ worktree.issue_url }} and check:
+- Does it match the requirements in {{ worktree.pull_request_url }}?
+- Are there edge cases we missed?
+- Should we add tests for {{ session.title }}?"
+```
+
+**Handlebars templates** let you inject context from:
+- **Worktree**: `{{ worktree.name }}`, `{{ worktree.issue_url }}`, `{{ worktree.pull_request_url }}`
+- **Board**: `{{ board.name }}`, `{{ board.description }}`
+- **Session**: `{{ session.title }}`, `{{ session.description }}`
+- **Environment**: `{{ environment.url }}`, `{{ environment.status }}`
+- **Repo**: `{{ repo.name }}`, `{{ repo.default_branch }}`
+
+### Example use cases
+
+**1. Issue-driven code review**
+
+Zone: "Ready for Review"
+```
+Review the implementation of {{ worktree.issue_url }}.
+
+Check if:
+1. All acceptance criteria from the issue are met
+2. Edge cases are handled
+3. Error messages are user-friendly
+
+If approved, comment on {{ worktree.pull_request_url }} with summary.
+```
+
+Drop a worktree → auto-prompts with issue/PR links pre-filled.
+
+**2. PR-aware test generation**
+
+Zone: "Needs Tests"
+```
+Generate comprehensive tests for {{ worktree.name }}.
+
+Context:
+- Issue: {{ worktree.issue_url }}
+- PR: {{ worktree.pull_request_url }}
+- Branch: {{ worktree.ref }}
+
+Focus on scenarios mentioned in the PR description.
+Write tests to tests/ directory.
+```
+
+**3. Environment-specific deployment**
+
+Zone: "Deploy to Staging"
+```
+Deploy {{ worktree.name }} to {{ environment.url }}.
+
+Steps:
+1. Run build in {{ worktree.path }}
+2. Push to {{ repo.name }}/{{ worktree.ref }}
+3. Trigger deployment to staging
+4. Update {{ worktree.pull_request_url }} with deployment URL
+
+Environment: {{ environment.status }}
+```
+
+**4. Board-level context**
+
+Zone: "Sprint Review Demo"
+```
+Prepare demo for {{ board.name }}.
+
+Show:
+- Feature: {{ worktree.name }}
+- Related issue: {{ worktree.issue_url }}
+- Key changes in this PR: {{ worktree.pull_request_url }}
+
+Create a demo script highlighting {{ board.custom_context.sprint_goals }}.
+```
+
+### Custom JSON context
+
+Each object (board, worktree, session, repo) can have a **`custom_context` JSON blob** for your own metadata:
+
+**Board custom context:**
+```json
+{
+  "sprint_goals": "Improve auth UX",
+  "demo_date": "2025-11-01",
+  "stakeholders": ["product", "design"]
+}
+```
+
+**Worktree custom context:**
+```json
+{
+  "priority": "P0",
+  "estimated_hours": 8,
+  "dependencies": ["auth-backend", "user-service"]
+}
+```
+
+**Use in templates:**
+```
+Priority: {{ worktree.custom_context.priority }}
+Estimated effort: {{ worktree.custom_context.estimated_hours }}h
+Dependencies: {{ worktree.custom_context.dependencies }}
+
+{{ board.custom_context.sprint_goals }}
+Demo stakeholders: {{ board.custom_context.stakeholders }}
+```
+
+### Why this is powerful
+
+Instead of copy-pasting issue URLs and PR links into prompts manually:
+
+**Without zones:**
+```
+You: "Review this code. Here's the issue: https://github.com/..."
+     (repeat for every review)
+```
+
+**With zones:**
+```
+You: *drag worktree to "Ready for Review" zone*
+AI: "Reviewing implementation of https://github.com/myorg/repo/issues/123..."
+     (issue/PR links auto-injected)
+```
+
+**Zones = Templated workflow automation for AI sessions.**
+
+Drag to trigger. Context flows automatically. No manual copy-paste.
+
 ## What happens when I "fork" a session?
 
 **Forking creates a sibling session with a COPY of the conversation context at that moment** - perfect for parallel work streams that need the same starting knowledge but different focus.
