@@ -1,7 +1,7 @@
 import type { AgorClient } from '@agor/core/api';
 import type { BoardID, MCPServer, User, WorktreeID, ZoneTrigger } from '@agor/core/types';
 import { BorderOutlined, CommentOutlined, DeleteOutlined, SelectOutlined } from '@ant-design/icons';
-import { Input, Modal, Popover, Typography } from 'antd';
+import { Button, Input, Modal, Popover, Typography } from 'antd';
 import Handlebars from 'handlebars';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -1322,23 +1322,22 @@ const SessionCanvas = ({
                 style={{ marginBottom: 8 }}
               />
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                <Typography.Link
+                <Button
                   onClick={() => {
                     setCommentPlacement(null);
                     setCommentInput('');
                     setActiveTool('select');
                   }}
-                  style={{ lineHeight: '32px' }}
                 >
                   Cancel
-                </Typography.Link>
-                <Typography.Link
+                </Button>
+                <Button
+                  type="primary"
                   onClick={handleCreateSpatialComment}
                   disabled={!commentInput.trim()}
-                  style={{ lineHeight: '32px', fontWeight: 500 }}
                 >
                   Comment
-                </Typography.Link>
+                </Button>
               </div>
             </div>
           }
