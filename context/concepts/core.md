@@ -1,355 +1,341 @@
 # Core Concepts
 
-Related: [[architecture]], [[design]]
+Related: [[architecture]], [[design]], [[worktrees]], [[board-objects]]
 
 ## What Is Agor?
 
-**Agor is an agent orchestrator** - the platform layer that sits above all agentic coding tools, providing one UI to manage all agents.
+**Agor is a multiplayer canvas for orchestrating agentic coding sessions** - the spatial layer that connects Claude Code, Codex, Gemini, and any agentic coding tool into one unified workspace.
 
 **Pronunciation:** "AY-gore"
 
 **Tagline:**
 
-> **Next-gen agent orchestration for AI-assisted development.**
-> The multiplayer, spatial layer that connects Claude Code, Codex, Gemini, and any agentic coding tool into one unified workspace.
+> **Multiplayer canvas for orchestrating AI coding sessions.**
+> The spatial layer that connects Claude Code, Codex, Gemini, and any agentic coding tool into one unified workspace.
 
 ## The Vision
 
 A platform for **real-time, multiplayer agentic development**.
-Visualize, coordinate, and automate your AI workflows across tools.
-Agor turns every AI session into a composable, inspectable, and reusable building block.
+Visualize, coordinate, and collaborate on AI-assisted work across tools and teams.
 
-Build the orchestration layer for AI-assisted development. Instead of competing with agentic coding tools (Claude Code, Cursor, Codex, Gemini), Agor provides the coordination and visibility layer above them all.
+Agor turns every AI session into a composable, introspectable, and reusable building block on a spatial canvas.
 
 ### The Core Insight
 
-> **Context engineering isn't about prompt templates—it's about managing sessions, tasks, and concepts as first-class composable primitives stored in a session tree.**
+> **AI coding isn't linear - it's exploratory and parallel. Your workspace should reflect that.**
+
+Traditional CLI tools force linear conversations. Agor embraces the reality:
+
+- Multiple sessions running in parallel
+- Forking to explore alternatives
+- Spawning subsessions for focused work
+- Spatial organization that matches how your brain thinks
 
 ### What Makes Agor Different
 
-- **Agent Orchestration Layer** - Integrates with Claude Code, Codex, and soon Gemini, via an extensible SDK. Centralized MCP configuration—connect once, use across all tools.
-- **Multiplayer Spatial Canvas** - Real-time collaboration with cursor broadcasting and facepiles. Sessions live on a dynamic board—cluster by project, phase, or purpose.
-- **Context-Aware Development** - Manage deliberate context via `context/` folder of markdown files. Dynamically load modular context blocks per session.
-- **Native Session Forking & Subsession Forcing** - Fork any session to explore alternatives. Spawn subsessions with fresh context windows. Full introspection and genealogy tracking.
-- **Zone Triggers — Workflows Made Spatial** - Define zones on your board that trigger templated prompts when sessions are dropped. Build kanban-style flows or custom pipelines.
-- **Git Worktree Management + Environments** - Every session maps to an isolated git worktree—no branch conflicts. Optionally spin up dev environments per worktree with automatic port management and health monitoring. Run multiple feature branches in parallel with their own running apps.
-- **Real-Time Strategy for AI Teams** - Coordinate agentic work like a multiplayer RTS. Watch teammates or agents move across tasks live.
+- **Worktree-Centric Architecture** - 1 worktree = 1 issue = 1 PR. Isolated git workspaces eliminate branch conflicts.
+- **Multiplayer Spatial Canvas** - Real-time collaboration with cursor broadcasting and facepiles. Organize work spatially, not linearly.
+- **Session Genealogy** - Fork and spawn sessions to create exploration trees. Full introspection and reusability.
+- **Zone Triggers — Workflows Made Spatial** - Drag worktrees to zones, trigger templated prompts. Build Kanban-style flows or custom pipelines.
+- **Multi-Agent Orchestration** - Integrates with Claude Code, Codex, Gemini via extensible SDK. Centralized MCP configuration.
+- **Environment Management** - Run multiple dev servers in parallel, one per worktree. Automatic port management and health monitoring.
+- **Social by Default** - Everyone sees each other's boards. Spatial comments, live cursors, threaded conversations.
 
-## The Five Primitives
+## The Core Primitives
 
 Everything in Agor is built from five fundamental primitives:
 
-### 1. Session - The Universal Container
+### 1. Worktree - The Unit of Work
 
-**Everything is a session.** A session represents an active conversation with an agentic coding tool.
+**A worktree is an isolated git working directory** - think of it as a checkout of your repo at a specific branch or commit.
 
-```python
-Session:
-  session_id: str
-  agent: str                    # "claude-code", "cursor", "codex", "gemini"
-  git_ref: str                  # Git SHA at session start
-  worktree_path: str | None     # Optional isolated workspace
-  concepts: list[str]           # Loaded context modules
-  tasks: list[str]              # Ordered task IDs
+```
+Worktree "auth-feature" (issue #123, PR #456)
+├─ Working directory: ~/.agor/worktrees/myapp/auth-feature
+├─ Branch: feature/oauth2-auth
+├─ Environment: Running on port 9001
+└─ Sessions: Tree of AI conversations working on this feature
+```
 
-  # Genealogy
-  forked_from_session_id: str | None    # Divergent path
-  parent_session_id: str | None         # Spawned subsession
+**Best practice:** 1 worktree = 1 issue = 1 PR = 1 feature
+
+**Why this matters:**
+
+- Parallel sessions don't interfere (isolated filesystems)
+- Clean separation of experimental work
+- Multiple features can run simultaneously with their own dev servers
+- Easy cleanup (delete worktree = delete experiment)
+
+**Data Model:**
+
+```typescript
+Worktree: worktree_id: string;
+repo_id: string;
+name: string; // "auth-feature"
+path: string; // "~/.agor/worktrees/myapp/auth-feature"
+branch: string; // "feature/oauth2-auth"
+issue_url: string | null; // "https://github.com/org/repo/issues/123"
+pull_request_url: string | null;
+notes: string | null;
+unique_id: number; // For port assignment (worktree #1, #2, etc.)
+```
+
+### 2. Board - The Spatial Canvas
+
+**Boards are 2D canvases for organizing worktrees** - like Figma for AI coding work.
+
+Instead of linear lists, boards use **spatial layout** where:
+
+- Each worktree appears as a card on the canvas
+- You can drag worktrees to arrange them spatially
+- Sessions within a worktree appear as a genealogy tree on the card
+- Multiple users see the same board in real-time (cursors, movements, updates)
+
+**Why spatial?**
+
+Your brain thinks spatially. You remember:
+
+- "The auth worktree is in the top-left corner"
+- "Testing sessions are clustered on the right"
+- "That failed experiment is way down there"
+
+This is **location-based memory** - the same reason you remember where you parked. A 2D board gives every worktree a "place."
+
+**Data Model:**
+
+```typescript
+Board: board_id: string;
+name: string;
+description: string | null;
+created_by_user_id: string;
+
+BoardObject: board_id: string;
+object_type: 'worktree' | 'session' | 'zone';
+object_id: string;
+position_x: number;
+position_y: number;
+zone_id: string | null; // If positioned in a zone
+```
+
+### 3. Session - Conversations with Genealogy
+
+**Sessions are AI conversations that can fork and spawn, creating exploration trees.**
+
+```
+Session: "Build authentication system"
+├─ Fork: "Try OAuth2 instead of JWT"
+├─ Fork: "Add social login support"
+└─ Spawn: "Research PKCE flow best practices"
+   └─ Spawn: "Implement Google OAuth provider"
 ```
 
 **Two Relationship Types:**
 
-- **Fork** - Divergent exploration, inherits full history
+**Fork** - Create a sibling session with a **copy of conversation context**
 
-  ```
-  Session A: "Try REST API"
-  └─ Session B (fork): "Try GraphQL instead"
-  ```
+- Perfect for parallel exploration ("try this approach instead")
+- Starts with same context as parent at fork point
+- Divergent paths from shared knowledge
 
-- **Spawn** - New context window, delegated subsession
-  ```
-  Session A: "Build auth system"
-  └─ Session C (spawn): "Design DB schema"
-  ```
+**Spawn** - Create a child session with a **fresh context window**
 
-### 2. Task - User Prompts as Checkpoints
+- Perfect for focused subsessions ("implement just this piece")
+- Parent agent packages only relevant context
+- Clean slate for specialized work
 
-**Every user prompt creates a task.** Tasks are contiguous message ranges within a session.
+**Data Model:**
 
-```python
-Task:
-  task_id: str
-  session_id: str
-  description: str              # User's prompt/goal
-  message_range: [int, int]     # [start, end] indices
-  git_sha: str                  # "a4f2e91" or "a4f2e91-dirty"
-  model: str                    # Can change mid-session
-  report_template: str | None   # Post-task report type
-  status: "created" | "running" | "completed" | "failed"
+```typescript
+Session: session_id: string;
+worktree_id: string; // Required: every session belongs to a worktree
+agent: string; // "claude-code", "codex", "gemini"
+status: 'running' | 'idle' | 'completed' | 'failed';
+title: string;
+description: string | null;
+
+// Genealogy
+parent_session_id: string | null; // Spawn relationship
+forked_from_session_id: string | null; // Fork relationship
+fork_point_message_id: string | null; // Where fork diverged
 ```
 
-**Git State Tracking:**
+**Key insight:** Both fork and spawn work on the **same worktree** (same filesystem), but create **independent conversations** going forward. You're not exploring alternative implementations - you're doing parallel work that starts from shared knowledge.
 
-```
-Task 1: "Implement auth"
-├─ Start: a4f2e91 (clean)
-├─ Agent makes changes → a4f2e91-dirty
-└─ Complete: b3e4d12
-```
+### 4. Zone - Spatial Workflow Triggers
 
-### 3. Report - Structured Learning Capture
+**Zones are spatial regions on boards that trigger templated prompts when you drop a worktree into them.**
 
-**Post-task hooks generate reports.** After each task completes, Agor automatically extracts learnings using customizable templates.
+Think: drag worktree to "Ready for Review" → auto-prompts for code review. Drag to "Needs Tests" → auto-prompts for test generation.
 
-**Example Templates:**
+**How zones work:**
 
-- `task-summary.md` - Generic fallback
-- `bug-fix.md` - Root cause analysis
-- `feature.yaml` - Structured feature documentation
-- `research.md` - Investigation findings
+1. **Define zone** - Create rectangular region on board with name, color, and prompt template
+2. **Drop worktree** - Drag worktree card into zone
+3. **Select session** - Choose which session gets the prompt (new session, most recent, or pick manually)
+4. **Template renders** - Zone prompt injects context from worktree/session/repo
+5. **Agent executes** - Session runs the templated prompt
 
-**Generation Process:**
+**Handlebars Templates:**
 
-1. Task completes
-2. Agor forks session ephemerally
-3. Adds report generation prompt with template
-4. Agent produces structured report
-5. Report saved, ephemeral session discarded
+Zone prompts use Handlebars to inject dynamic context:
 
-### 4. Worktree - Isolated Git Workspaces + Environments
-
-**Agor manages git worktrees with optional environments** for session isolation.
-
-```
-Main worktree: ~/my-project (main branch)
-Session A → ~/my-project-auth (feature/auth) + docker compose environment
-Session B → ~/my-project-graphql (feature/graphql) + isolated dev server
+```handlebars
+Review the implementation of
+{{worktree.issue_url}}. Check if: 1. All acceptance criteria from the issue are met 2. Edge cases
+are handled 3. Error messages are user-friendly If approved, comment on
+{{worktree.pull_request_url}}
+with summary.
 ```
 
-**Git Isolation Benefits:**
+**Available template variables:**
 
-- Parallel sessions don't interfere
-- Clean separation of experimental work
-- Agents work in isolation
-- Easy cleanup (delete worktree = delete experiment)
+- `{{ worktree.name }}`, `{{ worktree.issue_url }}`, `{{ worktree.pull_request_url }}`
+- `{{ board.name }}`, `{{ board.description }}`
+- `{{ session.title }}`, `{{ session.description }}`
+- `{{ environment.url }}`, `{{ environment.status }}`
+- `{{ repo.name }}`, `{{ repo.default_branch }}`
 
-**Environment Management (Optional):**
+**Zones = Kanban-style workflow automation for AI sessions.** Drag to trigger. Context flows automatically.
 
-Agor can spin up and manage development environments for each worktree via the **UI** (or CLI):
+**Data Model:**
 
-**Configuration via UI:**
-
-In the Repositories settings panel, configure environment controls for any repo:
-
-- **Start command:** `docker compose up -d` (or `npm run dev`, `./manage.py runserver`, etc.)
-- **Stop command:** `docker compose down` (or any cleanup command)
-- **Health endpoint:** `http://localhost:{{PORT}}/health` (checks if app is running)
-- **URL template:** `http://localhost:{{PORT}}` (launches the running app)
-- **Port offset:** 1000 (base port + 1000 × worktree index)
-
-**What This Enables:**
-
-- **Multi-worktree apps running in parallel** - Test feature/auth on :4000 while feature/graphql runs on :5000
-- **Environment status monitoring** - Agor pings health endpoints, shows running/stopped state in UI
-- **One-click start/stop** - Control buttons in WorktreesTable for each worktree
-- **One-click access** - "Open App" button launches the running environment in browser
-- **Automatic port management** - Each worktree gets unique ports, no conflicts
-- **Shared across sessions** - Multiple sessions on same worktree share the environment
-
-**Example: React App with Backend**
-
-```
-Worktree 1: feature/auth
-├─ Environment: Running ✅
-├─ Ports: 4000-4001
-├─ URL: http://localhost:4000
-└─ Sessions: 2 (Claude + Codex both testing auth)
-
-Worktree 2: feature/payments
-├─ Environment: Stopped 🔴
-├─ Ports: 5000-5001
-├─ URL: http://localhost:5000
-└─ Sessions: 1 (Gemini implementing Stripe)
+```typescript
+Zone: zone_id: string;
+board_id: string;
+name: string;
+color: string;
+position_x: number;
+position_y: number;
+width: number;
+height: number;
+prompt_template: string; // Handlebars template
+on_enter_action: 'new_session' | 'pick_session' | 'most_recent';
 ```
 
-**Lightweight, No Lock-in:**
+### 5. Environment - Runtime Instances
 
-- Configure once in UI, works for all worktrees
-- Uses your existing docker-compose.yml (or any command)
-- Agor just manages start/stop/status via shell commands
-- Works with any stack (Django, Rails, Next.js, Laravel, etc.)
-- Stop environment → resources freed immediately
-- Delete worktree → environment auto-cleaned up
+**Environments are runtime instances (dev servers, Docker containers, etc.) for your worktrees.**
 
-### 5. Concept - Modular Context Nuggets
+Each repo has an **environment configuration template**:
 
-**Concepts are self-referencing knowledge modules** stored as Markdown files.
+- Start/stop commands
+- Health check endpoint
+- App URL template
 
-```
-context/
-├── auth.md
-├── security.md
-├── database.md
-├── api-design.md
-└── testing.md
-```
+Each worktree gets its **own environment instance**:
 
-**Features:**
+- Unique ports (auto-assigned using `worktree.unique_id`)
+- Process status (running, stopped, error)
+- Access URLs (resolved from templates)
+- Live logs
 
-- Wiki-style cross-references: `[[security]]`, `[[database]]`
-- Composable (load only what's needed)
-- Version-controlled evolution
-- Team-shared knowledge base
+**Example configuration:**
 
-**Loading Concepts:**
-
-```bash
-# Explicit loading
-agor session start --concepts auth,security,api-design
-
-# Recursive loading (follows references)
-agor session start --concepts auth --recursive
-
-# Dynamic task-level loading
-agor task start --add-concepts database
+```yaml
+up_command: 'UI_PORT={{add 9000 worktree.unique_id}} pnpm dev'
+down_command: "pkill -f 'vite.*{{add 9000 worktree.unique_id}}'"
+health_endpoint: 'http://localhost:{{add 9000 worktree.unique_id}}/health'
+app_url_template: 'http://localhost:{{add 9000 worktree.unique_id}}'
 ```
 
-## The Session Tree
+**Result:**
 
-**The session tree is Agor's fundamental artifact** - a complete, versioned record of all agentic coding sessions in your project.
+- Worktree #1 runs on port 9001
+- Worktree #2 runs on port 9002
+- Worktree #3 runs on port 9003
 
-### What It Stores
+**What this enables:**
 
-- **All sessions** - Every conversation with every agent
-- **Complete genealogy** - Fork and spawn relationships
-- **Git integration** - Which sessions produced which code
-- **Task history** - Granular checkpoint of every user prompt
-- **Reports** - Structured learnings extracted from each task
-- **Concepts** - Modular context library used across sessions
+- Run multiple feature branches in parallel with their own dev servers
+- Test different implementations simultaneously
+- No port conflicts or "stop this before starting that"
+- One-click start/stop/access from UI
 
-### Why It Matters
+**Data Model:**
 
-**Observable:**
+```typescript
+EnvironmentConfig: repo_id: string;
+up_command: string;
+down_command: string;
+health_endpoint_template: string | null;
+app_url_template: string | null;
 
-- Visualize entire tree of explorations
-- See which paths succeeded, which failed
-- Understand decision points and branches
-
-**Interactive:**
-
-- Manage multiple sessions in parallel
-- Fork any session at any task
-- Navigate between related sessions
-
-**Shareable:**
-
-- Push/pull like git (federated)
-- Learn from others' successful patterns
-
-**Versioned:**
-
-- Track evolution over time
-- Audit trail of AI-assisted development
-
-### Session Tree As Git's Companion
-
-```
-Your Project:
-├── .git/          # Code repository (git)
-│   └── Your code's version history
-│
-└── .agor/         # Session tree (agor)
-    ├── sessions/  # Conversation history
-    ├── concepts/  # Context library
-    └── Metadata linking sessions ↔ code
+Environment: environment_id: string;
+worktree_id: string;
+status: 'running' | 'stopped' | 'error';
+pid: number | null;
+app_url: string | null; // Resolved from template
+health_url: string | null; // Resolved from template
+last_health_check: timestamp | null;
 ```
 
-**Git tracks code. Agor tracks the conversations that produced the code.**
+## Social Features
 
-## How The Primitives Compose
+**Agor is great solo, but social features unlock Figma-like collaboration for software engineering.**
 
-### Example: Building Authentication Feature
+### Live Cursors
 
-**Phase 1: Main Session**
+See where teammates are working in real-time:
 
-```bash
-agor session start \
-  --agent claude-code \
-  --concepts auth,security,api-design \
-  --worktree feature-auth
-```
+- Current position on canvas
+- Name and avatar
+- What they're hovering over or dragging
+- 100ms update intervals
 
-- Session A created with context loaded
-- Worktree `../my-project-auth` created
-- Task 1: Design JWT flow → Report generated
-- Task 2: Implement endpoints → Report generated
+**Why this matters:** Location awareness prevents conflicts and enables spontaneous collaboration.
 
-**Phase 2: Fork for Alternative**
+### Facepile
 
-```bash
-agor session fork <session-a> --from-task 1
-```
+Know who's online at a glance:
 
-- Session B created (forked from design phase)
-- Task 3: Implement OAuth instead → Different approach, same context
+- All active users on current board
+- Avatar and name
+- Real-time presence status
 
-**Phase 3: Spawn for Subsession**
+### Spatial Comments
 
-```bash
-agor session spawn <session-a> \
-  --agent gemini \
-  --concepts database,security
-```
+Annotate worktrees, sessions, and boards with threaded conversations:
 
-- Session C created (child of A)
-- Task 4: Design user table → Focused DB work, no API context
+- Leave comments on specific worktrees or sessions
+- Thread replies for focused discussions
+- Mention teammates with `@username`
+- Persistent conversation layer on top of AI work
 
-**Result: Session Tree**
-
-```
-Session A (Claude Code, feature-auth worktree)
-│ Concepts: [auth, security, api-design]
-│
-├─ Task 1: "Design JWT auth" ✓
-├─ Task 2: "Implement JWT" ✓
-│
-├─ Session B (fork from Task 1)
-│   └─ Task 3: "Implement OAuth" ✓
-│
-└─ Session C (spawn from Task 2, Gemini)
-    └─ Task 4: "Design user table" ✓
-```
+**The insight:** AI conversations are ephemeral - Claude says something, you respond, it's buried in chat. Comments are **spatial and persistent** - pin them to the exact artifact where they matter.
 
 ## Key Design Principles
 
-1. **Everything Is A Session** - Universal abstraction across all agents
-2. **Tasks Are Checkpoints** - Granular, forkable, reportable
-3. **Reports Are First-Class** - Automatic knowledge capture
-4. **Worktrees Enable Parallelism** - Session isolation, no conflicts
-5. **Concepts Are Modular** - Composable context, not monolithic files
+1. **Worktrees Are Primary** - Everything starts with isolated git workspaces
+2. **Spatial Over Linear** - 2D canvas matches how brains organize work
+3. **Sessions Are Composable** - Fork and spawn to create exploration trees
+4. **Zones Automate Workflows** - Drag-and-drop triggers, not manual copy-paste
+5. **Social by Default** - Everyone sees each other's boards, multiplayer is core
+6. **Multi-Agent** - Work with Claude, Codex, Gemini from one workspace
 
 ## Product Philosophy & Roadmap
 
 **Current Phase: Core Platform Complete** ✅
 
 - ✅ Real-time collaboration (cursor broadcasting, facepiles, presence)
-- ✅ Spatial canvas with zones and session pinning
+- ✅ Spatial canvas with zones and worktree pinning
 - ✅ Multi-agent support (Claude Code, Codex SDKs, Gemini in progress)
 - ✅ User authentication and board management
+- ✅ Social multiplayer – everyone can see each other's boards
+- ✅ **Session forking & subsession spawning** – interactive genealogy visualization, parent→child relationships
 - ✅ **MCP integration** – settings UI, session-level selection, Claude SDK hookup
-- ✅ **Zone triggers** – drop sessions on zones to launch templated workflows
+- ✅ **Zone triggers** – drop worktrees on zones to launch templated workflows
 - ✅ **Git worktree management** – visual labels, isolated workspaces per session
+- ✅ **Environment management** – start/stop dev servers, unique ports per worktree
+- ✅ **Single-package distribution** – `npm install -g agor-live`
 
 **Near-Term Roadmap:**
 
 - 🔄 **Gemini SDK Integration** – complete the agent trio (in progress)
-- 🔄 **Session Forking UI** – interactive genealogy visualization
 - 🧾 **Reports** – automated summaries after each task
 - 📚 **Concept Management** – structured context system UI
 
 **Future Vision:**
 
-- 🌍 **Federated Boards** – share, remix, and learn from others
 - 🤖 **Cross-Agent Orchestration** – hybrid Claude–Codex–Gemini workflows
 - 📊 **Knowledge Maps** – visualize all AI interactions across projects
 - 🎯 **Advanced Zone Triggers** – conditional workflows, multi-step pipelines
@@ -358,6 +344,7 @@ Session A (Claude Code, feature-auth worktree)
 
 For deeper dives, see:
 
+- [[worktrees]] - Worktree-centric architecture deep dive
+- [[board-objects]] - Board layout system, zones, triggers
 - [[architecture]] - System design and storage structure
 - [[design]] - UI/UX principles and component patterns
-- `primitives/` - Detailed explorations of each primitive (future)

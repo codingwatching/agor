@@ -1,19 +1,22 @@
 # Async Jobs & Long-Running Operations
 
-**Status:** Exploration (Updated with pragmatic approaches)
+**Status:** ✅ Resolved - Not Needed
 **Created:** 2025-10-06
-**Updated:** 2025-10-25
+**Updated:** 2025-10-26
+**Archived:** 2025-10-26
 **Context:** Session creation, repo cloning, and worktree setup can take 10s+ for large repos
 
-## TL;DR - Pragmatic Approach for Local Dev Tools
+## TL;DR - Not Needed for Agor
 
 **For Agor (local dev tool):**
 
-1. **Now:** Just increase HTTP timeouts to 10 minutes - blocking is fine!
-2. **Next:** Fire-and-forget async functions + WebSocket events for progress (no job queue needed)
-3. **Later:** Full job queue only if building multi-tenant SaaS (probably never)
+Background job queues are **not necessary**. Use simple patterns instead:
 
-**Key insight:** You're building a dev tool where users are admins, not a production SaaS. Keep it simple!
+1. **Background threads** - Node.js async functions for I/O-bound operations
+2. **WebSocket events** - Real-time progress updates (already implemented)
+3. **Subprocesses** - Only if truly needed for CPU-intensive work or isolation
+
+**Key insight:** Agor is a local dev tool, not a multi-tenant SaaS. No job queue infrastructure needed. Fire-and-forget async functions + WebSocket broadcasting is sufficient.
 
 ## Problem Statement
 

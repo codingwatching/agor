@@ -60,6 +60,7 @@ Experimental ideas and designs not yet crystallized into concepts. These represe
 Historical documentation and completed research preserved for reference:
 
 - **[gemini-integration-research.md](archives/gemini-integration-research.md)** - Gemini CLI SDK discovery process, API analysis, and integration decisions (completed Oct 2025)
+- **[async-jobs.md](archives/async-jobs.md)** - Background job processing exploration (resolved: not needed for local dev tool, use async functions + WebSocket events)
 
 **Purpose:** Archives preserve the research journey and decision-making context for completed features. They're valuable for understanding "why" things were built certain ways.
 

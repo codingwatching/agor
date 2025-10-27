@@ -1,36 +1,269 @@
 # Development Guide
 
-Developer documentation for contributing to Agor.
+Complete developer documentation for contributing to Agor.
+
+## Quick Setup
+
+### Docker Compose (Recommended for Most Development)
+
+**Fastest way to start developing:**
+
+```bash
+git clone https://github.com/mistercrunch/agor
+cd agor
+docker compose up
+# Visit http://localhost:5173 → Login: admin@agor.live / admin
+```
+
+**Pros:**
+- ✅ No Node.js/pnpm installation required
+- ✅ Consistent environment across team
+- ✅ Easy to run multiple instances on different branches
+
+**Cons:**
+- ❌ Docker-in-docker complexity if your worktree environments use Docker (e.g., `docker compose up` in environment configs)
+
+### Local Development with pnpm (Required for Environment Development)
+
+**Use this if you're working on:**
+- **Environment management** (process spawning, health checks, port allocation)
+- Testing environments that use Docker (avoids docker-in-docker complexity)
+- Faster iteration with instant HMR/hot-reload
+
+**Setup:**
+
+```bash
+git clone https://github.com/mistercrunch/agor
+cd agor
+pnpm install
+```
+
+**Two-process workflow:**
+
+```bash
+# Terminal 1: Daemon (watches @agor/core + daemon, auto-restarts)
+cd apps/agor-daemon
+pnpm dev
+
+# Terminal 2: UI dev server (Vite HMR for instant updates)
+cd apps/agor-ui
+pnpm dev
+
+# Visit http://localhost:5173
+```
+
+**Why local for testing Environment features?**
+
+The Environment system spawns processes defined in your repo's environment config (e.g., `pnpm dev`, `docker compose up`, etc.). If your environment commands use Docker, running Agor itself in Docker requires docker-in-docker setup. Local development avoids this complexity.
 
 ## Project Structure
 
 ```
 agor/
 ├── apps/
-│   ├── agor-daemon/    # FeathersJS backend
-│   ├── agor-cli/       # CLI tool
-│   └── agor-ui/        # React UI
+│   ├── agor-daemon/         # FeathersJS backend (REST + WebSocket)
+│   ├── agor-cli/            # CLI tool (oclif-based)
+│   ├── agor-ui/             # React UI (Ant Design + React Flow)
+│   └── agor-docs/           # Documentation website (Nextra)
 ├── packages/
-│   └── core/           # Shared types and utilities
-└── context/            # Architecture docs
+│   ├── core/                # Shared @agor/core package
+│   │   ├── types/           # TypeScript types (Session, Task, Worktree, etc.)
+│   │   ├── db/              # Drizzle ORM + repositories + schema
+│   │   ├── git/             # Git utils (simple-git only, no subprocess)
+│   │   ├── claude/          # Claude Code session loading utilities
+│   │   └── api/             # FeathersJS client utilities
+│   └── agor-live/           # Published npm package
+└── context/                 # 📚 Architecture documentation (READ THIS!)
+    ├── concepts/            # Core design docs
+    └── explorations/        # Experimental designs
 ```
 
-## Development Workflow
+## Monorepo & Development Tooling
+
+Agor is a **pnpm workspace monorepo** with several automation tools:
+
+### pnpm Workspaces
+
+**Structure:**
+
+```yaml
+# pnpm-workspace.yaml
+packages:
+  - 'apps/*'
+  - 'packages/*'
+```
+
+**Workspace protocol:**
+- Packages reference each other via `workspace:*`
+- Example: `@agor/cli` depends on `@agor/core@workspace:*`
+- pnpm symlinks workspace packages (no need to rebuild on every change)
+
+### Turbo
+
+**Parallel builds and task orchestration:**
 
 ```bash
-# Terminal 1: Daemon
-cd apps/agor-daemon && pnpm dev
+# Build all packages in dependency order
+pnpm build
 
-# Terminal 2: UI
-cd apps/agor-ui && pnpm dev
+# Run typecheck across all packages in parallel
+pnpm typecheck
+
+# Run dev servers (daemon + UI)
+pnpm dev
+```
+
+**How it works:**
+- Reads `turbo.json` for task definitions
+- Understands package dependencies
+- Runs tasks in parallel when possible
+- Caches build outputs for speed
+
+### Git Hooks (Husky + lint-staged)
+
+**Pre-commit checks:**
+- Runs automatically before `git commit`
+- Only checks staged files (fast!)
+- Runs: biome (linting), prettier (formatting), typecheck
+
+**Setup:**
+
+```bash
+pnpm prepare  # Installs git hooks
+```
+
+### Code Quality
+
+**Linting:**
+- [biome](https://biomejs.dev/) - Fast linter and formatter
+- Config: `biome.json`
+- Run: `pnpm lint` or `pnpm lint:fix`
+
+**Formatting:**
+- [prettier](https://prettier.io/) - Code formatter
+- Config: `.prettierrc`
+- Run: `pnpm format`
+
+### Root Scripts
+
+Common commands from root directory:
+
+```bash
+# Development
+pnpm dev              # Start daemon + UI
+pnpm docs:dev         # Start docs site
+
+# Code quality
+pnpm typecheck        # Type check all packages
+pnpm lint             # Lint all packages
+pnpm lint:fix         # Lint and auto-fix
+pnpm format           # Format all files
+pnpm check            # typecheck + lint + build
+pnpm check:fix        # lint:fix + typecheck + build
+
+# Building
+pnpm build            # Build all packages
+pnpm clean            # Clean all build artifacts
+
+# CLI (from root)
+pnpm agor <command>   # Run CLI without global install
 ```
 
 ## Tech Stack
 
-- **Backend:** FeathersJS, Drizzle ORM, LibSQL
-- **Frontend:** React 18, TypeScript, Ant Design, React Flow
-- **CLI:** oclif, chalk, cli-table3
+See the **[Architecture Guide](/guide/architecture#technology-stack)** for the complete tech stack (FeathersJS, Drizzle, React, Ant Design, etc.).
 
-## Contributing
+## Development Patterns
 
-See [CLAUDE.md](https://github.com/mistercrunch/agor/blob/main/CLAUDE.md) for detailed development guidelines.
+### Code Standards
+
+1. **Type-driven** - Use branded types for IDs, strict TypeScript
+2. **Centralize types** - ALWAYS import from `packages/core/src/types/` (never redefine)
+3. **Read before edit** - Always read files before modifying
+4. **Prefer Edit over Write** - Modify existing files when possible
+5. **Git operations** - ALWAYS use `simple-git` (NEVER subprocess `execSync`, `spawn`, etc.)
+6. **Error handling** - Clean user-facing errors, no stacktraces in CLI
+
+### Important Rules
+
+**Git Library:**
+- ✅ Use `simple-git` for ALL git operations
+- ❌ NEVER use `execSync`, `spawn`, or bash for git commands
+- Location: `packages/core/src/git/index.ts`
+
+**Watch Mode:**
+- User runs `pnpm dev` in daemon (watches core + daemon)
+- **DO NOT** run builds unless explicitly asked or you see compilation errors
+- **DO NOT** start background processes
+
+**Type Reuse:**
+- Import types from `packages/core/src/types/`
+- Sessions, Tasks, Worktrees, Messages, Repos, Boards, Users, etc.
+- Never redefine canonical types
+
+**Worktree-Centric Architecture:**
+- Boards display **Worktrees** as primary cards (NOT Sessions)
+- Sessions reference worktrees via required FK
+- Read `context/concepts/worktrees.md` before touching boards
+
+## Key Documentation
+
+Before diving into code, familiarize yourself with the architecture:
+
+- **[AGENTS.md](https://github.com/mistercrunch/agor/blob/main/AGENTS.md)** - Development patterns and project structure
+- **[CONTRIBUTING.md](https://github.com/mistercrunch/agor/blob/main/CONTRIBUTING.md)** - Complete contribution guide
+- **[context/README.md](https://github.com/mistercrunch/agor/blob/main/context/README.md)** - Architecture documentation index
+- **[context/concepts/core.md](https://github.com/mistercrunch/agor/blob/main/context/concepts/core.md)** - Core primitives and design philosophy
+
+## Testing
+
+```bash
+# Database operations
+sqlite3 ~/.agor/agor.db "SELECT COUNT(*) FROM messages"
+
+# Daemon health
+curl http://localhost:3030/health
+
+# CLI commands (ensure clean exit, no hanging)
+pnpm agor session list
+pnpm agor repo list
+```
+
+## Troubleshooting
+
+### "Method is not a function" after editing @agor/core
+
+**Should NOT happen** with new 2-process workflow (daemon watches core and auto-restarts).
+
+**If it still happens:**
+
+```bash
+cd packages/core && pnpm build
+cd apps/agor-daemon && pnpm dev
+```
+
+### tsx watch not picking up changes
+
+```bash
+cd apps/agor-daemon
+rm -rf node_modules/.tsx
+pnpm dev
+```
+
+### Daemon hanging
+
+```bash
+lsof -ti:3030 | xargs kill -9
+cd apps/agor-daemon && pnpm dev
+```
+
+## What to Contribute
+
+Browse the **[roadmap issues](https://github.com/mistercrunch/agor/issues?q=is%3Aissue%20state%3Aopen%20label%3Aroadmap)** for contribution ideas, or propose your own!
+
+## Next Steps
+
+- **[Architecture](/guide/architecture)** - System design and internals
+- **[CLI Reference](/cli)** - Command-line interface documentation
+- **[API Reference](/api)** - REST endpoints and WebSocket events
+- **[AGENTS.md](https://github.com/mistercrunch/agor/blob/main/AGENTS.md)** - Development patterns and project structure
