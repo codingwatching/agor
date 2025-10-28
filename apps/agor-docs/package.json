@@ -5,10 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "next dev -p 3001",
-    "build": "pnpm generate && next build",
-    "start": "next start",
-    "generate": "pnpm generate:cli",
-    "generate:cli": "tsx scripts/generate-cli-docs.ts"
+    "build": "next build",
+    "start": "next start"
   },
   "dependencies": {
     "@tsparticles/engine": "^3.9.1",
