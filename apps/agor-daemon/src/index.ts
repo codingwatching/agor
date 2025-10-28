@@ -421,7 +421,28 @@ async function main() {
   // Register messages service with custom streaming events
   app.use('/messages', messagesService, {
     events: ['streaming:start', 'streaming:chunk', 'streaming:end', 'streaming:error'],
-  });
+    docs: {
+      description: 'Conversation messages within AI agent sessions',
+      definitions: {
+        messages: {
+          type: 'object',
+          properties: {
+            message_id: { type: 'string', format: 'uuid' },
+            session_id: { type: 'string', format: 'uuid' },
+            task_id: { type: 'string', format: 'uuid' },
+            type: {
+              type: 'string',
+              enum: ['user', 'assistant', 'system', 'tool_use', 'tool_result'],
+            },
+            role: { type: 'string' },
+            content: { type: 'string' },
+            created_at: { type: 'string', format: 'date-time' },
+          },
+        },
+      },
+    },
+    // biome-ignore lint/suspicious/noExplicitAny: feathers-swagger docs option not typed in FeathersJS
+  } as any);
 
   app.use('/boards', createBoardsService(db));
 
