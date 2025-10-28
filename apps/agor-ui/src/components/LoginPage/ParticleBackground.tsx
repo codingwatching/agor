@@ -78,7 +78,7 @@ export function ParticleBackground() {
             default: 'bounce' as const,
           },
           random: false,
-          speed: 1,
+          speed: 2.5, // Faster base movement
           straight: false,
         },
         collisions: {
