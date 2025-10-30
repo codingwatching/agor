@@ -500,7 +500,7 @@ function AppContent() {
   };
 
   // Handle repo CRUD
-  const handleCreateRepo = async (data: { url: string; slug: string }) => {
+  const handleCreateRepo = async (data: { url: string; slug: string; default_branch: string }) => {
     if (!client) return;
     try {
       message.loading({ content: 'Cloning repository...', key: 'clone-repo', duration: 0 });
@@ -509,6 +509,7 @@ function AppContent() {
       await client.service('repos/clone').create({
         url: data.url,
         slug: data.slug,
+        default_branch: data.default_branch,
       });
 
       message.success({ content: 'Repository cloned successfully!', key: 'clone-repo' });

@@ -447,15 +447,33 @@ export class GeminiPromptService {
     // Map Agor permission mode to Gemini ApprovalMode
     const approvalMode = this.mapPermissionMode(permissionMode || 'ask');
 
-    // Check if client exists and update approval mode if it changed
+    // Check if client exists - NEVER clear the cache to preserve conversation history
     if (this.sessionClients.has(sessionId)) {
       const existingClient = this.sessionClients.get(sessionId)!;
-      // Update approval mode on existing client (in case it changed)
       const config = (existingClient as unknown as GeminiClientWithConfig).config;
+
+      // Update approval mode on existing client (in case it changed)
       if (config && typeof config.setApprovalMode === 'function') {
         config.setApprovalMode(approvalMode);
         console.log(`🔄 [Gemini] Updated approval mode for existing client: ${approvalMode}`);
       }
+
+      // For API key hot-reload: Call refreshAuth() which reads from process.env.GEMINI_API_KEY
+      // Config service updates process.env when credentials change, so this picks up new keys
+      // Note: refreshAuth() might fail if the key is invalid, but we log and continue
+      if (config && typeof config.refreshAuth === 'function') {
+        try {
+          await config.refreshAuth(AuthType.USE_GEMINI);
+          console.log(`🔄 [Gemini] Refreshed authentication from process.env.GEMINI_API_KEY`);
+        } catch (error) {
+          // Log but don't throw - let the subsequent prompt attempt fail with a better error
+          console.warn(
+            `⚠️  [Gemini] refreshAuth() failed: ${error instanceof Error ? error.message : String(error)}`
+          );
+          console.warn(`   Continuing anyway - prompt may fail if credentials are invalid`);
+        }
+      }
+
       return existingClient;
     }
 

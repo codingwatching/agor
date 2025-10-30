@@ -34,14 +34,14 @@ export const BoardsTable: React.FC<BoardsTableProps> = ({
   const boardSessionCounts = useMemo(() => {
     const counts = new Map<string, number>();
 
-    boards.forEach((board) => {
+    boards.forEach(board => {
       // Get worktrees for this board
-      const boardWorktrees = worktrees.filter((wt) => wt.board_id === board.board_id);
-      const boardWorktreeIds = new Set(boardWorktrees.map((wt) => wt.worktree_id));
+      const boardWorktrees = worktrees.filter(wt => wt.board_id === board.board_id);
+      const boardWorktreeIds = new Set(boardWorktrees.map(wt => wt.worktree_id));
 
       // Count sessions for these worktrees
       const sessionCount = sessions.filter(
-        (session) => session.worktree_id && boardWorktreeIds.has(session.worktree_id)
+        session => session.worktree_id && boardWorktreeIds.has(session.worktree_id)
       ).length;
 
       counts.set(board.board_id, sessionCount);
@@ -56,7 +56,7 @@ export const BoardsTable: React.FC<BoardsTableProps> = ({
   };
 
   const handleCreate = () => {
-    form.validateFields().then((values) => {
+    form.validateFields().then(values => {
       onCreate?.({
         name: values.name,
         icon: values.icon || '📋',
@@ -82,7 +82,7 @@ export const BoardsTable: React.FC<BoardsTableProps> = ({
   const handleUpdate = () => {
     if (!editingBoard) return;
 
-    form.validateFields().then((values) => {
+    form.validateFields().then(values => {
       onUpdate?.(editingBoard.board_id, {
         name: values.name,
         icon: values.icon,
@@ -153,7 +153,17 @@ export const BoardsTable: React.FC<BoardsTableProps> = ({
 
   return (
     <div>
-      <div style={{ marginBottom: 16 }}>
+      <div
+        style={{
+          marginBottom: 16,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
+        <Typography.Text type="secondary">
+          Create and manage boards for organizing sessions.
+        </Typography.Text>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)}>
           New Board
         </Button>

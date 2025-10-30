@@ -42,7 +42,7 @@ export const UsersTable: React.FC<UsersTableProps> = ({ users, onCreate, onUpdat
   };
 
   const handleCreate = () => {
-    form.validateFields().then((values) => {
+    form.validateFields().then(values => {
       onCreate?.({
         email: values.email,
         password: values.password,
@@ -89,7 +89,7 @@ export const UsersTable: React.FC<UsersTableProps> = ({ users, onCreate, onUpdat
         setEditModalOpen(false);
         setEditingUser(null);
       })
-      .catch((err) => {
+      .catch(err => {
         console.error('Validation failed:', err);
       });
   };
@@ -170,7 +170,15 @@ export const UsersTable: React.FC<UsersTableProps> = ({ users, onCreate, onUpdat
 
   return (
     <div>
-      <div style={{ marginBottom: 16 }}>
+      <div
+        style={{
+          marginBottom: 16,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
+        <Typography.Text type="secondary">Manage user accounts and permissions.</Typography.Text>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)}>
           New User
         </Button>

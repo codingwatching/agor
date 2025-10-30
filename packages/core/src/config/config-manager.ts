@@ -4,6 +4,7 @@
  * Handles loading and saving YAML configuration file.
  */
 
+import { readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -230,4 +231,50 @@ export async function getDaemonUrl(): Promise<string> {
   const host = config.daemon?.host || defaults.daemon?.host || 'localhost';
 
   return `http://${host}:${port}`;
+}
+
+/**
+ * Load config from ~/.agor/config.yaml (synchronous)
+ *
+ * Returns default config if file doesn't exist.
+ * Use for hot paths where async is not possible.
+ */
+export function loadConfigSync(): AgorConfig {
+  const configPath = getConfigPath();
+
+  try {
+    const content = readFileSync(configPath, 'utf-8');
+    const config = yaml.load(content) as AgorConfig;
+    return config || {};
+  } catch (error) {
+    // File doesn't exist or parse error - return default config
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return getDefaultConfig();
+    }
+    throw new Error(
+      `Failed to load config: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
+ * Get credential with precedence: config.yaml > process.env
+ *
+ * This implements the rule that UI-set credentials (in config.yaml) take precedence
+ * over environment variables. This allows users to override env vars via Settings UI.
+ *
+ * @param key - Credential key from CredentialKey enum
+ * @returns API key or undefined
+ */
+export function getCredential(
+  key: 'ANTHROPIC_API_KEY' | 'OPENAI_API_KEY' | 'GEMINI_API_KEY' | 'CURSOR_API_KEY'
+): string | undefined {
+  try {
+    const config = loadConfigSync();
+    // Precedence: config.yaml > process.env
+    return config.credentials?.[key] || process.env[key];
+  } catch {
+    // If config load fails, fall back to env var only
+    return process.env[key];
+  }
 }

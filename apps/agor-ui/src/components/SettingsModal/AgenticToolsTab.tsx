@@ -201,20 +201,22 @@ export const AgenticToolsTab: React.FC<AgenticToolsTabProps> = ({ client }) => {
           description={
             <div>
               <p style={{ marginBottom: token.marginXS }}>
-                There are three ways to authenticate with AI providers:
+                There are three ways to authenticate with AI providers,{' '}
+                <strong>in order of precedence</strong>:
               </p>
               <ol style={{ paddingLeft: token.paddingMD, marginBottom: 0 }}>
                 <li style={{ marginBottom: token.marginXXS }}>
-                  <strong>Individual CLI flows</strong> (e.g., <code>claude login</code>) - Each
-                  tool retains authentication in its own config
+                  <strong>This UI or CLI</strong> (<code>agor config set</code>) - Keys stored in{' '}
+                  <code>~/.agor/config.yaml</code> <strong>override all other methods</strong> and
+                  take effect immediately
                 </li>
                 <li style={{ marginBottom: token.marginXXS }}>
                   <strong>Environment variables</strong> - Set <code>ANTHROPIC_API_KEY</code>,{' '}
                   <code>OPENAI_API_KEY</code>, etc. wherever you start the Agor daemon
                 </li>
                 <li>
-                  <strong>This UI or CLI</strong> (<code>agor config set</code>) - Keys are stored
-                  in <code>~/.agor/config.yaml</code> and used by all sessions
+                  <strong>Individual CLI flows</strong> (e.g., <code>claude login</code>) - Each
+                  tool retains authentication in its own config
                 </li>
               </ol>
             </div>

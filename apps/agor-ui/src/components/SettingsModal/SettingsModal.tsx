@@ -40,7 +40,7 @@ export interface SettingsModalProps {
   onCreateBoard?: (board: Partial<Board>) => void;
   onUpdateBoard?: (boardId: string, updates: Partial<Board>) => void;
   onDeleteBoard?: (boardId: string) => void;
-  onCreateRepo?: (data: { url: string; slug: string }) => void;
+  onCreateRepo?: (data: { url: string; slug: string; default_branch: string }) => void;
   onUpdateRepo?: (repoId: string, updates: Partial<Repo>) => void;
   onDeleteRepo?: (repoId: string) => void;
   onDeleteWorktree?: (worktreeId: string, deleteFromFilesystem: boolean) => void;

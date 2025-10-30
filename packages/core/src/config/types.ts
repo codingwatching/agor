@@ -67,6 +67,16 @@ export interface AgorUISettings {
 }
 
 /**
+ * Supported credential keys (enum for type safety)
+ */
+export enum CredentialKey {
+  ANTHROPIC_API_KEY = 'ANTHROPIC_API_KEY',
+  OPENAI_API_KEY = 'OPENAI_API_KEY',
+  GEMINI_API_KEY = 'GEMINI_API_KEY',
+  CURSOR_API_KEY = 'CURSOR_API_KEY',
+}
+
+/**
  * Tool credentials (API keys, tokens, etc.)
  */
 export interface AgorCredentials {

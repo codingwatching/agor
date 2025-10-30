@@ -343,7 +343,17 @@ export const MCPServersTable: React.FC<MCPServersTableProps> = ({
 
   return (
     <div>
-      <div style={{ marginBottom: 16 }}>
+      <div
+        style={{
+          marginBottom: 16,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
+        <Typography.Text type="secondary">
+          Configure Model Context Protocol servers for enhanced AI capabilities.
+        </Typography.Text>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)}>
           New MCP Server
         </Button>

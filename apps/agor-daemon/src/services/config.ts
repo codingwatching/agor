@@ -97,6 +97,20 @@ export class ConfigService {
 
     await saveConfig(config);
 
+    // Propagate credentials to process.env for hot-reload
+    // Precedence rule: config.yaml (UI) > environment variables
+    if (data.credentials) {
+      for (const [key, value] of Object.entries(data.credentials)) {
+        if (value === undefined || value === null) {
+          // Delete from process.env if credential was cleared
+          delete process.env[key];
+        } else {
+          // Update process.env (UI takes precedence)
+          process.env[key] = value;
+        }
+      }
+    }
+
     // Return masked config
     return maskCredentials(config);
   }

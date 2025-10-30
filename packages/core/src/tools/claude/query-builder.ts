@@ -9,6 +9,7 @@ import { execSync } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk/sdk';
+import { getCredential } from '../../config';
 import type { MCPServerRepository } from '../../db/repositories/mcp-servers';
 import type { MessagesRepository } from '../../db/repositories/messages';
 import type { SessionMCPServerRepository } from '../../db/repositories/session-mcp-servers';
@@ -261,8 +262,10 @@ export async function setupQuery(
 
   // Add optional apiKey if provided
   // NOTE: Don't require API key - user may have used `claude login` (OAuth)
-  if (deps.apiKey || process.env.ANTHROPIC_API_KEY) {
-    queryOptions.apiKey = deps.apiKey || process.env.ANTHROPIC_API_KEY;
+  // Precedence: config.yaml (UI) > process.env
+  const apiKey = getCredential('ANTHROPIC_API_KEY');
+  if (apiKey) {
+    queryOptions.apiKey = apiKey;
   }
 
   // Handle resume, fork, and spawn cases
@@ -514,9 +517,7 @@ export async function setupQuery(
     console.error(`❌ CRITICAL: query() threw synchronous error (very unusual):`, syncError);
     console.error(`   Claude Code path: ${claudeCodePath}`);
     console.error(`   CWD: ${cwd}`);
-    console.error(
-      `   API key set: ${deps.apiKey ? 'YES (custom)' : process.env.ANTHROPIC_API_KEY ? 'YES (env)' : 'NO'}`
-    );
+    console.error(`   API key set: ${apiKey ? 'YES' : 'NO'}`);
     console.error(`   Resume session: ${queryOptions.resume || 'none (fresh session)'}`);
     throw syncError;
   }

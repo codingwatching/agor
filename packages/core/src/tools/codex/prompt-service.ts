@@ -8,6 +8,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { Codex, type Thread, type ThreadItem } from '@openai/codex-sdk';
+import { getCredential } from '../../config';
 import type { MessagesRepository } from '../../db/repositories/messages';
 import type { SessionMCPServerRepository } from '../../db/repositories/session-mcp-servers';
 import type { SessionRepository } from '../../db/repositories/sessions';
@@ -119,6 +120,16 @@ export class CodexPromptService {
       apiKey: this.apiKey || process.env.OPENAI_API_KEY,
     });
     console.log('✅ [Codex] SDK reinitialized');
+  }
+
+  /**
+   * Refresh Codex client with latest API key from config
+   * Ensures hot-reload of credentials from Settings UI
+   */
+  private refreshClient(): void {
+    this.codex = new Codex({
+      apiKey: getCredential('OPENAI_API_KEY'),
+    });
   }
 
   /**
@@ -322,6 +333,10 @@ ${mcpServersToml}`;
     _taskId?: TaskID,
     permissionMode?: PermissionMode
   ): AsyncGenerator<CodexStreamEvent> {
+    // Recreate Codex client with fresh API key on every prompt
+    // This ensures hot-reload of credentials from Settings UI
+    this.refreshClient();
+
     // Get session to check for existing thread ID and working directory
     const session = await this.sessionsRepo.findById(sessionId);
     if (!session) {
@@ -597,6 +612,10 @@ ${mcpServersToml}`;
     taskId?: TaskID,
     permissionMode?: PermissionMode
   ): Promise<CodexPromptResult> {
+    // Recreate Codex client with fresh API key on every prompt
+    // This ensures hot-reload of credentials from Settings UI
+    this.refreshClient();
+
     const messages: CodexPromptResult['messages'] = [];
     let threadId = '';
     const inputTokens = 0;

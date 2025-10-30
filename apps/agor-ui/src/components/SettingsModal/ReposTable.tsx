@@ -39,7 +39,7 @@ function extractSlugFromUrl(url: string): string {
 
 interface ReposTableProps {
   repos: Repo[];
-  onCreate?: (data: { url: string; slug: string }) => void;
+  onCreate?: (data: { url: string; slug: string; default_branch: string }) => void;
   onUpdate?: (repoId: string, updates: Partial<Repo>) => void;
   onDelete?: (repoId: string) => void;
 }
@@ -69,6 +69,10 @@ export const ReposTable: React.FC<ReposTableProps> = ({ repos, onCreate, onUpdat
   const handleOpenCreateModal = () => {
     setEditingRepo(null);
     repoForm.resetFields();
+    // Set default values for new repo
+    repoForm.setFieldsValue({
+      default_branch: 'main',
+    });
     setRepoModalOpen(true);
   };
 
@@ -94,6 +98,7 @@ export const ReposTable: React.FC<ReposTableProps> = ({ repos, onCreate, onUpdat
         onCreate?.({
           url: values.url,
           slug: values.slug,
+          default_branch: values.default_branch,
         });
       }
       repoForm.resetFields();
@@ -265,6 +270,7 @@ export const ReposTable: React.FC<ReposTableProps> = ({ repos, onCreate, onUpdat
           <Form.Item
             label="Default Branch"
             name="default_branch"
+            initialValue="main"
             rules={[{ required: true, message: 'Please enter the default branch' }]}
             extra="The main branch to base new worktrees on (e.g., 'main', 'master', 'develop')"
           >

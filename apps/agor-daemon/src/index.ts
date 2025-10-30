@@ -157,8 +157,9 @@ async function main() {
   // Get UI port from config for CORS
   const UI_PORT = config.ui?.port || 5173;
 
-  // Handle ANTHROPIC_API_KEY with priority: env var > config > Claude CLI auth
-  // If config has a key but env doesn't, set env var so spawned processes can use it
+  // Handle ANTHROPIC_API_KEY with priority: config.yaml > env var
+  // Config service will update process.env when credentials change (hot-reload)
+  // Tools will read fresh credentials dynamically via getCredential() helper
   if (config.credentials?.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_API_KEY) {
     process.env.ANTHROPIC_API_KEY = config.credentials.ANTHROPIC_API_KEY;
     console.log('✅ Set ANTHROPIC_API_KEY from config for Claude Code');
@@ -905,8 +906,9 @@ async function main() {
     worktreesRepo // Worktrees repo for fetching worktree paths
   );
 
-  // Handle OPENAI_API_KEY with priority: env var > config
-  // If config has a key but env doesn't, set env var so spawned processes can use it
+  // Handle OPENAI_API_KEY with priority: config.yaml > env var
+  // Config service will update process.env when credentials change (hot-reload)
+  // CodexTool will read fresh credentials dynamically via getCredential() helper
   if (config.credentials?.OPENAI_API_KEY && !process.env.OPENAI_API_KEY) {
     process.env.OPENAI_API_KEY = config.credentials.OPENAI_API_KEY;
     console.log('✅ Set OPENAI_API_KEY from config for Codex');
@@ -929,8 +931,9 @@ async function main() {
     console.warn('   Or set OPENAI_API_KEY environment variable');
   }
 
-  // Handle GEMINI_API_KEY with priority: env var > config
-  // If config has a key but env doesn't, set env var so spawned processes can use it
+  // Handle GEMINI_API_KEY with priority: config.yaml > env var
+  // Config service will update process.env when credentials change (hot-reload)
+  // GeminiTool will read fresh credentials dynamically via refreshAuth()
   if (config.credentials?.GEMINI_API_KEY && !process.env.GEMINI_API_KEY) {
     process.env.GEMINI_API_KEY = config.credentials.GEMINI_API_KEY;
     console.log('✅ Set GEMINI_API_KEY from config for Gemini');
