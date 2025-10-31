@@ -20,19 +20,14 @@ import {
   type User,
 } from '@agor/core/types';
 import {
-  CheckCircleOutlined,
-  CloseCircleOutlined,
   DownOutlined,
   FileTextOutlined,
   GithubOutlined,
-  LockOutlined,
-  MinusCircleOutlined,
   RightOutlined,
   RobotOutlined,
-  StopOutlined,
 } from '@ant-design/icons';
 import { Bubble } from '@ant-design/x';
-import { Avatar, Collapse, Space, Spin, Tag, Typography, theme } from 'antd';
+import { Avatar, Collapse, Space, Tag, Typography, theme } from 'antd';
 import type React from 'react';
 import { useMemo } from 'react';
 import { useAgorClient } from '../../hooks/useAgorClient';
@@ -45,9 +40,11 @@ import {
   GitStatePill,
   MessageCountPill,
   ModelPill,
+  TimerPill,
   TokenCountPill,
   ToolCountPill,
 } from '../Pill';
+import { TaskStatusIcon } from '../TaskStatusIcon';
 import ToolExecutingIndicator from '../ToolExecutingIndicator';
 import { ToolIcon } from '../ToolIcon';
 
@@ -84,7 +81,7 @@ function isAgentChainMessage(message: Message): boolean {
   // EXCEPTION: User messages with ONLY tool_result blocks are part of agent execution
   // (tool results are technically "user" role per Anthropic API, but they're automated responses)
   if (message.role === MessageRole.USER && Array.isArray(message.content)) {
-    const hasOnlyToolResults = message.content.every((block) => block.type === 'tool_result');
+    const hasOnlyToolResults = message.content.every(block => block.type === 'tool_result');
     if (hasOnlyToolResults) return true; // Part of agent chain, don't break it
   }
 
@@ -101,9 +98,9 @@ function isAgentChainMessage(message: Message): boolean {
 
   // Array content - check what types of blocks we have
   if (Array.isArray(message.content)) {
-    const hasTools = message.content.some((block) => block.type === 'tool_use');
+    const hasTools = message.content.some(block => block.type === 'tool_use');
     const hasThinking = false; // 'thinking' type not in current ContentBlock union
-    const hasText = message.content.some((block) => block.type === 'text');
+    const hasText = message.content.some(block => block.type === 'text');
 
     // If it has tools BUT ALSO has text, treat as mixed message
     // We'll split it: tools go to AgentChain, text goes to MessageBlock
@@ -175,44 +172,6 @@ export const TaskBlock: React.FC<TaskBlockProps> = ({
   // Group messages into blocks
   const blocks = useMemo(() => groupMessagesIntoBlocks(messages), [messages]);
 
-  const getStatusIcon = () => {
-    switch (task.status) {
-      case 'completed':
-        return <CheckCircleOutlined style={{ color: '#52c41a' }} />;
-      case 'running':
-        return <Spin />;
-      case 'stopping':
-        return <StopOutlined style={{ color: '#faad14' }} />; // Orange while stopping
-      case 'stopped':
-        return <MinusCircleOutlined style={{ color: '#ff7a45' }} />; // Orange-red for stopped
-      case 'awaiting_permission':
-        return <LockOutlined style={{ color: '#faad14' }} />;
-      case 'failed':
-        return <CloseCircleOutlined style={{ color: '#ff4d4f' }} />;
-      default:
-        return null;
-    }
-  };
-
-  const _getStatusColor = () => {
-    switch (task.status) {
-      case 'completed':
-        return 'success';
-      case 'running':
-        return 'processing';
-      case 'stopping':
-        return 'warning'; // Orange while stopping
-      case 'stopped':
-        return 'warning'; // Orange for stopped (distinct from failed)
-      case 'awaiting_permission':
-        return 'warning';
-      case 'failed':
-        return 'error';
-      default:
-        return 'default';
-    }
-  };
-
   // Calculate context window usage percentage for visual progress bar
   const contextWindowPercentage =
     task.context_window && task.context_window_limit
@@ -234,7 +193,9 @@ export const TaskBlock: React.FC<TaskBlockProps> = ({
   const taskHeader = (
     <div style={{ width: '100%' }}>
       <Space size={token.sizeUnit} align="start" style={{ width: '100%' }}>
-        <div style={{ fontSize: 16, marginTop: token.sizeUnit / 4 }}>{getStatusIcon()}</div>
+        <div style={{ fontSize: 16, marginTop: token.sizeUnit / 4 }}>
+          <TaskStatusIcon status={task.status} size={18} />
+        </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div
             style={{
@@ -253,6 +214,13 @@ export const TaskBlock: React.FC<TaskBlockProps> = ({
 
           {/* Task metadata */}
           <Space size={token.sizeUnit * 1.5} style={{ marginTop: token.sizeUnit / 2 }}>
+            <TimerPill
+              status={task.status}
+              startedAt={task.message_range?.start_timestamp || task.created_at}
+              endedAt={task.message_range?.end_timestamp || task.completed_at}
+              durationMs={task.duration_ms}
+              tooltip="Task runtime"
+            />
             {task.created_by && (
               <CreatedByTag
                 createdBy={task.created_by}
@@ -332,7 +300,7 @@ export const TaskBlock: React.FC<TaskBlockProps> = ({
                     const content = block.message.content as PermissionRequestContent;
                     if (content.status === PermissionStatus.PENDING) {
                       // Check if this is the first pending permission request
-                      isFirstPending = !blocks.slice(0, blockIndex).some((b) => {
+                      isFirstPending = !blocks.slice(0, blockIndex).some(b => {
                         if (b.type === 'message' && b.message.type === 'permission_request') {
                           const c = b.message.content as PermissionRequestContent;
                           return c.status === PermissionStatus.PENDING;

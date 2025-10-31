@@ -21,3 +21,4 @@ export {
   ToolCountPill,
   WorktreePill,
 } from './Pill';
+export { TimerPill } from './TimerPill';

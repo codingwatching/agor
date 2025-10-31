@@ -1,15 +1,13 @@
 import type { Task } from '@agor/core/types';
 import {
-  CheckCircleFilled,
-  ClockCircleOutlined,
-  CloseCircleFilled,
   EditOutlined,
   FileTextOutlined,
   GithubOutlined,
   MessageOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
-import { List, Space, Spin, Tag, Tooltip, Typography, theme } from 'antd';
+import { List, Space, Tag, Tooltip, Typography, theme } from 'antd';
+import { TaskStatusIcon } from '../TaskStatusIcon';
 
 const { useToken } = theme;
 
@@ -23,19 +21,6 @@ interface TaskListItemProps {
 
 const TaskListItem = ({ task, onClick, compact = false }: TaskListItemProps) => {
   const { token } = useToken();
-
-  const getStatusIcon = () => {
-    switch (task.status) {
-      case 'completed':
-        return <CheckCircleFilled style={{ color: token.colorSuccess, fontSize: 16 }} />;
-      case 'running':
-        return <Spin />;
-      case 'failed':
-        return <CloseCircleFilled style={{ color: token.colorError, fontSize: 16 }} />;
-      default:
-        return <ClockCircleOutlined style={{ color: token.colorTextDisabled, fontSize: 16 }} />;
-    }
-  };
 
   const messageCount = task.message_range.end_index - task.message_range.start_index + 1;
   const hasReport = !!task.report;
@@ -64,7 +49,9 @@ const TaskListItem = ({ task, onClick, compact = false }: TaskListItemProps) => 
         <div style={{ marginBottom: 4 }}>
           <Space size={8}>
             <Tooltip title={<div style={{ whiteSpace: 'pre-wrap' }}>{task.full_prompt}</div>}>
-              <span>{getStatusIcon()}</span>
+              <span>
+                <TaskStatusIcon status={task.status} size={16} />
+              </span>
             </Tooltip>
             <Typography.Text style={{ fontSize: compact ? 13 : 14, fontWeight: 500 }}>
               {displayDescription}

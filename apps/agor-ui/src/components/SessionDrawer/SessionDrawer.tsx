@@ -50,6 +50,7 @@ import {
   RepoPill,
   SessionIdPill,
   SpawnPill,
+  TimerPill,
   TokenCountPill,
 } from '../Pill';
 import { ToolIcon } from '../ToolIcon';
@@ -172,6 +173,25 @@ const SessionDrawer = ({
       };
     }
     return null;
+  }, [tasks]);
+
+  const footerTimerTask = React.useMemo(() => {
+    if (tasks.length === 0) {
+      return null;
+    }
+
+    for (let index = tasks.length - 1; index >= 0; index -= 1) {
+      const candidate = tasks[index];
+      if (
+        candidate.status === TaskStatus.RUNNING ||
+        candidate.status === TaskStatus.STOPPING ||
+        candidate.status === TaskStatus.AWAITING_PERMISSION
+      ) {
+        return candidate;
+      }
+    }
+
+    return tasks[tasks.length - 1];
   }, [tasks]);
 
   // Update permission mode when session changes
@@ -524,6 +544,23 @@ const SessionDrawer = ({
           />
           <Space style={{ width: '100%', justifyContent: 'space-between' }}>
             <Space size={8}>
+              {footerTimerTask && (
+                <TimerPill
+                  status={footerTimerTask.status}
+                  startedAt={
+                    footerTimerTask.message_range?.start_timestamp || footerTimerTask.created_at
+                  }
+                  endedAt={
+                    footerTimerTask.message_range?.end_timestamp || footerTimerTask.completed_at
+                  }
+                  durationMs={footerTimerTask.duration_ms}
+                  tooltip={
+                    footerTimerTask.status === TaskStatus.RUNNING
+                      ? 'Active task runtime'
+                      : 'Last task duration'
+                  }
+                />
+              )}
               <SessionIdPill
                 sessionId={session.session_id}
                 sdkSessionId={session.sdk_session_id}

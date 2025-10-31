@@ -13,6 +13,7 @@ import {
   ToolCountPill,
   WorktreePill,
 } from './Pill';
+import { TimerPill } from './TimerPill';
 
 const meta = {
   title: 'Components/Pill',
@@ -57,6 +58,18 @@ export const AllPills: Story = {
           <StatusPill status="failed" />
           <StatusPill status="running" />
           <StatusPill status="pending" />
+        </Space>
+      </div>
+
+      <div>
+        <h3>Timer Pills</h3>
+        <Space wrap>
+          <TimerPill status="running" startedAt={new Date(Date.now() - 90_000)} />
+          <TimerPill
+            status="completed"
+            startedAt={new Date(Date.now() - 10 * 60 * 1000)}
+            endedAt={new Date(Date.now() - 8 * 60 * 1000)}
+          />
         </Space>
       </div>
 
@@ -138,6 +151,24 @@ export const Status: Story = {
       <StatusPill status="failed" />
       <StatusPill status="running" />
       <StatusPill status="pending" />
+    </Space>
+  ),
+};
+
+export const Timer: Story = {
+  render: () => (
+    <Space>
+      <TimerPill status="running" startedAt={new Date(Date.now() - 45_000)} />
+      <TimerPill
+        status="completed"
+        startedAt={new Date(Date.now() - 6 * 60 * 1000)}
+        endedAt={new Date(Date.now() - 3 * 60 * 1000)}
+      />
+      <TimerPill
+        status="failed"
+        startedAt={new Date(Date.now() - 5 * 60 * 1000)}
+        endedAt={new Date(Date.now() - 4 * 60 * 1000)}
+      />
     </Space>
   ),
 };
