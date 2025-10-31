@@ -8,37 +8,11 @@ echo "🚀 Starting Agor development environment..."
 echo "📦 Checking dependencies..."
 CI=true pnpm install --reporter=append-only
 
-# Initialize database if it doesn't exist
-if [ ! -f /root/.agor/agor.db ]; then
-  echo "📦 Initializing database..."
-  pnpm exec tsx packages/core/src/db/scripts/setup-db.ts
-
-  # Wait a moment for database to be fully written
-  sleep 1
-
-  # Verify users table exists
-  echo "🔍 Verifying database schema..."
-  sqlite3 /root/.agor/agor.db "SELECT name FROM sqlite_master WHERE type='table' AND name='users';" || {
-    echo "❌ Users table not found! Database schema may be incomplete."
-    exit 1
-  }
-
-  echo "👤 Creating default admin user..."
-  # Create config with auth enabled (use DAEMON_PORT env var or default to 3030)
-  mkdir -p /root/.agor
-  cat > /root/.agor/config.yaml <<EOF
-daemon:
-  port: ${DAEMON_PORT:-3030}
-  host: localhost
-  allowAnonymous: false
-  requireAuth: true
-EOF
-
-  # Create admin user via CLI (uses defaults: admin@agor.live / admin)
-  pnpm --filter @agor/cli exec tsx bin/dev.ts user create-admin
-else
-  echo "📦 Database already exists"
-fi
+# Database initialization is handled by the daemon on startup
+# Docker uses anonymous-first mode by default (matching Agor's local-first philosophy)
+# To enable authentication, set config manually:
+#   docker compose exec agor-dev agor config set daemon.requireAuth true
+#   docker compose exec agor-dev agor user create-admin
 
 # Start daemon in background (use DAEMON_PORT env var or default to 3030)
 echo "📡 Starting daemon on port ${DAEMON_PORT:-3030}..."
