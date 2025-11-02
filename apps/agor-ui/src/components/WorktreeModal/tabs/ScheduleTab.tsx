@@ -41,11 +41,11 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
   const [scheduleEnabled, setScheduleEnabled] = useState(worktree.schedule_enabled || false);
   const [cronExpression, setCronExpression] = useState(worktree.schedule_cron || '0 0 * * *');
   const [agenticTool, setAgenticTool] = useState<string>(
-    worktree.schedule_agentic_tool || 'claude-code'
+    worktree.schedule?.agentic_tool || 'claude-code'
   );
-  const [retention, setRetention] = useState<number>(worktree.schedule_retention || 5);
+  const [retention, setRetention] = useState<number>(worktree.schedule?.retention || 5);
   const [promptTemplate, setPromptTemplate] = useState<string>(
-    worktree.schedule_prompt_template || ''
+    worktree.schedule?.prompt_template || ''
   );
   const [humanReadable, setHumanReadable] = useState<string>('');
 
@@ -112,6 +112,8 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
         permission_mode: formValues.permissionMode,
         model_config: formValues.modelConfig,
         mcp_server_ids: formValues.mcpServerIds || [],
+        created_at: worktree.schedule?.created_at || Date.now(),
+        created_by: worktree.schedule?.created_by || worktree.created_by,
       };
 
       await onUpdate(worktree.worktree_id, {

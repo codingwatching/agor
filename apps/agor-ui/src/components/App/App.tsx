@@ -25,7 +25,7 @@ interface AgenticToolOption {
   id: string; // AgenticToolName as string
   name: string;
   icon: string;
-  installed: boolean;
+  installed?: boolean;
   installable?: boolean;
   version?: string;
   description?: string;
