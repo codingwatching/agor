@@ -76,11 +76,6 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
     setIsFormValid(hasAgent);
   };
 
-  const handleInstall = (agentId: string) => {
-    console.log('Install agent:', agentId);
-    // TODO: Implement agent installation
-  };
-
   const handleCreate = () => {
     form.validateFields().then(values => {
       const config: NewSessionConfig = {
@@ -141,7 +136,6 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
             agents={availableAgents}
             selectedAgentId={selectedAgent}
             onSelect={setSelectedAgent}
-            onInstall={handleInstall}
             columns={3}
             showHelperText={true}
             showComparisonLink={true}

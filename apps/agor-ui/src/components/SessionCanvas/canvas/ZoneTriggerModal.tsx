@@ -15,21 +15,11 @@ import type {
   ZoneTrigger,
 } from '@agor/core/types';
 
-// UI-only type for agent selection (different from AgenticTool which has UUIDv7 ID)
-interface AgenticToolOption {
-  id: string; // AgenticToolName as string
-  name: string;
-  icon: string;
-  installed: boolean;
-  installable?: boolean;
-  version?: string;
-  description?: string;
-}
-
 import { DownOutlined } from '@ant-design/icons';
 import { Alert, Collapse, Form, Input, Modal, Radio, Select, Space, Typography } from 'antd';
 import Handlebars from 'handlebars';
 import { useEffect, useMemo, useState } from 'react';
+import type { AgenticToolOption } from '../../../types';
 import { AgenticToolConfigForm } from '../../AgenticToolConfigForm';
 import { AgentSelectionCard } from '../../AgentSelectionCard';
 import type { ModelConfig } from '../../ModelSelector';
@@ -93,7 +83,7 @@ export const ZoneTriggerModal = ({
 
   // Filter sessions for this worktree
   const worktreeSessions = useMemo(() => {
-    return sessions.filter((s) => s.worktree_id === worktreeId);
+    return sessions.filter(s => s.worktree_id === worktreeId);
   }, [sessions, worktreeId]);
 
   // Smart default: Most recent active/completed session
@@ -101,7 +91,7 @@ export const ZoneTriggerModal = ({
     if (worktreeSessions.length === 0) return '';
 
     // Prioritize running sessions
-    const runningSessions = worktreeSessions.filter((s) => s.status === 'running');
+    const runningSessions = worktreeSessions.filter(s => s.status === 'running');
     if (runningSessions.length > 0) {
       // Most recently updated running session
       return runningSessions.sort(
@@ -160,11 +150,10 @@ export const ZoneTriggerModal = ({
           mode === 'reuse_existing' && selectedSessionId
             ? {
                 description:
-                  worktreeSessions.find((s) => s.session_id === selectedSessionId)?.description ||
-                  '',
+                  worktreeSessions.find(s => s.session_id === selectedSessionId)?.description || '',
                 context:
-                  worktreeSessions.find((s) => s.session_id === selectedSessionId)
-                    ?.custom_context || {},
+                  worktreeSessions.find(s => s.session_id === selectedSessionId)?.custom_context ||
+                  {},
               }
             : {
                 description: '',
@@ -242,7 +231,7 @@ export const ZoneTriggerModal = ({
         <div>
           <Radio.Group
             value={mode}
-            onChange={(e) => setMode(e.target.value)}
+            onChange={e => setMode(e.target.value)}
             style={{ width: '100%' }}
           >
             <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -277,7 +266,7 @@ export const ZoneTriggerModal = ({
                   marginTop: 8,
                 }}
               >
-                {availableAgents.map((agent) => (
+                {availableAgents.map(agent => (
                   <AgentSelectionCard
                     key={agent.id}
                     agent={agent}
@@ -321,7 +310,7 @@ export const ZoneTriggerModal = ({
                 onChange={setSelectedSessionId}
                 style={{ width: '100%' }}
                 size="large"
-                options={worktreeSessions.map((session) => ({
+                options={worktreeSessions.map(session => ({
                   value: session.session_id,
                   label: (
                     <span>
@@ -339,7 +328,7 @@ export const ZoneTriggerModal = ({
               </Typography.Text>
               <Radio.Group
                 value={selectedAction}
-                onChange={(e) => setSelectedAction(e.target.value)}
+                onChange={e => setSelectedAction(e.target.value)}
                 style={{ width: '100%' }}
               >
                 <Space direction="vertical" style={{ width: '100%' }}>
@@ -365,7 +354,7 @@ export const ZoneTriggerModal = ({
                       marginTop: 8,
                     }}
                   >
-                    {availableAgents.map((agent) => (
+                    {availableAgents.map(agent => (
                       <AgentSelectionCard
                         key={agent.id}
                         agent={agent}
@@ -406,7 +395,7 @@ export const ZoneTriggerModal = ({
           </Typography.Text>
           <Input.TextArea
             value={editableTemplate}
-            onChange={(e) => setEditableTemplate(e.target.value)}
+            onChange={e => setEditableTemplate(e.target.value)}
             rows={8}
             style={{
               fontFamily: 'monospace',

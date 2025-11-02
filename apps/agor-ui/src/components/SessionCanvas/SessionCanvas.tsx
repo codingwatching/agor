@@ -29,20 +29,9 @@ import type {
   Task,
   Worktree,
 } from '@agor/core/types';
-
-// UI-only type for agent selection (different from AgenticTool which has UUIDv7 ID)
-interface AgenticToolOption {
-  id: string; // AgenticToolName as string
-  name: string;
-  icon: string;
-  installed: boolean;
-  installable?: boolean;
-  version?: string;
-  description?: string;
-}
-
 import { useCursorTracking } from '../../hooks/useCursorTracking';
 import { usePresence } from '../../hooks/usePresence';
+import type { AgenticToolOption } from '../../types';
 import SessionCard from '../SessionCard';
 import WorktreeCard from '../WorktreeCard';
 import { CommentNode, ZoneNode } from './canvas/BoardObjectNodes';

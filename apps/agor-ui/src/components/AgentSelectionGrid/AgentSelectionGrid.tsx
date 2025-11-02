@@ -10,19 +10,13 @@
  */
 
 import { Typography } from 'antd';
+import type { AgenticToolOption } from '../../types';
 import { AgentSelectionCard } from '../AgentSelectionCard';
 
 const { Text } = Typography;
 
-export interface AgenticToolOption {
-  id: string; // AgenticToolName as string
-  name: string;
-  icon: string;
-  installed?: boolean;
-  installable?: boolean;
-  version?: string;
-  description?: string;
-}
+// Re-export for backwards compatibility
+export type { AgenticToolOption };
 
 export interface AgentSelectionGridProps {
   /** Available agents to display */
@@ -31,8 +25,6 @@ export interface AgentSelectionGridProps {
   selectedAgentId: string | null;
   /** Callback when an agent is selected */
   onSelect: (agentId: string) => void;
-  /** Callback when install is clicked for an agent */
-  onInstall?: (agentId: string) => void;
   /** Number of columns (2 or 3) */
   columns?: 2 | 3;
   /** Show helper text when no agent selected */
@@ -52,7 +44,6 @@ export const AgentSelectionGrid: React.FC<AgentSelectionGridProps> = ({
   agents,
   selectedAgentId,
   onSelect,
-  onInstall = () => {},
   columns = 3,
   showHelperText = false,
   helperText = 'Click on an agent card to select it',
@@ -79,7 +70,6 @@ export const AgentSelectionGrid: React.FC<AgentSelectionGridProps> = ({
             agent={agent}
             selected={selectedAgentId === agent.id}
             onClick={() => onSelect(agent.id)}
-            onInstall={() => onInstall(agent.id)}
           />
         ))}
       </div>

@@ -17,22 +17,11 @@ import { PermissionScope } from '@agor/core/types';
 import { Layout, message } from 'antd';
 import { useEffect, useState } from 'react';
 import { usePresence } from '../../hooks/usePresence';
+import type { AgenticToolOption } from '../../types';
 import { AppHeader } from '../AppHeader';
-import type { ModelConfig } from '../ModelSelector';
-
-// UI-only type for agent selection dropdown (different from AgenticTool which has UUIDv7 ID)
-interface AgenticToolOption {
-  id: string; // AgenticToolName as string
-  name: string;
-  icon: string;
-  installed?: boolean;
-  installable?: boolean;
-  version?: string;
-  description?: string;
-}
-
 import { CommentsPanel } from '../CommentsPanel';
 import { EnvironmentLogsModal } from '../EnvironmentLogsModal';
+import type { ModelConfig } from '../ModelSelector';
 import { NewSessionButton } from '../NewSessionButton';
 import { type NewSessionConfig, NewSessionModal } from '../NewSessionModal';
 import { type NewWorktreeConfig, NewWorktreeModal } from '../NewWorktreeModal';
