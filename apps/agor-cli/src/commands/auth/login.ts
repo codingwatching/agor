@@ -4,7 +4,7 @@
  * Prompts for email/password and stores JWT token for future CLI commands
  */
 
-import { createClient, isDaemonRunning } from '@agor/core/api';
+import { createRestClient, isDaemonRunning } from '@agor/core/api';
 import { getDaemonUrl } from '@agor/core/config';
 import { Command, Flags } from '@oclif/core';
 import chalk from 'chalk';
@@ -63,8 +63,8 @@ export default class Login extends Command {
         required: true,
       }));
 
-    // Create client with REST-only transport (prevents hanging)
-    const client = createClient(daemonUrl, true, { verbose: false, restOnly: true });
+    // Create REST-only client (prevents hanging)
+    const client = await createRestClient(daemonUrl);
 
     try {
       this.log(chalk.dim('Authenticating...'));
@@ -89,8 +89,8 @@ export default class Login extends Command {
         user: {
           user_id: authResult.user.user_id,
           email: authResult.user.email,
-          name: authResult.user.name,
-          role: authResult.user.role,
+          name: (authResult.user as any).name, // AuthenticatedUser doesn't include name, but it's returned
+          role: authResult.user.role || 'viewer',
         },
         expiresAt,
       });
@@ -99,10 +99,11 @@ export default class Login extends Command {
       this.log(chalk.green('✓ Logged in successfully'));
       this.log('');
       this.log(chalk.dim('User:'), chalk.cyan(authResult.user.email));
-      if (authResult.user.name) {
-        this.log(chalk.dim('Name:'), authResult.user.name);
+      const userName = (authResult.user as any).name;
+      if (userName) {
+        this.log(chalk.dim('Name:'), userName);
       }
-      this.log(chalk.dim('Role:'), authResult.user.role);
+      this.log(chalk.dim('Role:'), authResult.user.role || 'viewer');
       this.log('');
       this.log(chalk.dim('Token saved to ~/.agor/cli-token'));
       this.log(chalk.dim('Token expires in 7 days'));
@@ -143,29 +144,21 @@ export default class Login extends Command {
       });
 
       const hiddenOutput = options.type === 'hide';
-      if (hiddenOutput) {
+      if (hiddenOutput && process.stdin.isTTY) {
         // Disable stdin echo for password input
+        // biome-ignore lint/suspicious/noExplicitAny: setRawMode exists in TTY mode
         (process.stdin as any).setRawMode?.(true);
       }
 
       rl.question(`${message}: `, (answer: string) => {
-        if (hiddenOutput) {
+        if (hiddenOutput && process.stdin.isTTY) {
+          // biome-ignore lint/suspicious/noExplicitAny: setRawMode exists in TTY mode
           (process.stdin as any).setRawMode?.(false);
           console.log(''); // New line after password input
         }
         rl.close();
         resolve(answer.trim());
       });
-
-      if (hiddenOutput) {
-        // Manual password masking
-        rl.input.on('keypress', () => {
-          const len = (rl as any).line.length;
-          readline.moveCursor(process.stdout, -len, 0);
-          readline.clearLine(process.stdout, 1);
-          process.stdout.write('*'.repeat(len));
-        });
-      }
     });
   }
 }

@@ -5,7 +5,7 @@
  */
 
 import type { AgorClient } from '@agor/core/api';
-import { createClient, isDaemonRunning } from '@agor/core/api';
+import { createRestClient, isDaemonRunning } from '@agor/core/api';
 import { getDaemonUrl } from '@agor/core/config';
 import { Command } from '@oclif/core';
 import chalk from 'chalk';
@@ -46,8 +46,8 @@ export abstract class BaseCommand extends Command {
       this.exit(1);
     }
 
-    // Create client with REST-only transport (prevents hanging processes)
-    const client = createClient(this.daemonUrl, true, { verbose: false, restOnly: true });
+    // Create REST-only client (prevents hanging processes)
+    const client = await createRestClient(this.daemonUrl);
 
     // Load stored authentication token
     const storedAuth = await loadToken();
