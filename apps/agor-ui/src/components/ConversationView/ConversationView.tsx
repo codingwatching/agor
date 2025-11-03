@@ -15,8 +15,8 @@
 import type { AgorClient } from '@agor/core/api';
 import type { Message, PermissionScope, SessionID, User } from '@agor/core/types';
 import { Alert, Empty, Spin } from 'antd';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { useMessages, useStreamingMessages, useTasks } from '../../hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useStreamingMessages, useTasks } from '../../hooks';
 import { TaskBlock } from '../TaskBlock';
 
 export interface ConversationViewProps {
@@ -100,48 +100,57 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     }
   }, [onScrollRef, scrollToBottom]);
 
-  // Fetch messages and tasks for this session
-  const {
-    messages,
-    loading: messagesLoading,
-    error: messagesError,
-  } = useMessages(client, sessionId);
+  // Fetch tasks for this session
   const { tasks, loading: tasksLoading, error: tasksError } = useTasks(client, sessionId);
 
-  // Track real-time streaming messages
+  // Track real-time streaming messages (passed to TaskBlock for filtering)
   const streamingMessages = useStreamingMessages(client, sessionId || undefined);
 
-  const loading = messagesLoading || tasksLoading;
-  const error = messagesError || tasksError;
+  const loading = tasksLoading;
+  const error = tasksError;
 
-  // Merge streaming messages with DB messages
-  const allMessages = useMemo(() => {
-    // Filter out DB messages that are already in streaming (avoid duplicates)
-    const dbOnlyMessages = messages.filter((msg) => !streamingMessages.has(msg.message_id));
+  // Track which tasks are expanded (default: last task expanded)
+  const [expandedTaskIds, setExpandedTaskIds] = useState<Set<string>>(() => {
+    if (tasks.length > 0) {
+      return new Set([tasks[tasks.length - 1].task_id]);
+    }
+    return new Set();
+  });
 
-    // Combine and sort by timestamp
-    return ([...dbOnlyMessages, ...Array.from(streamingMessages.values())] as Message[]).sort(
-      (a, b) => a.timestamp.localeCompare(b.timestamp)
-    );
-  }, [messages, streamingMessages]);
+  // Update expanded state when tasks change (expand last task by default)
+  useEffect(() => {
+    if (tasks.length > 0) {
+      const lastTaskId = tasks[tasks.length - 1].task_id;
+      setExpandedTaskIds(prev => {
+        // If no tasks expanded or last task changed, expand the last task
+        if (prev.size === 0 || !prev.has(lastTaskId)) {
+          return new Set([lastTaskId]);
+        }
+        return prev;
+      });
+    }
+  }, [tasks]);
 
-  // Group messages by task
-  const taskWithMessages = useMemo(() => {
-    if (tasks.length === 0) return [];
+  // Handle task expand/collapse
+  const handleTaskExpandChange = useCallback((taskId: string, expanded: boolean) => {
+    setExpandedTaskIds(prev => {
+      const next = new Set(prev);
+      if (expanded) {
+        next.add(taskId);
+      } else {
+        next.delete(taskId);
+      }
+      return next;
+    });
+  }, []);
 
-    return tasks.map((task) => ({
-      task,
-      messages: allMessages.filter((msg) => msg.task_id === task.task_id),
-    }));
-  }, [tasks, allMessages]);
-
-  // Auto-scroll to bottom when new messages arrive (only if user is already at bottom)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: We want to scroll on messages/streaming change
+  // Auto-scroll to bottom when streaming messages arrive (only if user is already at bottom)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: We want to scroll on streaming change
   useEffect(() => {
     if (isNearBottom()) {
       scrollToBottom();
     }
-  }, [allMessages, tasks]);
+  }, [streamingMessages, tasks]);
 
   if (error) {
     return (
@@ -149,7 +158,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     );
   }
 
-  if (loading && messages.length === 0 && tasks.length === 0) {
+  if (loading && tasks.length === 0) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', padding: '2rem' }}>
         <Spin />
@@ -157,7 +166,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     );
   }
 
-  if (messages.length === 0 && tasks.length === 0) {
+  if (tasks.length === 0) {
     return (
       <div
         style={{
@@ -183,17 +192,17 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       }}
     >
       {/* Task-organized conversation */}
-      {taskWithMessages.map(({ task, messages: taskMessages }, index) => (
+      {tasks.map(task => (
         <TaskBlock
           key={task.task_id}
           task={task}
-          messages={taskMessages}
+          client={client}
           agentic_tool={agentic_tool}
           sessionModel={sessionModel}
           users={users}
           currentUserId={currentUserId}
-          // Expand only the last task by default
-          defaultExpanded={index === taskWithMessages.length - 1}
+          isExpanded={expandedTaskIds.has(task.task_id)}
+          onExpandChange={expanded => handleTaskExpandChange(task.task_id, expanded)}
           sessionId={sessionId}
           onPermissionDecision={onPermissionDecision}
         />

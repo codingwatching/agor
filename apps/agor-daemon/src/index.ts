@@ -1708,6 +1708,27 @@ async function main() {
                   };
                 }
 
+                // Calculate tool_use_count from all messages in this task
+                let toolUseCount = 0;
+                try {
+                  const taskMessagesResult = (await messagesService.find({
+                    query: { task_id: task.task_id, $limit: 10000 },
+                  })) as Message[] | Paginated<Message>;
+                  const taskMessages: Message[] = isPaginated(taskMessagesResult)
+                    ? taskMessagesResult.data
+                    : taskMessagesResult;
+                  toolUseCount = taskMessages.reduce(
+                    (sum: number, msg: Message) => sum + (msg.tool_uses?.length || 0),
+                    0
+                  );
+                } catch (err) {
+                  console.warn(
+                    `⚠️  Failed to calculate tool_use_count for task ${task.task_id}:`,
+                    err
+                  );
+                  // Continue with toolUseCount = 0
+                }
+
                 const updated = await safePatch(
                   tasksService,
                   task.task_id,
@@ -1719,6 +1740,7 @@ async function main() {
                       start_timestamp: startTimestamp,
                       end_timestamp: endTimestamp,
                     },
+                    tool_use_count: toolUseCount,
                     usage,
                   },
                   'Task'

@@ -6,7 +6,7 @@
  */
 
 import { type Database, MessagesRepository } from '@agor/core/db';
-import type { Message, QueryParams, SessionID, TaskID } from '@agor/core/types';
+import type { Message, Paginated, QueryParams, SessionID, TaskID } from '@agor/core/types';
 import { DrizzleService } from '../adapters/drizzle';
 
 /**
@@ -37,6 +37,54 @@ export class MessagesService extends DrizzleService<Message, Partial<Message>, M
     });
 
     this.messagesRepo = messagesRepo;
+  }
+
+  /**
+   * Override find to support task-based and session-based filtering
+   */
+  async find(params?: MessageParams): Promise<Message[] | Paginated<Message>> {
+    // If filtering by task_id, use repository method
+    if (params?.query?.task_id) {
+      const messages = await this.messagesRepo.findByTaskId(params.query.task_id);
+
+      // Apply pagination if enabled
+      if (this.paginate) {
+        const limit = params.query.$limit ?? this.paginate.default ?? 100;
+        const skip = params.query.$skip ?? 0;
+
+        return {
+          total: messages.length,
+          limit,
+          skip,
+          data: messages.slice(skip, skip + limit),
+        };
+      }
+
+      return messages;
+    }
+
+    // If filtering by session_id, use repository method
+    if (params?.query?.session_id) {
+      const messages = await this.messagesRepo.findBySessionId(params.query.session_id);
+
+      // Apply pagination if enabled
+      if (this.paginate) {
+        const limit = params.query.$limit ?? this.paginate.default ?? 100;
+        const skip = params.query.$skip ?? 0;
+
+        return {
+          total: messages.length,
+          limit,
+          skip,
+          data: messages.slice(skip, skip + limit),
+        };
+      }
+
+      return messages;
+    }
+
+    // Otherwise use default find
+    return super.find(params);
   }
 
   /**

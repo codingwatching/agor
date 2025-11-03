@@ -9,6 +9,7 @@
  * - Groups 3+ sequential tool-only messages into ToolBlock
  */
 
+import type { AgorClient } from '@agor/core/api';
 import {
   type Message,
   MessageRole,
@@ -27,11 +28,12 @@ import {
   RobotOutlined,
 } from '@ant-design/icons';
 import { Bubble } from '@ant-design/x';
-import { Avatar, Collapse, Flex, Space, Tag, Typography, theme } from 'antd';
+import { Avatar, Collapse, Flex, Space, Spin, Tag, Typography, theme } from 'antd';
 import type React from 'react';
 import { useMemo } from 'react';
-import { useAgorClient } from '../../hooks/useAgorClient';
+import { useStreamingMessages } from '../../hooks/useStreamingMessages';
 import { useTaskEvents } from '../../hooks/useTaskEvents';
+import { useTaskMessages } from '../../hooks/useTaskMessages';
 import { AgentChain } from '../AgentChain';
 import { MessageBlock } from '../MessageBlock';
 import { CreatedByTag } from '../metadata/CreatedByTag';
@@ -58,12 +60,13 @@ type Block = { type: 'message'; message: Message } | { type: 'agent-chain'; mess
 
 interface TaskBlockProps {
   task: Task;
-  messages: Message[];
+  client: AgorClient | null;
   agentic_tool?: string;
   sessionModel?: string;
   users?: User[];
   currentUserId?: string;
-  defaultExpanded?: boolean;
+  isExpanded: boolean;
+  onExpandChange: (expanded: boolean) => void;
   sessionId?: string | null;
   onPermissionDecision?: (
     sessionId: string,
@@ -248,23 +251,60 @@ function groupMessagesIntoBlocks(messages: Message[]): Block[] {
 
 export const TaskBlock: React.FC<TaskBlockProps> = ({
   task,
-  messages,
+  client,
   agentic_tool,
   sessionModel,
   users = [],
   currentUserId,
-  defaultExpanded = false,
+  isExpanded,
+  onExpandChange,
   sessionId,
   onPermissionDecision,
 }) => {
   const { token } = theme.useToken();
-  const { client } = useAgorClient();
 
   // Track real-time tool executions for this task
   const { toolsExecuting } = useTaskEvents(client, task.task_id);
 
+  // Fetch messages for this task (only when expanded)
+  const { messages: taskMessages, loading: messagesLoading } = useTaskMessages(
+    client,
+    task.task_id,
+    isExpanded
+  );
+
+  // Track real-time streaming messages (for running tasks)
+  const streamingMessages = useStreamingMessages(client, sessionId || undefined);
+
+  // Merge task messages with streaming messages (for running tasks)
+  const messages = useMemo(() => {
+    // Filter streaming messages for this task
+    const streamingForTask = Array.from(streamingMessages.values()).filter(
+      msg => msg.task_id === task.task_id
+    );
+
+    // Filter out DB messages that are already in streaming (avoid duplicates)
+    const dbOnlyMessages = taskMessages.filter(msg => !streamingMessages.has(msg.message_id));
+
+    // Combine and sort by index
+    return ([...dbOnlyMessages, ...streamingForTask] as Message[]).sort(
+      (a, b) => a.index - b.index
+    );
+  }, [taskMessages, streamingMessages, task.task_id]);
+
   // Group messages into blocks
   const blocks = useMemo(() => groupMessagesIntoBlocks(messages), [messages]);
+
+  // Calculate message count from task message_range
+  const messageCount = task.message_range.end_index - task.message_range.start_index + 1;
+
+  // Calculate tool count (hybrid approach)
+  // - For completed tasks: use stored count (no messages needed)
+  // - For running tasks: calculate from loaded messages (live count)
+  const toolCount =
+    task.status === TaskStatus.COMPLETED
+      ? task.tool_use_count
+      : messages.reduce((sum, msg) => sum + (msg.tool_uses?.length || 0), 0);
 
   // Calculate context window usage percentage for visual progress bar
   const contextWindowPercentage =
@@ -323,8 +363,8 @@ export const TaskBlock: React.FC<TaskBlockProps> = ({
                 prefix="By"
               />
             )}
-            <MessageCountPill count={messages.length} />
-            <ToolCountPill count={task.tool_use_count} />
+            <MessageCountPill count={messageCount} />
+            <ToolCountPill count={toolCount} />
             {task.usage?.total_tokens && (
               <TokenCountPill
                 count={task.usage.total_tokens}
@@ -359,7 +399,8 @@ export const TaskBlock: React.FC<TaskBlockProps> = ({
 
   return (
     <Collapse
-      defaultActiveKey={defaultExpanded ? ['task-content'] : []}
+      activeKey={isExpanded ? ['task-content'] : []}
+      onChange={keys => onExpandChange(keys.length > 0)}
       expandIcon={({ isActive }) => (isActive ? <DownOutlined /> : <RightOutlined />)}
       style={{ background: 'transparent', border: 'none', margin: `${token.sizeUnit}px 0` }}
       items={[
@@ -383,49 +424,63 @@ export const TaskBlock: React.FC<TaskBlockProps> = ({
           },
           children: (
             <div style={{ paddingTop: token.sizeUnit }}>
+              {/* Show loading spinner while fetching messages */}
+              {messagesLoading && (
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'center',
+                    padding: `${token.sizeUnit * 2}px 0`,
+                  }}
+                >
+                  <Spin size="small" />
+                </div>
+              )}
+
               {/* Render all blocks (messages and agent chains) */}
-              {blocks.map((block, blockIndex) => {
-                if (block.type === 'message') {
-                  // Find if this is a permission request and if it's the first pending one
-                  const isPermissionRequest = block.message.type === 'permission_request';
-                  let isFirstPending = false;
+              {!messagesLoading &&
+                blocks.map((block, blockIndex) => {
+                  if (block.type === 'message') {
+                    // Find if this is a permission request and if it's the first pending one
+                    const isPermissionRequest = block.message.type === 'permission_request';
+                    let isFirstPending = false;
 
-                  if (isPermissionRequest) {
-                    const content = block.message.content as PermissionRequestContent;
-                    if (content.status === PermissionStatus.PENDING) {
-                      // Check if this is the first pending permission request
-                      isFirstPending = !blocks.slice(0, blockIndex).some(b => {
-                        if (b.type === 'message' && b.message.type === 'permission_request') {
-                          const c = b.message.content as PermissionRequestContent;
-                          return c.status === PermissionStatus.PENDING;
-                        }
-                        return false;
-                      });
+                    if (isPermissionRequest) {
+                      const content = block.message.content as PermissionRequestContent;
+                      if (content.status === PermissionStatus.PENDING) {
+                        // Check if this is the first pending permission request
+                        isFirstPending = !blocks.slice(0, blockIndex).some(b => {
+                          if (b.type === 'message' && b.message.type === 'permission_request') {
+                            const c = b.message.content as PermissionRequestContent;
+                            return c.status === PermissionStatus.PENDING;
+                          }
+                          return false;
+                        });
+                      }
                     }
-                  }
 
-                  return (
-                    <MessageBlock
-                      key={block.message.message_id}
-                      message={block.message}
-                      agentic_tool={agentic_tool}
-                      users={users}
-                      currentUserId={task.created_by}
-                      isTaskRunning={task.status === TaskStatus.RUNNING}
-                      sessionId={sessionId}
-                      onPermissionDecision={onPermissionDecision}
-                      isFirstPendingPermission={isFirstPending}
-                      taskId={task.task_id}
-                    />
-                  );
-                }
-                if (block.type === 'agent-chain') {
-                  // Use first message ID as key for agent chain
-                  const blockKey = `agent-chain-${block.messages[0]?.message_id || 'unknown'}`;
-                  return <AgentChain key={blockKey} messages={block.messages} />;
-                }
-                return null;
-              })}
+                    return (
+                      <MessageBlock
+                        key={block.message.message_id}
+                        message={block.message}
+                        agentic_tool={agentic_tool}
+                        users={users}
+                        currentUserId={task.created_by}
+                        isTaskRunning={task.status === TaskStatus.RUNNING}
+                        sessionId={sessionId}
+                        onPermissionDecision={onPermissionDecision}
+                        isFirstPendingPermission={isFirstPending}
+                        taskId={task.task_id}
+                      />
+                    );
+                  }
+                  if (block.type === 'agent-chain') {
+                    // Use first message ID as key for agent chain
+                    const blockKey = `agent-chain-${block.messages[0]?.message_id || 'unknown'}`;
+                    return <AgentChain key={blockKey} messages={block.messages} />;
+                  }
+                  return null;
+                })}
 
               {/* Show tool execution indicators when tools are running */}
               {toolsExecuting.length > 0 && (
