@@ -125,11 +125,11 @@ export async function runMigrations(db: Database): Promise<void> {
     console.log('Running database migrations...');
 
     // Resolve migrations folder path relative to this file
-    // In production: packages/core/dist/db/migrate.js -> packages/core/drizzle
+    // In production: dist/core/db/index.js -> dist/core/drizzle
     // In dev: packages/core/src/db/migrate.ts -> packages/core/drizzle
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = dirname(__filename);
-    const migrationsFolder = join(__dirname, '..', '..', 'drizzle');
+    const migrationsFolder = join(__dirname, '..', 'drizzle');
 
     // Drizzle handles everything:
     // 1. Creates __drizzle_migrations table if needed
