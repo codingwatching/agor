@@ -1,6 +1,6 @@
 import type { AgorClient } from '@agor/core/api';
 import type { Board, BoardComment, Repo, Session, Task, User, Worktree } from '@agor/core/types';
-import { Drawer, Layout } from 'antd';
+import { Drawer, Layout, Typography, theme } from 'antd';
 import { useState } from 'react';
 import { Route, Routes } from 'react-router-dom';
 import { MobileCommentsPage } from './MobileCommentsPage';
@@ -9,6 +9,7 @@ import { MobileNavTree } from './MobileNavTree';
 import { SessionPage } from './SessionPage';
 
 const { Content } = Layout;
+const { Text } = Typography;
 
 interface MobileAppProps {
   client: AgorClient | null;
@@ -52,6 +53,7 @@ export const MobileApp: React.FC<MobileAppProps> = ({
   onUpdateDraft,
 }) => {
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const { token } = theme.useToken();
 
   return (
     <Layout style={{ height: '100vh' }}>
@@ -94,11 +96,23 @@ export const MobileApp: React.FC<MobileAppProps> = ({
                   alignItems: 'center',
                   justifyContent: 'center',
                   padding: 24,
+                  flexDirection: 'column',
+                  gap: 24,
                 }}
               >
-                <div style={{ textAlign: 'center', color: 'rgba(255, 255, 255, 0.45)' }}>
-                  <p>Tap the menu icon to browse boards and sessions</p>
-                </div>
+                <img
+                  src="/favicon.png"
+                  alt="Agor"
+                  style={{
+                    width: 160,
+                    height: 160,
+                    opacity: 0.5,
+                    borderRadius: '50%',
+                  }}
+                />
+                <Text type="secondary" style={{ textAlign: 'center' }}>
+                  Tap the menu icon to browse boards and sessions
+                </Text>
               </Content>
             </>
           }

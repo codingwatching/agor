@@ -14,10 +14,12 @@
 
 import type { AgorClient } from '@agor/core/api';
 import type { Message, PermissionScope, SessionID, User } from '@agor/core/types';
-import { Alert, Empty, Spin } from 'antd';
+import { Alert, Spin, Typography, theme } from 'antd';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStreamingMessages, useTasks } from '../../hooks';
 import { TaskBlock } from '../TaskBlock';
+
+const { Text } = Typography;
 
 export interface ConversationViewProps {
   /**
@@ -180,6 +182,7 @@ export const ConversationView = React.memo<ConversationViewProps>(
     }
 
     if (tasks.length === 0) {
+      const { token } = theme.useToken();
       return (
         <div
           style={{
@@ -188,9 +191,21 @@ export const ConversationView = React.memo<ConversationViewProps>(
             alignItems: 'center',
             height: '100%',
             padding: '2rem',
+            flexDirection: 'column',
+            gap: '24px',
           }}
         >
-          <Empty description="No conversation yet" />
+          <img
+            src="/favicon.png"
+            alt="Agor"
+            style={{
+              width: 160,
+              height: 160,
+              opacity: 0.5,
+              borderRadius: '50%',
+            }}
+          />
+          <Text type="secondary">Tap the menu icon to browse boards and sessions</Text>
         </div>
       );
     }
