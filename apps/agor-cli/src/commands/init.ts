@@ -119,19 +119,23 @@ export default class Init extends Command {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = dirname(__filename);
 
-    // If running from node_modules, it's the npm package
-    if (__dirname.includes('node_modules')) {
+    // If running from node_modules/agor-live, it's definitely the npm package
+    // (more specific than just checking for "node_modules" which could catch dev mode too)
+    if (
+      __dirname.includes('node_modules/agor-live') ||
+      __dirname.includes('node_modules\\agor-live')
+    ) {
       return false;
     }
 
-    // If running from dist/, it's the compiled npm package structure
-    if (__dirname.includes('/dist/')) {
-      return false;
-    }
-
-    // Otherwise, check if we're in the agor monorepo
+    // Check if we're in the agor monorepo by looking for packages/core in cwd
+    // This is the most reliable way to detect dev mode regardless of compilation state
     const corePackagePath = join(process.cwd(), 'packages', 'core');
-    return this.pathExists(corePackagePath);
+    const isInMonorepo = await this.pathExists(corePackagePath);
+
+    // If we're in the monorepo, it's dev mode
+    // Otherwise (could be anywhere when running agor-live), it's the npm package
+    return isInMonorepo;
   }
 
   async run(): Promise<void> {
