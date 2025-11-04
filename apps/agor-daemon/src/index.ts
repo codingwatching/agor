@@ -551,6 +551,8 @@ async function main() {
             },
           },
         },
+        // Apply BearerAuth globally to all endpoints (except public endpoints like /health, /login)
+        security: [{ BearerAuth: [] }],
       },
     })
   );
@@ -1173,11 +1175,21 @@ async function main() {
 
   app.use('/authentication', authentication);
 
+  // Configure docs for authentication service (override global security requirement)
+  // biome-ignore lint/suspicious/noExplicitAny: FeathersJS service type not fully typed
+  const authService = app.service('authentication') as any;
+  authService.docs = {
+    description: 'Authentication service for user login and token management',
+    // Override global security - login endpoint must be public
+    security: [],
+  };
+
   // Hook: Add refresh token to authentication response + rate limiting
-  app.service('authentication').hooks({
+  authService.hooks({
     before: {
       create: [
-        async context => {
+        // biome-ignore lint/suspicious/noExplicitAny: FeathersJS context type not fully typed
+        async (context: any) => {
           // SECURITY: Rate limit authentication attempts
           const data = Array.isArray(context.data) ? context.data[0] : context.data;
 
@@ -1210,7 +1222,8 @@ async function main() {
     },
     after: {
       create: [
-        async context => {
+        // biome-ignore lint/suspicious/noExplicitAny: FeathersJS context type not fully typed
+        async (context: any) => {
           // Only add refresh token for non-anonymous authentication
           if (context.result?.user && context.result.user.user_id !== 'anonymous') {
             // Generate refresh token (30 days)
@@ -1299,6 +1312,15 @@ async function main() {
       }
     },
   });
+
+  // Configure docs for refresh endpoint (override global security requirement)
+  // biome-ignore lint/suspicious/noExplicitAny: FeathersJS service type not fully typed
+  const refreshService = app.service('authentication/refresh') as any;
+  refreshService.docs = {
+    description: 'Token refresh endpoint - obtain a new access token using a refresh token',
+    // Override global security - refresh endpoint must be public to obtain new tokens
+    security: [],
+  };
 
   // Initialize repositories for ClaudeTool
   const messagesRepo = new MessagesRepository(db);
@@ -2329,6 +2351,15 @@ async function main() {
       return publicResponse;
     },
   });
+
+  // Configure docs for health endpoint (override global security requirement)
+  // biome-ignore lint/suspicious/noExplicitAny: FeathersJS service type not fully typed
+  const healthService = app.service('health') as any;
+  healthService.docs = {
+    description: 'Health check endpoint (always public)',
+    // Override global security to allow unauthenticated access
+    security: [],
+  };
 
   // Setup MCP routes (if enabled)
   if (config.daemon?.mcpEnabled !== false) {
