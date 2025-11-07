@@ -499,7 +499,24 @@ export const UsersTable: React.FC<UsersTableProps> = ({
             rules={[
               { required: true, message: 'Please enter a password' },
               { min: 8, message: 'Password must be at least 8 characters' },
+              {
+                pattern: /[A-Z]/,
+                message: 'Password must contain at least one uppercase letter'
+              },
+              {
+                pattern: /[a-z]/,
+                message: 'Password must contain at least one lowercase letter'
+              },
+              {
+                pattern: /[0-9]/,
+                message: 'Password must contain at least one number'
+              },
+              {
+                pattern: /[^A-Za-z0-9]/,
+                message: 'Password must contain at least one special character'
+              },
             ]}
+            help="Minimum 8 characters with uppercase, lowercase, number, and special character"
           >
             <Input.Password placeholder="••••••••" />
           </Form.Item>
@@ -582,7 +599,30 @@ export const UsersTable: React.FC<UsersTableProps> = ({
                     <Input placeholder="user@example.com" />
                   </Form.Item>
 
-                  <Form.Item label="Password" name="password" help="Leave blank to keep current password">
+                  <Form.Item
+                    label="Password"
+                    name="password"
+                    help="Leave blank to keep current password. New password must be at least 8 characters with uppercase, lowercase, number, and special character"
+                    rules={[
+                      { min: 8, message: 'Password must be at least 8 characters' },
+                      {
+                        pattern: /[A-Z]/,
+                        message: 'Password must contain at least one uppercase letter'
+                      },
+                      {
+                        pattern: /[a-z]/,
+                        message: 'Password must contain at least one lowercase letter'
+                      },
+                      {
+                        pattern: /[0-9]/,
+                        message: 'Password must contain at least one number'
+                      },
+                      {
+                        pattern: /[^A-Za-z0-9]/,
+                        message: 'Password must contain at least one special character'
+                      },
+                    ]}
+                  >
                     <Input.Password placeholder="••••••••" />
                   </Form.Item>
 
