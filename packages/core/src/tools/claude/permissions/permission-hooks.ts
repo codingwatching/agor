@@ -12,6 +12,7 @@ import type { MessagesRepository } from '../../../db/repositories/messages';
 import type { RepoRepository } from '../../../db/repositories/repos';
 import type { SessionRepository } from '../../../db/repositories/sessions';
 import type { WorktreeRepository } from '../../../db/repositories/worktrees';
+import { isForeignKeyConstraintError, withSessionGuard } from '../../../db/session-guard';
 import { generateId } from '../../../lib/ids';
 import type { PermissionService } from '../../../permissions/permission-service';
 import type { Message, MessageID, SessionID, TaskID } from '../../../types';
@@ -155,43 +156,67 @@ export function createPreToolUseHook(
       const requestId = generateId();
       const timestamp = new Date().toISOString();
 
-      // Get current message index for this session
-      const existingMessages = await deps.messagesRepo.findBySessionId(sessionId);
-      const nextIndex = existingMessages.length;
+      // Execute permission request creation with session guard
+      // This checks session exists upfront and handles FK errors gracefully
+      const permissionMessage = await withSessionGuard(
+        sessionId,
+        deps.sessionsRepo,
+        async (): Promise<Message | null> => {
+          // Get current message index for this session
+          const existingMessages = await deps.messagesRepo.findBySessionId(sessionId);
+          const nextIndex = existingMessages.length;
 
-      // Create permission request message
-      console.log(`🔒 Creating permission request message for ${input.tool_name}`, {
-        request_id: requestId,
-        task_id: taskId,
-        index: nextIndex,
-      });
+          // Create permission request message
+          console.log(`🔒 Creating permission request message for ${input.tool_name}`, {
+            request_id: requestId,
+            task_id: taskId,
+            index: nextIndex,
+          });
 
-      const permissionMessage: Message = {
-        message_id: generateId() as MessageID,
-        session_id: sessionId,
-        task_id: taskId,
-        type: 'permission_request',
-        role: MessageRole.SYSTEM,
-        index: nextIndex,
-        timestamp,
-        content_preview: `Permission required: ${input.tool_name}`,
-        content: {
-          request_id: requestId,
-          tool_name: input.tool_name,
-          tool_input: input.tool_input as Record<string, unknown>,
-          tool_use_id: toolUseID,
-          status: PermissionStatus.PENDING,
-        },
-      };
+          const message: Message = {
+            message_id: generateId() as MessageID,
+            session_id: sessionId,
+            task_id: taskId,
+            type: 'permission_request',
+            role: MessageRole.SYSTEM,
+            index: nextIndex,
+            timestamp,
+            content_preview: `Permission required: ${input.tool_name}`,
+            content: {
+              request_id: requestId,
+              tool_name: input.tool_name,
+              tool_input: input.tool_input as Record<string, unknown>,
+              tool_use_id: toolUseID,
+              status: PermissionStatus.PENDING,
+            },
+          };
 
-      try {
-        if (deps.messagesService) {
-          await deps.messagesService.create(permissionMessage);
-          console.log(`✅ Permission request message created successfully`);
+          try {
+            if (deps.messagesService) {
+              await deps.messagesService.create(message);
+              console.log(`✅ Permission request message created successfully`);
+            }
+            return message;
+          } catch (createError) {
+            // Check if this is a FK constraint error (session was deleted mid-flight)
+            if (isForeignKeyConstraintError(createError)) {
+              console.warn(`   Session deleted during permission request creation`);
+              return null;
+            }
+            throw createError;
+          }
         }
-      } catch (createError) {
-        console.error(`❌ CRITICAL: Failed to create permission request message:`, createError);
-        throw createError;
+      );
+
+      // If session was deleted, return deny decision gracefully
+      if (!permissionMessage) {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: 'Session no longer exists',
+          },
+        };
       }
 
       // Update task status to 'awaiting_permission'
@@ -238,23 +263,32 @@ export function createPreToolUseHook(
 
       // Update permission request message with approval/denial
       if (deps.messagesService) {
-        const baseContent =
-          typeof permissionMessage.content === 'object' && !Array.isArray(permissionMessage.content)
-            ? permissionMessage.content
-            : {};
-        // biome-ignore lint/suspicious/noExplicitAny: FeathersJS service has patch method but type definition is incomplete
-        await (deps.messagesService as any).patch(permissionMessage.message_id, {
-          content: {
-            ...(baseContent as Record<string, unknown>),
-            status: decision.allow ? PermissionStatus.APPROVED : PermissionStatus.DENIED,
-            scope: decision.remember ? decision.scope : undefined,
-            approved_by: decision.decidedBy,
-            approved_at: new Date().toISOString(),
-          },
-        });
-        console.log(
-          `✅ Permission request message updated: ${decision.allow ? 'approved' : 'denied'}`
-        );
+        try {
+          const baseContent =
+            typeof permissionMessage.content === 'object' &&
+            !Array.isArray(permissionMessage.content)
+              ? permissionMessage.content
+              : {};
+          // biome-ignore lint/suspicious/noExplicitAny: FeathersJS service has patch method but type definition is incomplete
+          await (deps.messagesService as any).patch(permissionMessage.message_id, {
+            content: {
+              ...(baseContent as Record<string, unknown>),
+              status: decision.allow ? PermissionStatus.APPROVED : PermissionStatus.DENIED,
+              scope: decision.remember ? decision.scope : undefined,
+              approved_by: decision.decidedBy,
+              approved_at: new Date().toISOString(),
+            },
+          });
+          console.log(
+            `✅ Permission request message updated: ${decision.allow ? 'approved' : 'denied'}`
+          );
+        } catch (updateError) {
+          console.error(
+            `⚠️  Failed to update permission request message (session may have been deleted):`,
+            updateError
+          );
+          // Don't throw - permission decision is what matters, not message update
+        }
       }
 
       // Update task status
@@ -272,10 +306,18 @@ export function createPreToolUseHook(
 
         // Set session status to idle (execution stopped)
         if (deps.sessionsService) {
-          await deps.sessionsService.patch(sessionId, {
-            status: 'idle' as const,
-          });
-          console.log(`✅ Session ${sessionId} set to idle after permission denial`);
+          try {
+            await deps.sessionsService.patch(sessionId, {
+              status: 'idle' as const,
+            });
+            console.log(`✅ Session ${sessionId} set to idle after permission denial`);
+          } catch (patchError) {
+            console.warn(
+              `⚠️  Failed to update session status to idle (session may have been deleted):`,
+              patchError
+            );
+            // Don't throw - denial is what matters
+          }
         }
 
         // Throw an error to abort SDK execution
@@ -284,10 +326,18 @@ export function createPreToolUseHook(
       } else {
         // Restore session status to running (only if approved)
         if (deps.sessionsService) {
-          await deps.sessionsService.patch(sessionId, {
-            status: 'running' as const,
-          });
-          console.log(`✅ Session ${sessionId} restored to running after permission approval`);
+          try {
+            await deps.sessionsService.patch(sessionId, {
+              status: 'running' as const,
+            });
+            console.log(`✅ Session ${sessionId} restored to running after permission approval`);
+          } catch (patchError) {
+            console.warn(
+              `⚠️  Failed to update session status to running (session may have been deleted):`,
+              patchError
+            );
+            // Don't throw - approval is what matters, continue execution
+          }
         }
       }
 
@@ -371,7 +421,8 @@ export function createPreToolUseHook(
         const timestamp = new Date().toISOString();
 
         // Check if this is a permission denial (already marked as failed above)
-        const isPermissionDenial = error instanceof Error && error.message.startsWith('Permission denied for tool:');
+        const isPermissionDenial =
+          error instanceof Error && error.message.startsWith('Permission denied for tool:');
 
         if (!isPermissionDenial) {
           // Only update task status if not already marked as failed by permission denial
