@@ -76,9 +76,12 @@ export const CollapsibleText: React.FC<CollapsibleTextProps> = ({
   if (!shouldTruncate) {
     const computedStyle: React.CSSProperties = {
       ...style,
-      ...(preserveWhitespace && { whiteSpace: 'pre-wrap' }),
-      ...(code && { fontFamily: 'monospace' }),
+      whiteSpace: 'pre-wrap',
       wordWrap: 'break-word',
+      margin: 0,
+      ...(code && {
+        fontFamily: 'Monaco, Menlo, Ubuntu Mono, Consolas, source-code-pro, monospace',
+      }),
     };
 
     return (
@@ -91,15 +94,19 @@ export const CollapsibleText: React.FC<CollapsibleTextProps> = ({
   const displayContent = expanded ? children : lines.slice(0, maxLines).join('\n');
   const lineCount = lines.length;
 
-  const computedStyle: React.CSSProperties = {
+  const contentStyle: React.CSSProperties = {
     ...style,
-    ...(preserveWhitespace && { whiteSpace: 'pre-wrap' }),
-    ...(code && { fontFamily: 'monospace' }),
+    whiteSpace: 'pre-wrap',
+    wordWrap: 'break-word',
+    margin: 0,
+    ...(code && {
+      fontFamily: 'Monaco, Menlo, Ubuntu Mono, Consolas, source-code-pro, monospace',
+    }),
   };
 
   return (
-    <div className={className} style={computedStyle}>
-      <div style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}>{displayContent}</div>
+    <div className={className}>
+      <div style={contentStyle}>{displayContent}</div>
 
       <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
         {!expanded && (
