@@ -215,7 +215,11 @@ export class GeminiPromptService {
 
               // Normalize tool names to match Claude Code conventions (PascalCase)
               // This ensures UI renderers work consistently across all agents
-              if (name?.toLowerCase() === 'bash' || name === 'ExecuteCommand' || name === 'command') {
+              if (
+                name?.toLowerCase() === 'bash' ||
+                name === 'ExecuteCommand' ||
+                name === 'command'
+              ) {
                 name = 'Bash';
               }
 
@@ -397,7 +401,8 @@ export class GeminiPromptService {
             console.debug(`[Gemini Loop] Tool ${toolCall.name} executed successfully`);
 
             // Add the response parts from the SDK (already formatted correctly)
-            functionResponseParts.push(...response.responseParts);
+            // Note: In v0.13.0+, executeToolCall returns CompletedToolCall with nested response object
+            functionResponseParts.push(...response.response.responseParts);
           } catch (error) {
             console.error(`[Gemini Loop] Error executing tool ${toolCall.name}:`, error);
             // On error, create a function response part with the error
