@@ -32,6 +32,8 @@
  * - https://code.claude.com/docs/en/monitoring-usage
  */
 
+import type { RawSdkResponse } from '../types/sdk-response';
+
 /**
  * Token usage interface matching the Task.usage structure
  */
@@ -147,14 +149,19 @@ export function calculateModelContextWindowUsage(modelUsage: ModelUsage): number
  * @returns Current context window usage, or undefined if no tasks have context window data
  */
 export function getSessionContextUsage(
-  tasks: Array<{ raw_sdk_response?: { contextWindow?: number } }>
+  tasks: Array<{ raw_sdk_response?: RawSdkResponse }>
 ): number | undefined {
   // Find the most recent task with contextWindow from SDK
   for (let i = tasks.length - 1; i >= 0; i--) {
     const task = tasks[i];
-    const contextWindow = task.raw_sdk_response?.contextWindow;
-    if (contextWindow !== undefined) {
-      return contextWindow;
+    const sdkResponse = task.raw_sdk_response;
+    // Only Claude, Codex, and Gemini provide contextWindow (OpenCode doesn't)
+    if (
+      sdkResponse &&
+      'contextWindow' in sdkResponse &&
+      sdkResponse.contextWindow !== undefined
+    ) {
+      return sdkResponse.contextWindow;
     }
   }
   return undefined;
@@ -169,12 +176,13 @@ export function getSessionContextUsage(
  * @returns Context window limit (e.g., 200000 for Sonnet), or undefined if not found
  */
 export function getContextWindowLimit(
-  tasks: Array<{ raw_sdk_response?: { contextWindowLimit?: number } }>
+  tasks: Array<{ raw_sdk_response?: RawSdkResponse }>
 ): number | undefined {
   for (let i = tasks.length - 1; i >= 0; i--) {
-    const limit = tasks[i].raw_sdk_response?.contextWindowLimit;
-    if (limit) {
-      return limit;
+    const sdkResponse = tasks[i].raw_sdk_response;
+    // Only Claude, Codex, and Gemini provide contextWindowLimit (OpenCode doesn't)
+    if (sdkResponse && 'contextWindowLimit' in sdkResponse && sdkResponse.contextWindowLimit) {
+      return sdkResponse.contextWindowLimit;
     }
   }
   return undefined;
