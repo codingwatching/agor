@@ -170,7 +170,11 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
     // Subscribe to session events
     const sessionsService = client.service('sessions');
     const handleSessionCreated = (session: Session) => {
-      setSessions((prev) => [...prev, session]);
+      setSessions((prev) => {
+        const next = prev.slice();
+        next.push(session);
+        return next;
+      });
     };
     const handleSessionPatched = (session: Session) => {
       setSessions((prev) => prev.map((s) => (s.session_id === session.session_id ? session : s)));
@@ -187,10 +191,15 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
     // Subscribe to task events
     const tasksService = client.service('tasks');
     const handleTaskCreated = (task: Task) => {
-      setTasks((prev) => ({
-        ...prev,
-        [task.session_id]: [...(prev[task.session_id] || []), task],
-      }));
+      setTasks((prev) => {
+        const existingTasks = prev[task.session_id] || [];
+        const nextTasks = existingTasks.slice();
+        nextTasks.push(task);
+        return {
+          ...prev,
+          [task.session_id]: nextTasks,
+        };
+      });
     };
     const handleTaskPatched = (task: Task) => {
       setTasks((prev) => ({
@@ -215,7 +224,11 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
     // Subscribe to board events
     const boardsService = client.service('boards');
     const handleBoardCreated = (board: Board) => {
-      setBoards((prev) => [...prev, board]);
+      setBoards((prev) => {
+        const next = prev.slice();
+        next.push(board);
+        return next;
+      });
     };
     const handleBoardPatched = (board: Board) => {
       setBoards((prev) => prev.map((b) => (b.board_id === board.board_id ? board : b)));
@@ -232,7 +245,11 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
     // Subscribe to board object events
     const boardObjectsService = client.service('board-objects');
     const handleBoardObjectCreated = (boardObject: BoardEntityObject) => {
-      setBoardObjects((prev) => [...prev, boardObject]);
+      setBoardObjects((prev) => {
+        const next = prev.slice();
+        next.push(boardObject);
+        return next;
+      });
     };
     const handleBoardObjectPatched = (boardObject: BoardEntityObject) => {
       setBoardObjects((prev) =>
@@ -251,7 +268,11 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
     // Subscribe to repo events
     const reposService = client.service('repos');
     const handleRepoCreated = (repo: Repo) => {
-      setRepos((prev) => [...prev, repo]);
+      setRepos((prev) => {
+        const next = prev.slice();
+        next.push(repo);
+        return next;
+      });
     };
     const handleRepoPatched = (repo: Repo) => {
       setRepos((prev) => prev.map((r) => (r.repo_id === repo.repo_id ? repo : r)));
@@ -268,7 +289,11 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
     // Subscribe to worktree events
     const worktreesService = client.service('worktrees');
     const handleWorktreeCreated = (worktree: Worktree) => {
-      setWorktrees((prev) => [...prev, worktree]);
+      setWorktrees((prev) => {
+        const next = prev.slice();
+        next.push(worktree);
+        return next;
+      });
     };
     const handleWorktreePatched = (worktree: Worktree) => {
       setWorktrees((prev) =>
@@ -287,7 +312,11 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
     // Subscribe to user events
     const usersService = client.service('users');
     const handleUserCreated = (user: User) => {
-      setUsers((prev) => [...prev, user]);
+      setUsers((prev) => {
+        const next = prev.slice();
+        next.push(user);
+        return next;
+      });
     };
     const handleUserPatched = (user: User) => {
       setUsers((prev) => prev.map((u) => (u.user_id === user.user_id ? user : u)));
@@ -304,7 +333,11 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
     // Subscribe to MCP server events
     const mcpServersService = client.service('mcp-servers');
     const handleMCPServerCreated = (server: MCPServer) => {
-      setMcpServers((prev) => [...prev, server]);
+      setMcpServers((prev) => {
+        const next = prev.slice();
+        next.push(server);
+        return next;
+      });
     };
     const handleMCPServerPatched = (server: MCPServer) => {
       setMcpServers((prev) =>
@@ -326,13 +359,15 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
       session_id: string;
       mcp_server_id: string;
     }) => {
-      setSessionMcpServerIds((prev) => ({
-        ...prev,
-        [relationship.session_id]: [
-          ...(prev[relationship.session_id] || []),
-          relationship.mcp_server_id,
-        ],
-      }));
+      setSessionMcpServerIds((prev) => {
+        const existingIds = prev[relationship.session_id] || [];
+        const nextIds = existingIds.slice();
+        nextIds.push(relationship.mcp_server_id);
+        return {
+          ...prev,
+          [relationship.session_id]: nextIds,
+        };
+      });
     };
     const handleSessionMcpRemoved = (relationship: {
       session_id: string;
@@ -352,7 +387,11 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
     // Subscribe to board comment events
     const commentsService = client.service('board-comments');
     const handleCommentCreated = (comment: BoardComment) => {
-      setComments((prev) => [...prev, comment]);
+      setComments((prev) => {
+        const next = prev.slice();
+        next.push(comment);
+        return next;
+      });
     };
     const handleCommentPatched = (comment: BoardComment) => {
       setComments((prev) => prev.map((c) => (c.comment_id === comment.comment_id ? comment : c)));

@@ -23,7 +23,7 @@ import { Tooltip, Typography, theme } from 'antd';
 
 const { Text } = Typography;
 
-import type React from 'react';
+import React, { useMemo } from 'react';
 import { formatTimestampWithRelative } from '../../utils/time';
 import { AgorAvatar } from '../AgorAvatar';
 import { CollapsibleMarkdown } from '../CollapsibleText/CollapsibleMarkdown';
@@ -121,7 +121,7 @@ function isTaskToolResult(message: Message): boolean {
   return hasToolResult;
 }
 
-export const MessageBlock: React.FC<MessageBlockProps> = ({
+const MessageBlockComponent: React.FC<MessageBlockProps> = ({
   message,
   users = [],
   currentUserId,
@@ -328,7 +328,10 @@ export const MessageBlock: React.FC<MessageBlockProps> = ({
     return { thinkingBlocks, textBeforeTools, toolBlocks, textAfterTools };
   };
 
-  const { thinkingBlocks, textBeforeTools, toolBlocks, textAfterTools } = getContentBlocks();
+  const { thinkingBlocks, textBeforeTools, toolBlocks, textAfterTools } = useMemo(
+    () => getContentBlocks(),
+    [message.content]
+  );
 
   // Also check for streaming thinking content
   const streamingThinking = 'thinkingContent' in message ? message.thinkingContent : undefined;
@@ -506,3 +509,5 @@ export const MessageBlock: React.FC<MessageBlockProps> = ({
     </>
   );
 };
+
+export const MessageBlock = React.memo(MessageBlockComponent);
