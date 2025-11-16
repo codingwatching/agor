@@ -256,12 +256,23 @@ PGPASSWORD=secret
 
 ### 2. Schema Abstraction Layer
 
-**Approach: Dual Schema Files with Shared Type Factory** (Recommended)
+**Approach: Dual Schema Files with Type Factory Helper**
 
-Drizzle requires separate schema files per dialect since `pgTable` and `sqliteTable` are incompatible types. We'll use separate schema files but share a type factory to minimize duplication.
+Drizzle requires separate schema files per dialect since `pgTable` and `sqliteTable` are incompatible types. We use separate schema files with a **type factory helper** that provides 3 functions to abstract the only differences between dialects.
+
+**Why Type Factory?**
+
+- ✅ Only 3 types differ between SQLite and PostgreSQL (timestamp, boolean, json)
+- ✅ Single source of truth for type mappings (~50 lines)
+- ✅ Scales easily if we add more databases in the future
+- ✅ Schemas remain explicit and readable TypeScript
+- ✅ No build step, works directly with Drizzle Kit
 
 ```typescript
 // packages/core/src/db/schema-factory.ts
+
+import { integer, text } from 'drizzle-orm/sqlite-core';
+import { timestamp, boolean, jsonb } from 'drizzle-orm/pg-core';
 
 export type DatabaseDialect = 'sqlite' | 'postgresql';
 
@@ -274,42 +285,56 @@ export function getDatabaseDialect(): DatabaseDialect {
 }
 
 /**
- * Shared column definitions (dialect-agnostic structure)
+ * Create dialect-specific type helpers
+ * This is the ONLY place dialect differences are defined
  */
-export const sessionsColumns = {
-  session_id: { type: 'id', primaryKey: true },
-  created_at: { type: 'timestamp', notNull: true },
-  status: { type: 'enum', enum: ['idle', 'running', 'completed', 'failed'], notNull: true },
-  ready_for_prompt: { type: 'boolean', notNull: true, default: false },
-  data: { type: 'json', notNull: true },
-  // ... rest of columns
-};
+export function createSchemaHelpers(dialect: DatabaseDialect) {
+  if (dialect === 'postgresql') {
+    return {
+      /** PostgreSQL: native TIMESTAMP WITH TIME ZONE */
+      timestamp: (name: string) => timestamp(name, { mode: 'date', withTimezone: true }),
 
-// Similar shared definitions for other tables
-export const tasksColumns = {
-  /* ... */
-};
-export const worktreesColumns = {
-  /* ... */
-};
+      /** PostgreSQL: native BOOLEAN */
+      bool: (name: string) => boolean(name),
+
+      /** PostgreSQL: native JSONB (binary JSON) */
+      json: <T>(name: string) => jsonb(name).$type<T>(),
+    };
+  }
+
+  // SQLite
+  return {
+    /** SQLite: integer with timestamp_ms mode */
+    timestamp: (name: string) => integer(name, { mode: 'timestamp_ms' }),
+
+    /** SQLite: integer with boolean mode (0/1) */
+    bool: (name: string) => integer(name, { mode: 'boolean' }),
+
+    /** SQLite: text with json mode */
+    json: <T>(name: string) => text(name, { mode: 'json' }).$type<T>(),
+  };
+}
 ```
 
-**SQLite Schema**:
+**SQLite Schema** (using type factory):
 
 ```typescript
 // packages/core/src/db/schema.sqlite.ts
 
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, index } from 'drizzle-orm/sqlite-core';
+import { createSchemaHelpers } from './schema-factory';
+
+const t = createSchemaHelpers('sqlite');
 
 export const sessions = sqliteTable(
   'sessions',
   {
     session_id: text('session_id', { length: 36 }).primaryKey(),
-    created_at: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+    created_at: t.timestamp('created_at').notNull(), // ← Type factory!
     status: text('status', { enum: ['idle', 'running', 'completed', 'failed'] }).notNull(),
-    ready_for_prompt: integer('ready_for_prompt', { mode: 'boolean' }).notNull().default(false),
-    data: text('data', { mode: 'json' }).$type<SessionData>().notNull(),
-    // ... rest of schema
+    ready_for_prompt: t.bool('ready_for_prompt').notNull().default(false), // ← Type factory!
+    data: t.json<SessionData>('data').notNull(), // ← Type factory!
+    // ... rest of schema (all using standard text(), index(), etc.)
   },
   table => ({
     statusIdx: index('sessions_status_idx').on(table.status),
@@ -321,32 +346,37 @@ export const sessions = sqliteTable(
 export { tasks, worktrees, messages, repos, boards, users /* ... */ };
 ```
 
-**PostgreSQL Schema**:
+**PostgreSQL Schema** (using same type factory):
 
 ```typescript
 // packages/core/src/db/schema.postgres.ts
 
-import { pgTable, text, bigint, boolean, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, index } from 'drizzle-orm/pg-core';
+import { createSchemaHelpers } from './schema-factory';
+
+const t = createSchemaHelpers('postgresql');
 
 export const sessions = pgTable(
   'sessions',
   {
     session_id: text('session_id', { length: 36 }).primaryKey(),
-    created_at: timestamp('created_at', { mode: 'date', withTimezone: true }).notNull(),
+    created_at: t.timestamp('created_at').notNull(), // ← Same helper!
     status: text('status', { enum: ['idle', 'running', 'completed', 'failed'] }).notNull(),
-    ready_for_prompt: boolean('ready_for_prompt').notNull().default(false),
-    data: jsonb('data').$type<SessionData>().notNull(),
-    // ... rest of schema
+    ready_for_prompt: t.bool('ready_for_prompt').notNull().default(false), // ← Same helper!
+    data: t.json<SessionData>('data').notNull(), // ← Same helper!
+    // ... rest of schema (identical to SQLite)
   },
   table => ({
     statusIdx: index('sessions_status_idx').on(table.status),
-    // ... indexes
+    // ... indexes (identical to SQLite)
   })
 );
 
 // Export all tables
 export { tasks, worktrees, messages, repos, boards, users /* ... */ };
 ```
+
+**Key Point**: The only lines that differ are the imports and `const t = createSchemaHelpers(...)`. Everything else is identical!
 
 **Schema Loader** (runtime dialect detection):
 
@@ -369,17 +399,17 @@ if (dialect === 'postgresql') {
 
 - ✅ Works with Drizzle's type system (pgTable vs sqliteTable are incompatible)
 - ✅ Enables Drizzle Kit auto-generation for both dialects
-- ✅ Shared factory minimizes duplication (column definitions in one place)
+- ✅ Type factory abstracts the only 3 differences (timestamp, boolean, json)
+- ✅ Schemas remain 95%+ identical (just use `t.timestamp()` instead of raw types)
 - ✅ Type-safe schema definitions
+- ✅ Scales to future databases (just add cases to factory)
 - ✅ Runtime dialect switching via schema.ts re-export
 
 ---
 
-#### Keeping Schemas DRY: Type Factory Pattern
+#### Type Factory Implementation Details
 
-**The Problem**: Schemas are 90%+ identical, but Drizzle requires separate files per dialect.
-
-**What Actually Differs**:
+**What Actually Differs Between Dialects**:
 
 Only 3 type mappings differ between SQLite and PostgreSQL:
 
@@ -391,7 +421,7 @@ Only 3 type mappings differ between SQLite and PostgreSQL:
 
 **Everything else is identical**: `text()`, `index()`, foreign keys, defaults, constraints, etc.
 
-**Solution: Type Factory Helper** (~50 lines of code)
+**Type Factory Helper** (~50 lines, already shown above in schema-factory.ts)
 
 ```typescript
 // packages/core/src/db/schema-factory.ts
@@ -492,23 +522,40 @@ export const sessions = pgTable(
 
 **What You Maintain**:
 
-- `schema-factory.ts`: ~50 lines (type helpers)
-- `schema.sqlite.ts`: ~200 lines (using helpers for 3 types)
-- `schema.postgres.ts`: ~200 lines (using helpers for 3 types)
-- **Total: ~450 lines** (vs ~400 with pure duplication)
+- `schema-factory.ts`: ~50 lines (type helpers + dialect detection)
+- `schema.sqlite.ts`: ~200 lines (using `t.timestamp()`, `t.bool()`, `t.json()`)
+- `schema.postgres.ts`: ~200 lines (using same helpers, 95%+ identical to SQLite)
+- **Total: ~450 lines** (vs ~400 with pure duplication, but guaranteed consistency)
 
-The extra 50 lines buys you guaranteed consistency for the problematic types and a clear separation of concerns.
+**Why The Extra 50 Lines Is Worth It**:
 
-**Alternative: Accept the Duplication**
+- ✅ Single source of truth for type mappings
+- ✅ Change once (`schema-factory.ts`), updates both schemas automatically
+- ✅ Scales to future databases (MySQL, etc.) - just add cases to factory
+- ✅ Clear separation: what differs (factory) vs what's the same (schemas)
+- ✅ Impossible for type mappings to drift between dialects
 
-For a simpler approach, you can just accept ~200 lines of duplication:
+**Future Extensibility Example**:
 
-- Schema changes are rare (every 2-4 weeks)
-- Keep schemas side-by-side in editor when making changes
-- Add CI linter to check column parity
-- Comment at top: `// IMPORTANT: Keep in sync with schema.postgres.ts`
+Adding MySQL support is straightforward:
 
-This is actually what the Drizzle team recommends - schemas are explicit and migrations are 100% auto-generated anyway.
+```typescript
+// schema-factory.ts
+export type DatabaseDialect = 'sqlite' | 'postgresql' | 'mysql';
+
+export function createSchemaHelpers(dialect: DatabaseDialect) {
+  if (dialect === 'mysql') {
+    return {
+      timestamp: (name: string) => timestamp(name),
+      bool: (name: string) => tinyint(name, { mode: 'boolean' }),
+      json: <T>(name: string) => json(name).$type<T>(),
+    };
+  }
+  // ... existing cases
+}
+```
+
+Then create `schema.mysql.ts` using the same pattern. The factory handles all dialect differences in one place.
 
 ### 3. Client Factory Refactor
 
