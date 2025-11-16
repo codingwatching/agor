@@ -373,6 +373,143 @@ if (dialect === 'postgresql') {
 - ✅ Type-safe schema definitions
 - ✅ Runtime dialect switching via schema.ts re-export
 
+---
+
+#### Keeping Schemas DRY: Type Factory Pattern
+
+**The Problem**: Schemas are 90%+ identical, but Drizzle requires separate files per dialect.
+
+**What Actually Differs**:
+
+Only 3 type mappings differ between SQLite and PostgreSQL:
+
+| Type      | SQLite                                       | PostgreSQL                                   |
+| --------- | -------------------------------------------- | -------------------------------------------- |
+| Timestamp | `integer('field', { mode: 'timestamp_ms' })` | `timestamp('field', { withTimezone: true })` |
+| Boolean   | `integer('field', { mode: 'boolean' })`      | `boolean('field')`                           |
+| JSON      | `text('field', { mode: 'json' })`            | `jsonb('field')`                             |
+
+**Everything else is identical**: `text()`, `index()`, foreign keys, defaults, constraints, etc.
+
+**Solution: Type Factory Helper** (~50 lines of code)
+
+```typescript
+// packages/core/src/db/schema-factory.ts
+
+import { integer, text } from 'drizzle-orm/sqlite-core';
+import { timestamp, boolean, jsonb } from 'drizzle-orm/pg-core';
+
+type Dialect = 'sqlite' | 'postgresql';
+
+/**
+ * Create dialect-specific type helpers
+ * This is the ONLY place dialect differences are defined
+ */
+export function createSchemaHelpers(dialect: Dialect) {
+  if (dialect === 'postgresql') {
+    return {
+      /** PostgreSQL: native TIMESTAMP WITH TIME ZONE */
+      timestamp: (name: string) => timestamp(name, { mode: 'date', withTimezone: true }),
+
+      /** PostgreSQL: native BOOLEAN */
+      bool: (name: string) => boolean(name),
+
+      /** PostgreSQL: native JSONB (binary JSON) */
+      json: <T>(name: string) => jsonb(name).$type<T>(),
+    };
+  }
+
+  // SQLite
+  return {
+    /** SQLite: integer with timestamp_ms mode */
+    timestamp: (name: string) => integer(name, { mode: 'timestamp_ms' }),
+
+    /** SQLite: integer with boolean mode (0/1) */
+    bool: (name: string) => integer(name, { mode: 'boolean' }),
+
+    /** SQLite: text with json mode */
+    json: <T>(name: string) => text(name, { mode: 'json' }).$type<T>(),
+  };
+}
+```
+
+**Usage in Both Schemas**:
+
+```typescript
+// schema.sqlite.ts
+import { sqliteTable, text, index } from 'drizzle-orm/sqlite-core';
+import { createSchemaHelpers } from './schema-factory';
+
+const t = createSchemaHelpers('sqlite');
+
+export const sessions = sqliteTable(
+  'sessions',
+  {
+    session_id: text('session_id', { length: 36 }).primaryKey(),
+    created_at: t.timestamp('created_at').notNull(), // ← Helper!
+    status: text('status', { enum: ['idle', 'running', 'completed', 'failed'] }).notNull(),
+    ready_for_prompt: t.bool('ready_for_prompt').notNull().default(false), // ← Helper!
+    data: t.json<SessionData>('data').notNull(), // ← Helper!
+    // ... rest of columns
+  },
+  table => ({
+    statusIdx: index('sessions_status_idx').on(table.status),
+  })
+);
+```
+
+```typescript
+// schema.postgres.ts
+import { pgTable, text, index } from 'drizzle-orm/pg-core';
+import { createSchemaHelpers } from './schema-factory';
+
+const t = createSchemaHelpers('postgresql');
+
+export const sessions = pgTable(
+  'sessions',
+  {
+    session_id: text('session_id', { length: 36 }).primaryKey(),
+    created_at: t.timestamp('created_at').notNull(), // ← Same helper!
+    status: text('status', { enum: ['idle', 'running', 'completed', 'failed'] }).notNull(),
+    ready_for_prompt: t.bool('ready_for_prompt').notNull().default(false), // ← Same helper!
+    data: t.json<SessionData>('data').notNull(), // ← Same helper!
+    // ... rest of columns (identical to SQLite)
+  },
+  table => ({
+    statusIdx: index('sessions_status_idx').on(table.status),
+  })
+);
+```
+
+**Benefits**:
+
+- ✅ **Minimal code**: Only ~50 lines for the factory
+- ✅ **Single source of truth**: Type mappings defined once
+- ✅ **Explicit schemas**: Still readable TypeScript (not generated)
+- ✅ **Easy debugging**: Type errors point to actual schema files
+- ✅ **No build step**: Works directly with Drizzle Kit
+- ✅ **Safe refactoring**: Changing a type mapping updates both schemas
+
+**What You Maintain**:
+
+- `schema-factory.ts`: ~50 lines (type helpers)
+- `schema.sqlite.ts`: ~200 lines (using helpers for 3 types)
+- `schema.postgres.ts`: ~200 lines (using helpers for 3 types)
+- **Total: ~450 lines** (vs ~400 with pure duplication)
+
+The extra 50 lines buys you guaranteed consistency for the problematic types and a clear separation of concerns.
+
+**Alternative: Accept the Duplication**
+
+For a simpler approach, you can just accept ~200 lines of duplication:
+
+- Schema changes are rare (every 2-4 weeks)
+- Keep schemas side-by-side in editor when making changes
+- Add CI linter to check column parity
+- Comment at top: `// IMPORTANT: Keep in sync with schema.postgres.ts`
+
+This is actually what the Drizzle team recommends - schemas are explicit and migrations are 100% auto-generated anyway.
+
 ### 3. Client Factory Refactor
 
 Replace LibSQL-only client with dialect-aware factory:
