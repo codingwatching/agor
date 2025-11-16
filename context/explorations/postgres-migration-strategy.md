@@ -1,22 +1,26 @@
-# PostgreSQL Migration Strategy: DRY Templates vs Duplication
+# PostgreSQL Migration Strategy: Drizzle Kit Auto-Generation
 
-**Status**: 🔍 Analysis
-**Decision**: Template-based migrations with dialect utilities
-**Related**: postgres-support.md
+**Status**: ✅ Recommended Approach
+**Decision**: Use Drizzle Kit to auto-generate migrations for both dialects
+**Related**: postgres-support.md, drizzle-multi-dialect-analysis.md
 
 ---
 
 ## Executive Summary
 
-**Recommendation**: Use **TypeScript-based migration templates** with small dialect-specific utilities rather than duplicating SQL files.
+**Recommendation**: Use **dual schema files + Drizzle Kit auto-generation** rather than custom migration builder or manual SQL duplication.
 
 **Rationale**:
 
-- 90%+ of migration logic is identical across dialects
-- Type safety catches errors at compile time
-- DRY principle reduces maintenance burden
-- Utilities abstract dialect quirks cleanly
-- Easier to review diffs (one PR, not two separate SQL files)
+- ✅ Drizzle Kit auto-generates dialect-specific SQL migrations from schemas
+- ✅ Battle-tested migration logic from Drizzle team (handles all quirks)
+- ✅ No manual SQL writing required (huge time savings)
+- ✅ Type-safe schema definitions catch errors at compile time
+- ✅ Snapshot-based diffing (only generates what changed)
+- ✅ Simpler implementation (no custom migration builder needed)
+- ✅ Separate migration folders keep dialects isolated (`drizzle/sqlite/`, `drizzle/postgres/`)
+
+**Trade-off**: Schema definitions must be maintained in two files (`schema.sqlite.ts` and `schema.postgres.ts`), but this is minimal duplication compared to maintaining migrations manually.
 
 ---
 
@@ -564,624 +568,402 @@ ALTER TABLE messages ADD parent_tool_use_id TEXT;
 
 ---
 
-## Recommended Approach: TypeScript Migration Builder
+## Recommended Approach: Drizzle Kit Auto-Generation with Dual Schemas
+
+### Why Drizzle Kit Auto-Generation?
+
+After analyzing the options (duplicate SQL, custom TypeScript builder, template SQL), **Drizzle Kit's native multi-config support** emerged as the best solution:
+
+**Advantages**:
+
+1. ✅ **Battle-tested** - Drizzle team maintains migration generation logic
+2. ✅ **Zero manual SQL** - Schema changes → automatic migration generation
+3. ✅ **Handles all dialect quirks** automatically:
+   - SQLite: PRAGMA statements, table recreation for ALTER COLUMN, backticks
+   - PostgreSQL: Simple ALTER TABLE, no PRAGMA, plain identifiers
+4. ✅ **Snapshot-based** - Only generates diffs (what actually changed)
+5. ✅ **Type-safe** - Schema errors caught at compile time
+6. ✅ **Simple** - No custom migration builder to maintain
+
+**Trade-off**: Need to maintain dual schema files, but this is minimal compared to maintaining complex migration builder.
+
+---
 
 ### Architecture
 
-```typescript
-// packages/core/src/db/migrations/utils/types.ts
-
-export type Dialect = 'sqlite' | 'postgresql';
-
-export interface ColumnDef {
-  name: string;
-  type: 'text' | 'integer' | 'boolean' | 'json' | 'timestamp';
-  length?: number;
-  nullable?: boolean;
-  default?: string | number | boolean;
-  primaryKey?: boolean;
-}
-
-export interface IndexDef {
-  name: string;
-  table: string;
-  columns: string[];
-  unique?: boolean;
-}
-
-export interface ForeignKeyDef {
-  table: string;
-  column: string;
-  references: {
-    table: string;
-    column: string;
-  };
-  onDelete?: 'cascade' | 'set null' | 'restrict';
-  onUpdate?: 'cascade' | 'set null' | 'restrict';
-}
-
-export interface MigrationBuilder {
-  // DDL operations
-  createTable(
-    name: string,
-    schema: {
-      columns: ColumnDef[];
-      foreignKeys?: ForeignKeyDef[];
-    }
-  ): void;
-
-  addColumn(table: string, column: ColumnDef): void;
-
-  dropColumn(table: string, column: string): void;
-
-  alterColumn(table: string, column: string, changes: Partial<ColumnDef>): void;
-
-  createIndex(index: IndexDef): void;
-
-  dropIndex(name: string): void;
-
-  addForeignKey(fk: ForeignKeyDef): void;
-
-  dropForeignKey(table: string, column: string): void;
-
-  // Raw SQL (for dialect-specific operations)
-  raw(sql: string, dialectOverride?: Dialect): void;
-}
-
-export interface Migration {
-  name: string;
-  up: (builder: MigrationBuilder) => void;
-  down?: (builder: MigrationBuilder) => void;
-}
+```
+packages/core/
+├── src/db/
+│   ├── schema.ts              # Runtime re-export (based on config dialect)
+│   ├── schema.sqlite.ts       # SQLite schema (sqliteTable)
+│   ├── schema.postgres.ts     # PostgreSQL schema (pgTable)
+│   └── schema-factory.ts      # Shared column definitions (optional DRY helper)
+│
+├── drizzle/
+│   ├── sqlite/
+│   │   ├── 0000_initial_schema.sql
+│   │   ├── 0001_add_parent_tool_use_id.sql
+│   │   └── meta/
+│   │       ├── _journal.json
+│   │       └── 0000_snapshot.json
+│   └── postgres/
+│       ├── 0000_initial_schema.sql
+│       ├── 0001_add_parent_tool_use_id.sql
+│       └── meta/
+│           ├── _journal.json
+│           └── 0000_snapshot.json
+│
+├── drizzle.sqlite.config.ts   # Drizzle Kit config for SQLite
+└── drizzle.postgres.config.ts # Drizzle Kit config for PostgreSQL
 ```
 
 ---
 
-### Dialect Utilities
+### Dual Schema Files
+
+**SQLite Schema**:
 
 ```typescript
-// packages/core/src/db/migrations/utils/dialect-utils.ts
+// packages/core/src/db/schema.sqlite.ts
 
-export class DialectUtils {
-  constructor(private dialect: Dialect) {}
+import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
 
-  /** Quote identifier (table/column name) */
-  quote(name: string): string {
-    return this.dialect === 'sqlite' ? `\`${name}\`` : name;
-  }
-
-  /** Map abstract type to SQL type */
-  mapType(type: string, length?: number): string {
-    if (this.dialect === 'postgresql') {
-      switch (type) {
-        case 'text':
-          return length ? `VARCHAR(${length})` : 'TEXT';
-        case 'integer':
-          return 'BIGINT';
-        case 'boolean':
-          return 'BOOLEAN';
-        case 'json':
-          return 'JSONB';
-        case 'timestamp':
-          return 'TIMESTAMP WITH TIME ZONE';
-        default:
-          return type.toUpperCase();
-      }
-    }
-
-    // SQLite
-    switch (type) {
-      case 'text':
-        return length ? `text(${length})` : 'text';
-      case 'integer':
-        return 'integer';
-      case 'boolean':
-        return 'integer'; // Will use mode: 'boolean' in schema
-      case 'json':
-        return 'text'; // Will use mode: 'json' in schema
-      case 'timestamp':
-        return 'integer'; // Will use mode: 'timestamp_ms' in schema
-      default:
-        return type;
-    }
-  }
-
-  /** Format default value */
-  formatDefault(value: string | number | boolean, type: string): string {
-    if (type === 'boolean' && this.dialect === 'postgresql') {
-      return String(value);
-    }
-    if (type === 'boolean' && this.dialect === 'sqlite') {
-      return value ? '1' : '0';
-    }
-    if (typeof value === 'string') {
-      return `'${value}'`;
-    }
-    return String(value);
-  }
-
-  /** Format foreign key action */
-  formatAction(action?: string): string {
-    if (!action) return 'NO ACTION';
-    return this.dialect === 'postgresql' ? action.toUpperCase() : action.toLowerCase();
-  }
-
-  /** Check if dialect supports ALTER COLUMN */
-  supportsAlterColumn(): boolean {
-    return this.dialect === 'postgresql';
-  }
-
-  /** Check if dialect needs PRAGMA */
-  needsPragma(): boolean {
-    return this.dialect === 'sqlite';
-  }
-}
-```
-
----
-
-### Migration Builder Implementation
-
-```typescript
-// packages/core/src/db/migrations/utils/migration-builder.ts
-
-export class MigrationBuilderImpl implements MigrationBuilder {
-  private statements: string[] = [];
-  private utils: DialectUtils;
-
-  constructor(private dialect: Dialect) {
-    this.utils = new DialectUtils(dialect);
-  }
-
-  addColumn(table: string, column: ColumnDef): void {
-    const quotedTable = this.utils.quote(table);
-    const quotedColumn = this.utils.quote(column.name);
-    const sqlType = this.utils.mapType(column.type, column.length);
-    const nullable = column.nullable ? '' : ' NOT NULL';
-    const defaultVal = column.default
-      ? ` DEFAULT ${this.utils.formatDefault(column.default, column.type)}`
-      : '';
-
-    this.statements.push(
-      `ALTER TABLE ${quotedTable} ADD ${quotedColumn} ${sqlType}${defaultVal}${nullable};`
-    );
-  }
-
-  createIndex(index: IndexDef): void {
-    const quotedName = this.utils.quote(index.name);
-    const quotedTable = this.utils.quote(index.table);
-    const quotedColumns = index.columns.map(c => this.utils.quote(c)).join(',');
-    const unique = index.unique ? 'UNIQUE ' : '';
-
-    this.statements.push(
-      `CREATE ${unique}INDEX ${quotedName} ON ${quotedTable} (${quotedColumns});`
-    );
-  }
-
-  alterColumn(table: string, column: string, changes: Partial<ColumnDef>): void {
-    if (!this.utils.supportsAlterColumn()) {
-      throw new Error('SQLite does not support ALTER COLUMN. Use table recreation instead.');
-    }
-
-    // PostgreSQL only
-    const quotedTable = this.utils.quote(table);
-    const quotedColumn = this.utils.quote(column);
-
-    if (changes.type) {
-      const sqlType = this.utils.mapType(changes.type, changes.length);
-      this.statements.push(
-        `ALTER TABLE ${quotedTable} ALTER COLUMN ${quotedColumn} TYPE ${sqlType};`
-      );
-    }
-
-    if (changes.default !== undefined) {
-      const defaultVal = this.utils.formatDefault(changes.default, changes.type!);
-      this.statements.push(
-        `ALTER TABLE ${quotedTable} ALTER COLUMN ${quotedColumn} SET DEFAULT ${defaultVal};`
-      );
-    }
-
-    if (changes.nullable !== undefined) {
-      const action = changes.nullable ? 'DROP NOT NULL' : 'SET NOT NULL';
-      this.statements.push(`ALTER TABLE ${quotedTable} ALTER COLUMN ${quotedColumn} ${action};`);
-    }
-  }
-
-  // ... more operations (createTable, addForeignKey, etc.)
-
-  toSQL(): string {
-    return this.statements.join('\n');
-  }
-}
-
-export function createMigration(migration: Migration): Migration {
-  return migration;
-}
-```
-
----
-
-### Example Migrations
-
-#### Simple Migration (0001)
-
-```typescript
-// packages/core/src/db/migrations/0001-add-parent-tool-use-id.ts
-
-import { createMigration } from './utils/migration-builder';
-
-export default createMigration({
-  name: '0001_add_parent_tool_use_id',
-  up: m => {
-    m.addColumn('messages', {
-      name: 'parent_tool_use_id',
-      type: 'text',
-      nullable: true,
-    });
+export const sessions = sqliteTable(
+  'sessions',
+  {
+    session_id: text('session_id', { length: 36 }).primaryKey(),
+    created_at: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+    status: text('status', { enum: ['idle', 'running', 'completed', 'failed'] }).notNull(),
+    ready_for_prompt: integer('ready_for_prompt', { mode: 'boolean' }).notNull().default(false),
+    data: text('data', { mode: 'json' }).$type<SessionData>().notNull(),
+    // ... rest of columns
   },
-  down: m => {
-    m.dropColumn('messages', 'parent_tool_use_id');
+  table => ({
+    statusIdx: index('sessions_status_idx').on(table.status),
+    // ... indexes
+  })
+);
+
+// ... all other tables
+```
+
+**PostgreSQL Schema**:
+
+```typescript
+// packages/core/src/db/schema.postgres.ts
+
+import { pgTable, text, bigint, boolean, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
+
+export const sessions = pgTable(
+  'sessions',
+  {
+    session_id: text('session_id', { length: 36 }).primaryKey(),
+    created_at: timestamp('created_at', { mode: 'date', withTimezone: true }).notNull(),
+    status: text('status', { enum: ['idle', 'running', 'completed', 'failed'] }).notNull(),
+    ready_for_prompt: boolean('ready_for_prompt').notNull().default(false),
+    data: jsonb('data').$type<SessionData>().notNull(),
+    // ... rest of columns
+  },
+  table => ({
+    statusIdx: index('sessions_status_idx').on(table.status),
+    // ... indexes
+  })
+);
+
+// ... all other tables
+```
+
+**Shared Factory** (optional, to reduce duplication):
+
+```typescript
+// packages/core/src/db/schema-factory.ts
+
+export const sessionsColumns = {
+  session_id: { type: 'id', primaryKey: true },
+  created_at: { type: 'timestamp', notNull: true },
+  status: { type: 'enum', enum: ['idle', 'running', 'completed', 'failed'], notNull: true },
+  ready_for_prompt: { type: 'boolean', notNull: true, default: false },
+  data: { type: 'json', notNull: true },
+  // ... rest of columns
+};
+
+// Use this as reference when creating both schema files
+```
+
+---
+
+### Drizzle Configs
+
+**SQLite Config**:
+
+```typescript
+// packages/core/drizzle.sqlite.config.ts
+
+import { defineConfig } from 'drizzle-kit';
+import { expandPath } from './dist/utils/path.js';
+
+export default defineConfig({
+  schema: './src/db/schema.sqlite.ts',
+  out: './drizzle/sqlite',
+  dialect: 'sqlite',
+  dbCredentials: {
+    url: expandPath(process.env.AGOR_DB_PATH || 'file:~/.agor/agor.db'),
   },
 });
 ```
 
-**Generated SQLite**:
-
-```sql
-ALTER TABLE `messages` ADD `parent_tool_use_id` text;
-```
-
-**Generated PostgreSQL**:
-
-```sql
-ALTER TABLE messages ADD parent_tool_use_id TEXT;
-```
-
----
-
-#### Complex Migration (0009 - Table Recreation)
+**PostgreSQL Config**:
 
 ```typescript
-// packages/core/src/db/migrations/0009-add-ready-for-prompt.ts
+// packages/core/drizzle.postgres.config.ts
 
-import { createMigration } from './utils/migration-builder';
-import { recreateTable } from './utils/sqlite-helpers';
+import { defineConfig } from 'drizzle-kit';
 
-export default createMigration({
-  name: '0009_add_ready_for_prompt',
-  up: m => {
-    if (m.dialect === 'postgresql') {
-      // Simple ALTER TABLE for PostgreSQL
-      m.addColumn('sessions', {
-        name: 'ready_for_prompt',
-        type: 'boolean',
-        default: false,
-        nullable: false,
-      });
-    } else {
-      // Table recreation for SQLite
-      recreateTable(m, {
-        table: 'sessions',
-        newColumns: [
-          {
-            name: 'ready_for_prompt',
-            type: 'boolean',
-            default: false,
-            nullable: false,
-          },
-        ],
-        existingColumns: [
-          'session_id',
-          'created_at',
-          'updated_at',
-          'created_by',
-          'status',
-          'agentic_tool',
-          'board_id',
-          'parent_session_id',
-          'forked_from_session_id',
-          'worktree_id',
-          'scheduled_run_at',
-          'scheduled_from_worktree',
-          'data',
-        ],
-        indexes: [
-          { name: 'sessions_status_idx', columns: ['status'] },
-          { name: 'sessions_worktree_idx', columns: ['worktree_id'] },
-          // ... more indexes
-        ],
-        foreignKeys: [
-          {
-            column: 'worktree_id',
-            references: { table: 'worktrees', column: 'worktree_id' },
-            onDelete: 'cascade',
-          },
-        ],
-      });
-    }
+export default defineConfig({
+  schema: './src/db/schema.postgres.ts',
+  out: './drizzle/postgres',
+  dialect: 'postgresql',
+  dbCredentials: {
+    url: process.env.DATABASE_URL || 'postgresql://agor:secret@localhost:5432/agor',
   },
 });
 ```
 
-**Generated SQLite** (37+ lines):
+---
+
+### Migration Generation Workflow
+
+**Step 1: Edit both schema files**
+
+```bash
+# Edit SQLite schema
+vim packages/core/src/db/schema.sqlite.ts
+
+# Edit PostgreSQL schema (mirror changes)
+vim packages/core/src/db/schema.postgres.ts
+```
+
+**Step 2: Generate migrations for both dialects**
+
+```bash
+# Generate SQLite migrations
+pnpm drizzle-kit generate --config=drizzle.sqlite.config.ts
+
+# Generate PostgreSQL migrations
+pnpm drizzle-kit generate --config=drizzle.postgres.config.ts
+
+# Or use convenience script
+pnpm db:generate
+```
+
+**Package.json scripts**:
+
+```json
+{
+  "scripts": {
+    "db:generate": "pnpm db:generate:sqlite && pnpm db:generate:postgres",
+    "db:generate:sqlite": "drizzle-kit generate --config=drizzle.sqlite.config.ts",
+    "db:generate:postgres": "drizzle-kit generate --config=drizzle.postgres.config.ts"
+  }
+}
+```
+
+**Step 3: Review generated SQL**
+
+```bash
+# Review SQLite migrations
+git diff drizzle/sqlite/
+
+# Review PostgreSQL migrations
+git diff drizzle/postgres/
+
+# Example output:
+# drizzle/sqlite/0011_add_thinking_support.sql
+# ALTER TABLE `messages` ADD `thinking_content` text;
+
+# drizzle/postgres/0011_add_thinking_support.sql
+# ALTER TABLE messages ADD thinking_content TEXT;
+```
+
+**Step 4: Commit both migrations**
+
+```bash
+git add drizzle/sqlite/ drizzle/postgres/
+git commit -m "Add thinking support to messages"
+```
+
+---
+
+### Example: Generated Migrations
+
+**Simple Column Addition**:
+
+_After adding `thinking_content` column to both schemas:_
+
+**drizzle/sqlite/0011_add_thinking.sql**:
+
+```sql
+ALTER TABLE `messages` ADD `thinking_content` text;
+```
+
+**drizzle/postgres/0011_add_thinking.sql**:
+
+```sql
+ALTER TABLE messages ADD thinking_content TEXT;
+```
+
+**Complex Schema Change** (ALTER COLUMN):
+
+_After changing `ready_for_prompt` from nullable to NOT NULL:_
+
+**drizzle/sqlite/0012_alter_ready_for_prompt.sql** (37+ lines):
 
 ```sql
 PRAGMA foreign_keys=OFF;
 
 CREATE TABLE `sessions_new` (
   `session_id` text(36) PRIMARY KEY NOT NULL,
+  `created_at` integer NOT NULL,
+  `status` text NOT NULL,
+  `ready_for_prompt` integer DEFAULT 0 NOT NULL,
   -- ... all columns
-  `ready_for_prompt` integer DEFAULT 0 NOT NULL
 );
 
-INSERT INTO `sessions_new` (...)
-SELECT ... FROM `sessions`;
-
+INSERT INTO `sessions_new` SELECT * FROM `sessions`;
 DROP TABLE `sessions`;
 ALTER TABLE `sessions_new` RENAME TO `sessions`;
 
 PRAGMA foreign_keys=ON;
 
 CREATE INDEX `sessions_status_idx` ON `sessions` (`status`);
--- ... more indexes
+-- ... recreate all indexes
 ```
 
-**Generated PostgreSQL** (1 line):
+**drizzle/postgres/0012_alter_ready_for_prompt.sql** (1 line):
 
 ```sql
-ALTER TABLE sessions ADD ready_for_prompt BOOLEAN DEFAULT false NOT NULL;
+ALTER TABLE sessions ALTER COLUMN ready_for_prompt SET NOT NULL;
 ```
 
----
+**Why This Is Great**:
 
-#### Initial Schema Migration (0000)
-
-```typescript
-// packages/core/src/db/migrations/0000-initial-schema.ts
-
-import { createMigration } from './utils/migration-builder';
-
-export default createMigration({
-  name: '0000_initial_schema',
-  up: m => {
-    // Boards table
-    m.createTable('boards', {
-      columns: [
-        { name: 'board_id', type: 'text', length: 36, primaryKey: true },
-        { name: 'created_at', type: 'timestamp', nullable: false },
-        { name: 'updated_at', type: 'timestamp', nullable: true },
-        { name: 'created_by', type: 'text', length: 36, default: 'anonymous', nullable: false },
-        { name: 'name', type: 'text', nullable: false },
-        { name: 'slug', type: 'text', nullable: true },
-        { name: 'data', type: 'json', nullable: false },
-      ],
-    });
-
-    m.createIndex({ name: 'boards_name_idx', table: 'boards', columns: ['name'] });
-    m.createIndex({ name: 'boards_slug_unique', table: 'boards', columns: ['slug'], unique: true });
-
-    // Sessions table
-    m.createTable('sessions', {
-      columns: [
-        { name: 'session_id', type: 'text', length: 36, primaryKey: true },
-        { name: 'created_at', type: 'timestamp', nullable: false },
-        { name: 'status', type: 'text', nullable: false },
-        { name: 'worktree_id', type: 'text', length: 36, nullable: false },
-        { name: 'data', type: 'json', nullable: false },
-      ],
-      foreignKeys: [
-        {
-          column: 'worktree_id',
-          references: { table: 'worktrees', column: 'worktree_id' },
-          onDelete: 'cascade',
-        },
-      ],
-    });
-
-    m.createIndex({ name: 'sessions_status_idx', table: 'sessions', columns: ['status'] });
-
-    // ... 9 more tables
-  },
-});
-```
-
----
-
-### SQLite-Specific Helpers
-
-```typescript
-// packages/core/src/db/migrations/utils/sqlite-helpers.ts
-
-interface TableRecreationConfig {
-  table: string;
-  newColumns: ColumnDef[];
-  existingColumns: string[];
-  indexes: IndexDef[];
-  foreignKeys?: ForeignKeyDef[];
-}
-
-export function recreateTable(m: MigrationBuilder, config: TableRecreationConfig): void {
-  const { table, newColumns, existingColumns, indexes, foreignKeys } = config;
-
-  // Step 1: Disable foreign keys
-  m.raw('PRAGMA foreign_keys=OFF;', 'sqlite');
-
-  // Step 2: Create new table with all columns
-  const allColumns = [...existingColumns, ...newColumns.map(c => c.name)];
-  m.createTable(`${table}_new`, {
-    columns: allColumns.map(name => {
-      const newCol = newColumns.find(c => c.name === name);
-      return (
-        newCol || {
-          name,
-          type: 'text', // Placeholder, will be inferred from existing schema
-          nullable: true,
-        }
-      );
-    }),
-    foreignKeys,
-  });
-
-  // Step 3: Copy data
-  const selectColumns = existingColumns.join(', ');
-  m.raw(
-    `INSERT INTO \`${table}_new\` (${selectColumns}) SELECT ${selectColumns} FROM \`${table}\`;`,
-    'sqlite'
-  );
-
-  // Step 4: Drop old table
-  m.raw(`DROP TABLE \`${table}\`;`, 'sqlite');
-
-  // Step 5: Rename new table
-  m.raw(`ALTER TABLE \`${table}_new\` RENAME TO \`${table}\`;`, 'sqlite');
-
-  // Step 6: Re-enable foreign keys
-  m.raw('PRAGMA foreign_keys=ON;', 'sqlite');
-
-  // Step 7: Recreate indexes
-  indexes.forEach(index => m.createIndex(index));
-}
-```
-
----
-
-### Compilation Script
-
-```typescript
-// packages/core/scripts/compile-migrations.ts
-
-import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { MigrationBuilderImpl } from '../src/db/migrations/utils/migration-builder';
-
-async function compileMigrations() {
-  const migrations = [
-    await import('../src/db/migrations/0000-initial-schema'),
-    await import('../src/db/migrations/0001-add-parent-tool-use-id'),
-    // ... more migrations
-  ];
-
-  for (const dialect of ['sqlite', 'postgresql'] as const) {
-    const outDir = join(__dirname, '..', `drizzle.${dialect}`);
-
-    for (const migration of migrations) {
-      const builder = new MigrationBuilderImpl(dialect);
-      migration.default.up(builder);
-
-      const sql = builder.toSQL();
-      const filename = `${migration.default.name}.sql`;
-      writeFileSync(join(outDir, filename), sql);
-    }
-
-    console.log(`✅ Generated ${migrations.length} migrations for ${dialect}`);
-  }
-}
-
-compileMigrations();
-```
-
-**Package.json script**:
-
-```json
-{
-  "scripts": {
-    "db:compile-migrations": "tsx scripts/compile-migrations.ts"
-  }
-}
-```
+- ✅ Drizzle Kit handles SQLite table recreation automatically
+- ✅ Drizzle Kit handles PostgreSQL simple ALTER TABLE automatically
+- ✅ No custom migration builder needed
+- ✅ No manual SQL writing
+- ✅ All dialect quirks handled by battle-tested Drizzle code
 
 ---
 
 ## Decision Matrix
 
-| Criteria               | Duplicate SQL   | Template SQL | TypeScript Builder | Drizzle Auto    |
-| ---------------------- | --------------- | ------------ | ------------------ | --------------- |
-| **DRY**                | ❌ 0%           | ✅ 100%      | ✅ 100%            | ✅ 100%         |
-| **Type Safety**        | ❌ No           | ❌ No        | ✅ Yes             | ✅ Yes          |
-| **Readability**        | ✅ High         | ⚠️ Medium    | ✅ High            | ✅ High         |
-| **Maintenance**        | ❌ 2x effort    | ✅ 1x effort | ✅ 1x effort       | ✅ Minimal      |
-| **Tooling Complexity** | ✅ None         | ⚠️ Medium    | ⚠️ Medium          | ✅ None         |
-| **Flexibility**        | ✅ Full control | ⚠️ Limited   | ✅ Full control    | ⚠️ Limited      |
-| **Production Ready**   | ✅ Yes          | ✅ Yes       | ⚠️ Custom          | ❌ Experimental |
-| **Review Ease**        | ❌ 2 files      | ✅ 1 file    | ✅ 1 file          | ✅ 1 file       |
-| **Debugging**          | ✅ Direct SQL   | ⚠️ Generated | ⚠️ Generated       | ⚠️ Generated    |
+| Criteria               | Duplicate SQL  | Template SQL | TypeScript Builder | Drizzle Auto-Gen |
+| ---------------------- | -------------- | ------------ | ------------------ | ---------------- |
+| **DRY**                | ❌ 0%          | ✅ 100%      | ✅ 100%            | ⚠️ 90%\*         |
+| **Type Safety**        | ❌ No          | ❌ No        | ✅ Yes             | ✅ Yes           |
+| **Readability**        | ✅ High        | ⚠️ Medium    | ✅ High            | ✅ High          |
+| **Maintenance**        | ❌ 2x effort   | ✅ 1x effort | ⚠️ Custom code     | ✅ Minimal       |
+| **Tooling Complexity** | ✅ None        | ⚠️ Medium    | ⚠️ High            | ✅ None          |
+| **Flexibility**        | ✅ Full        | ⚠️ Limited   | ✅ Full            | ✅ Full          |
+| **Production Ready**   | ✅ Yes         | ✅ Yes       | ⚠️ Custom          | ✅ Yes           |
+| **Review Ease**        | ❌ 2 files     | ✅ 1 file    | ✅ 1 file          | ✅ 2 generated   |
+| **Debugging**          | ✅ Direct SQL  | ⚠️ Generated | ⚠️ Generated       | ✅ Direct SQL    |
+| **No Manual SQL**      | ❌ 100% manual | ⚠️ Templates | ⚠️ Builder API     | ✅ Fully auto    |
+| **Battle-Tested**      | ✅ Yes         | ⚠️ Custom    | ❌ Custom          | ✅ Drizzle team  |
 
-**Winner**: ✅ **TypeScript Builder** (best balance for production use)
+\*Schema duplication (~200 lines per file), but migrations are 100% auto-generated
+
+**Winner**: ✅ **Drizzle Auto-Generation** (battle-tested, zero manual SQL, minimal maintenance)
 
 ---
 
 ## Implementation Plan
 
-### Phase 1: Build Migration Utilities (2 days)
+### Phase 1: Create Dual Schema Files (2 days)
 
-1. Create `packages/core/src/db/migrations/utils/`
-2. Implement `DialectUtils` class
-3. Implement `MigrationBuilderImpl` class
-4. Implement `sqlite-helpers.ts` (table recreation)
-5. Add unit tests for dialect utilities
+1. Create `schema.sqlite.ts` (copy from existing `schema.ts`)
+2. Create `schema.postgres.ts` (translate to PostgreSQL types)
+3. Create `schema-factory.ts` (optional shared column definitions)
+4. Update `schema.ts` to re-export based on runtime dialect
+5. Validate both schemas compile without errors
 
-### Phase 2: Migrate Existing Migrations (3 days)
+### Phase 2: Set Up Drizzle Configs (1 day)
 
-1. Convert 0000 (initial schema) → TypeScript
-2. Convert 0001-0010 (incremental) → TypeScript
-3. Test compilation to SQL
-4. Validate generated SQL matches original
+1. Create `drizzle.sqlite.config.ts`
+2. Create `drizzle.postgres.config.ts`
+3. Move existing migrations to `drizzle/sqlite/`
+4. Add package.json scripts (`db:generate`, `db:generate:sqlite`, `db:generate:postgres`)
+5. Test migration generation for SQLite (should match existing)
 
-### Phase 3: Update Build Process (1 day)
+### Phase 3: Generate Initial PostgreSQL Migrations (1 day)
 
-1. Add `compile-migrations.ts` script
-2. Update CI to compile migrations before tests
-3. Update developer workflow docs
+1. Run `pnpm db:generate:postgres` to generate initial schema
+2. Review generated PostgreSQL SQL
+3. Validate against PostgreSQL test database
+4. Commit both migration folders to git
 
-### Phase 4: Validation (1 day)
+### Phase 4: Update Migration Runner (1 day)
 
-1. Run compiled SQLite migrations on test database
-2. Run compiled PostgreSQL migrations on test database
-3. Compare schema outputs (should be identical to manual migrations)
+1. Update `migrate.ts` to read from dialect-specific folders
+2. Add runtime dialect detection
+3. Test migration runner with both SQLite and PostgreSQL
+4. Validate existing SQLite migrations still work
 
 ---
 
 ## Open Questions
 
 1. **Should we commit generated SQL files to git?**
-   - **Recommendation**: Yes (easier to review, no build step for users)
-   - Generated SQL committed to `drizzle.sqlite/` and `drizzle.postgresql/`
-   - Source of truth is TypeScript in `src/db/migrations/`
+   - **Answer**: Yes (Drizzle's recommended approach)
+   - Both `drizzle/sqlite/` and `drizzle/postgres/` committed
+   - Easier to review in PRs
+   - No build step required for end users
 
-2. **How to handle existing migrations (0000-0010)?**
-   - **Option A**: Convert to TypeScript (preferred, full migration)
-   - **Option B**: Keep existing as-is, use TypeScript for new migrations (hybrid)
-   - **Recommendation**: Option A (clean cutover)
+2. **How to keep schemas in sync?**
+   - **Recommendation**: Manual discipline + optional shared factory
+   - CI could add linter to check column parity between schemas
+   - Shared `schema-factory.ts` can help reduce copy-paste errors
 
 3. **Should we support down migrations?**
-   - **Recommendation**: Yes (optional, for rollback support)
-   - Not all migrations reversible (data loss)
+   - **Answer**: Drizzle Kit doesn't generate down migrations
+   - For now, rely on database backups for rollback
+   - Future: could manually add down migrations if needed
 
-4. **How to handle data migrations (not just DDL)?**
-   - **Recommendation**: Add `m.rawQuery()` for data manipulation
-   - Example: `m.rawQuery('UPDATE sessions SET status = ...')`
+4. **How to handle existing migrations (0000-0010)?**
+   - **Answer**: Keep SQLite migrations as-is (already in `drizzle/` folder)
+   - Move to `drizzle/sqlite/` folder
+   - Generate equivalent PostgreSQL migrations from schema
+   - Both sets of migrations committed to git
 
 ---
 
 ## Summary
 
-**Recommendation**: Use **TypeScript-based migration builder** with dialect utilities.
+**Recommendation**: Use **Drizzle Kit auto-generation with dual schemas**.
 
 **Key Benefits**:
 
-- ✅ 90%+ code reuse (DRY)
-- ✅ Type safety catches errors early
-- ✅ Single file to review per migration
-- ✅ Utilities abstract dialect quirks (`quote()`, `mapType()`, `formatDefault()`)
-- ✅ Table recreation helper for SQLite
-- ✅ Testable (unit tests for migration logic)
+- ✅ Zero manual SQL writing (Drizzle generates everything)
+- ✅ Battle-tested migration logic from Drizzle team
+- ✅ Type-safe schema definitions
+- ✅ Automatic handling of dialect quirks (PRAGMA, table recreation, etc.)
+- ✅ Snapshot-based diffing (only generates changes)
+- ✅ Production-ready (Drizzle is stable and widely used)
 
-**Timeline**: 7 days total (utilities + migration conversion + validation)
+**Trade-offs**:
+
+- ⚠️ Schema files duplicated (~200 lines per file)
+- ⚠️ Must manually keep schemas in sync (or use shared factory)
+- ⚠️ No automatic down migrations (rely on backups)
+
+**Timeline**: 5 days total (down from 7 days with custom builder!)
+
+**Net Savings**: 2 days + no custom migration builder to maintain
 
 **Next Steps**:
 
-1. Review this design with team
-2. Approve TypeScript builder approach
-3. Start Phase 1 (build utilities)
-4. Convert one migration as proof-of-concept (0001)
-5. Validate approach before converting all migrations
+1. Create `schema.sqlite.ts` and `schema.postgres.ts`
+2. Set up dual Drizzle configs
+3. Generate initial PostgreSQL migrations
+4. Test migration runner with both dialects
+5. Update developer documentation
