@@ -707,26 +707,86 @@ export const StatusPill: React.FC<StatusPillProps> = ({ status, style }) => {
 interface ForkPillProps extends BasePillProps {
   fromSessionId: string;
   taskId?: string;
+  messageIndex?: number;
 }
 
-export const ForkPill: React.FC<ForkPillProps> = ({ fromSessionId, taskId, style }) => (
-  <Tag icon={<ForkOutlined />} color={PILL_COLORS.fork} style={style}>
-    FORKED from {fromSessionId.substring(0, 7)}
-    {taskId && ` at ${taskId.substring(0, 7)}`}
-  </Tag>
-);
+export const ForkPill: React.FC<ForkPillProps> = ({
+  fromSessionId,
+  taskId,
+  messageIndex,
+  style,
+}) => {
+  const handleCopySessionId = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    copyToClipboard(fromSessionId);
+  };
+
+  return (
+    <Tooltip
+      title={
+        <div>
+          <div>Forked from session {fromSessionId.substring(0, 8)}</div>
+          {messageIndex !== undefined && <div>Message index: {messageIndex}</div>}
+          <div style={{ marginTop: 4, fontSize: '0.9em', opacity: 0.8 }}>
+            Click to copy session ID
+          </div>
+        </div>
+      }
+    >
+      <Tag
+        icon={<ForkOutlined />}
+        color={PILL_COLORS.fork}
+        style={{ ...style, cursor: 'pointer' }}
+        onClick={handleCopySessionId}
+      >
+        FORKED from {fromSessionId.substring(0, 8)}
+        {messageIndex !== undefined && ` as of message ${messageIndex}`}
+      </Tag>
+    </Tooltip>
+  );
+};
 
 interface SpawnPillProps extends BasePillProps {
   fromSessionId: string;
   taskId?: string;
+  messageIndex?: number;
 }
 
-export const SpawnPill: React.FC<SpawnPillProps> = ({ fromSessionId, taskId, style }) => (
-  <Tag icon={<BranchesOutlined />} color={PILL_COLORS.spawn} style={style}>
-    SPAWNED from {fromSessionId.substring(0, 7)}
-    {taskId && ` at ${taskId.substring(0, 7)}`}
-  </Tag>
-);
+export const SpawnPill: React.FC<SpawnPillProps> = ({
+  fromSessionId,
+  taskId,
+  messageIndex,
+  style,
+}) => {
+  const handleCopySessionId = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    copyToClipboard(fromSessionId);
+  };
+
+  return (
+    <Tooltip
+      title={
+        <div>
+          <div>Spawned from session {fromSessionId.substring(0, 8)}</div>
+          {messageIndex !== undefined && <div>Message index: {messageIndex}</div>}
+          <div style={{ marginTop: 4, fontSize: '0.9em', opacity: 0.8 }}>
+            Click to copy session ID
+          </div>
+        </div>
+      }
+    >
+      <Tag
+        icon={<BranchesOutlined />}
+        color={PILL_COLORS.spawn}
+        style={{ ...style, cursor: 'pointer' }}
+        onClick={handleCopySessionId}
+      >
+        SPAWNED from {fromSessionId.substring(0, 8)}
+        {messageIndex !== undefined && ` as of message ${messageIndex}`}
+      </Tag>
+    </Tooltip>
+  );
+};
 
 interface ReportPillProps extends BasePillProps {
   reportId?: string;

@@ -445,7 +445,7 @@ export const MessageBlock: React.FC<MessageBlockProps> = ({
                 avatar={
                   message.timestamp ? (
                     <Tooltip
-                      title={() => formatTimestampWithRelative(message.timestamp)}
+                      title={() => formatTimestampWithRelative(message.timestamp, message.index)}
                       mouseEnterDelay={0.5}
                       fresh
                     >
@@ -540,7 +540,7 @@ export const MessageBlock: React.FC<MessageBlockProps> = ({
                 avatar={
                   message.timestamp ? (
                     <Tooltip
-                      title={() => formatTimestampWithRelative(message.timestamp)}
+                      title={() => formatTimestampWithRelative(message.timestamp, message.index)}
                       mouseEnterDelay={0.5}
                       fresh
                     >

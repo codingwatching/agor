@@ -57,10 +57,21 @@ export function formatAbsoluteTime(timestamp: string | Date): string {
 }
 
 /**
- * Format a timestamp for tooltips: "2h ago (Jan 12, 2025, 3:45 PM)"
+ * Format a timestamp for tooltips with optional message index
+ * @param timestamp - ISO timestamp or Date object
+ * @param messageIndex - Optional message index to include in tooltip
+ * @returns Formatted string like "2h ago (2025-01-12 15:45:30)" or with message index
  */
-export function formatTimestampWithRelative(timestamp: string | Date): string {
+export function formatTimestampWithRelative(
+  timestamp: string | Date,
+  messageIndex?: number
+): string {
   const relative = formatRelativeTime(timestamp);
   const absolute = formatAbsoluteTime(timestamp);
-  return `${relative} (${absolute})`;
+
+  if (messageIndex !== undefined) {
+    return `${relative}\n${absolute}\nMessage index: ${messageIndex}`;
+  }
+
+  return `${relative}\n${absolute}`;
 }

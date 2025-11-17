@@ -515,9 +515,7 @@ const SessionDrawer = ({
 
       // Register helper to check if value is defined (not undefined)
       // This allows us to distinguish between false and undefined
-      Handlebars.registerHelper('isDefined', function (value) {
-        return value !== undefined;
-      });
+      Handlebars.registerHelper('isDefined', (value) => value !== undefined);
 
       const compiledTemplate = Handlebars.compile(spawnSubsessionTemplate);
 
@@ -725,12 +723,14 @@ const SessionDrawer = ({
               <ForkPill
                 fromSessionId={session.genealogy.forked_from_session_id}
                 taskId={session.genealogy.fork_point_task_id}
+                messageIndex={session.genealogy.fork_point_message_index}
               />
             )}
             {isSpawned && session.genealogy.parent_session_id && (
               <SpawnPill
                 fromSessionId={session.genealogy.parent_session_id}
                 taskId={session.genealogy.spawn_point_task_id}
+                messageIndex={session.genealogy.spawn_point_message_index}
               />
             )}
             {/* Worktree Info */}
