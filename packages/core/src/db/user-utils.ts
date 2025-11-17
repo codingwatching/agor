@@ -50,6 +50,11 @@ export async function createUser(db: Database, data: CreateUserData): Promise<Us
   const role = data.role || 'member';
   const defaultEmoji = role === 'admin' ? '⭐' : '👤';
 
+  // For PostgreSQL, we need to use ISO strings for timestamps
+  // For SQLite, Date objects work because of timestamp_ms mode
+  const createdAt = now;
+  const updatedAt = now;
+
   const row = await insert(db, users)
     .values({
       user_id,
@@ -58,8 +63,8 @@ export async function createUser(db: Database, data: CreateUserData): Promise<Us
       name: data.name,
       emoji: defaultEmoji,
       role,
-      created_at: now,
-      updated_at: now,
+      created_at: createdAt as any,
+      updated_at: updatedAt as any,
       data: {
         preferences: {},
       },

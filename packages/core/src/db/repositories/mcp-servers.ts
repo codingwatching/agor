@@ -184,8 +184,7 @@ export class MCPServerRepository
   async findById(id: string): Promise<MCPServer | null> {
     try {
       const fullId = await this.resolveId(id);
-      const row = await this.db
-        .select()
+      const row = await select(this.db)
         .from(mcpServers)
         .where(eq(mcpServers.mcp_server_id, fullId))
         .one();

@@ -170,8 +170,7 @@ export class BoardCommentsRepository
   async findById(id: string): Promise<BoardComment | null> {
     try {
       const fullId = await this.resolveId(id);
-      const row = await this.db
-        .select()
+      const row = await select(this.db)
         .from(boardComments)
         .where(eq(boardComments.comment_id, fullId))
         .one();

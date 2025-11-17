@@ -59,8 +59,7 @@ export class BoardObjectRepository {
    */
   async findByObjectId(objectId: string): Promise<BoardEntityObject | null> {
     try {
-      const row = await this.db
-        .select()
+      const row = await select(this.db)
         .from(boardObjects)
         .where(eq(boardObjects.object_id, objectId))
         .one();
@@ -79,8 +78,7 @@ export class BoardObjectRepository {
    */
   async findByWorktreeId(worktreeId: WorktreeID): Promise<BoardEntityObject | null> {
     try {
-      const row = await this.db
-        .select()
+      const row = await select(this.db)
         .from(boardObjects)
         .where(eq(boardObjects.worktree_id, worktreeId))
         .one();
@@ -129,8 +127,7 @@ export class BoardObjectRepository {
       await insert(this.db, boardObjects).values(insert).run();
 
       // Fetch and return created object
-      const row = await this.db
-        .select()
+      const row = await select(this.db)
         .from(boardObjects)
         .where(eq(boardObjects.object_id, insert.object_id))
         .one();
@@ -181,8 +178,7 @@ export class BoardObjectRepository {
         })
         .where(eq(boardObjects.object_id, objectId));
 
-      const row = await this.db
-        .select()
+      const row = await select(this.db)
         .from(boardObjects)
         .where(eq(boardObjects.object_id, objectId))
         .one();
@@ -234,8 +230,7 @@ export class BoardObjectRepository {
         })
         .where(eq(boardObjects.object_id, objectId));
 
-      const row = await this.db
-        .select()
+      const row = await select(this.db)
         .from(boardObjects)
         .where(eq(boardObjects.object_id, objectId))
         .one();

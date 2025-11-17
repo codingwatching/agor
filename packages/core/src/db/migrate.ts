@@ -242,6 +242,8 @@ export async function runMigrations(db: Database): Promise<void> {
     console.log('Running database migrations...');
 
     const migrationsFolder = getMigrationsFolder(db);
+    console.log(`Using migrations folder: ${migrationsFolder}`);
+    console.log(`Database dialect: ${isSQLiteDatabase(db) ? 'sqlite' : 'postgres'}`);
 
     // Drizzle handles everything:
     // 1. Creates __drizzle_migrations table if needed
@@ -251,6 +253,7 @@ export async function runMigrations(db: Database): Promise<void> {
     if (isSQLiteDatabase(db)) {
       await migrateSQLite(db, { migrationsFolder });
     } else if (isPostgresDatabase(db)) {
+      console.log('Calling Drizzle PostgreSQL migrator...');
       await migratePostgres(db, { migrationsFolder });
     } else {
       throw new MigrationError('Unknown database dialect');
@@ -258,6 +261,23 @@ export async function runMigrations(db: Database): Promise<void> {
 
     console.log('✅ Migrations complete');
   } catch (error) {
+    console.error('❌ Migration error details:');
+    console.error('  Error type:', error?.constructor?.name);
+    console.error('  Error message:', error instanceof Error ? error.message : String(error));
+    console.error('  Error stack:', error instanceof Error ? error.stack : 'N/A');
+    if (error && typeof error === 'object') {
+      console.error('  Error keys:', Object.keys(error));
+      // Check for cause (nested error)
+      if ('cause' in error) {
+        console.error('  Cause error:', error.cause);
+        if (error.cause && typeof error.cause === 'object') {
+          console.error('  Cause type:', error.cause.constructor?.name);
+          console.error('  Cause message:', error.cause instanceof Error ? error.cause.message : String(error.cause));
+          console.error('  Cause keys:', Object.keys(error.cause));
+        }
+      }
+      console.error('  Full error object:', JSON.stringify(error, null, 2));
+    }
     throw new MigrationError(
       `Migration failed: ${error instanceof Error ? error.message : String(error)}`,
       error
@@ -294,20 +314,22 @@ export async function seedInitialData(db: Database): Promise<void> {
       // Create default board
       const boardId = generateId();
 
-      await insert(db, boards).values({
-        board_id: boardId,
-        name: 'Main Board',
-        slug: 'default',
-        created_at: now,
-        updated_at: now,
-        created_by: 'anonymous',
-        data: {
-          description: 'Main board for all sessions',
-          sessions: [],
-          color: '#1677ff',
-          icon: '⭐',
-        },
-      });
+      await insert(db, boards)
+        .values({
+          board_id: boardId,
+          name: 'Main Board',
+          slug: 'default',
+          created_at: now,
+          updated_at: now,
+          created_by: 'anonymous',
+          data: {
+            description: 'Main board for all sessions',
+            sessions: [],
+            color: '#1677ff',
+            icon: '⭐',
+          },
+        })
+        .run();
 
       console.log('✅ Main Board created');
     }

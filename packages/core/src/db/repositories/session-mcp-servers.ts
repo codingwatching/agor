@@ -43,8 +43,7 @@ export class SessionMCPServerRepository {
       }
 
       // Check if relationship already exists
-      const existing = await this.db
-        .select()
+      const existing = await select(this.db)
         .from(sessionMcpServers)
         .where(
           and(
@@ -217,8 +216,7 @@ export class SessionMCPServerRepository {
     serverId: MCPServerID
   ): Promise<SessionMCPServer | null> {
     try {
-      const row = await this.db
-        .select()
+      const row = await select(this.db)
         .from(sessionMcpServers)
         .where(
           and(

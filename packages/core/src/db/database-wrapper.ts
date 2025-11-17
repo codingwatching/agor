@@ -132,6 +132,7 @@ function wrapQuery(query: any, db: Database): any {
       if (isSQLiteDatabase(db)) {
         return await query.get();
       } else {
+        // For PostgreSQL, add .limit(1) and execute the query
         const results = await query.limit(1);
         return results[0] || null;
       }
@@ -140,6 +141,7 @@ function wrapQuery(query: any, db: Database): any {
       if (isSQLiteDatabase(db)) {
         return await query.all();
       } else {
+        // For PostgreSQL, just await the query (it's a promise)
         return await query;
       }
     },
@@ -147,7 +149,9 @@ function wrapQuery(query: any, db: Database): any {
       if (isSQLiteDatabase(db)) {
         return await query.run();
       } else {
-        return await query;
+        // For PostgreSQL, execute and return result metadata
+        const result = await query;
+        return { rowsAffected: result.length || 0 };
       }
     },
     returning: () => wrapReturning(query.returning(), db),

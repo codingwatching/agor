@@ -187,8 +187,7 @@ export class SessionRepository implements BaseRepository<Session, Partial<Sessio
   async findById(id: string): Promise<Session | null> {
     try {
       const fullId = await this.resolveId(id);
-      const row = await this.db
-        .select()
+      const row = await select(this.db)
         .from(sessions)
         .where(eq(sessions.session_id, fullId))
         .one();
