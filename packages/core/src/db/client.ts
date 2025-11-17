@@ -171,7 +171,18 @@ async function configureSQLitePragmas(client: Client): Promise<void> {
  * ```
  */
 export function createDatabase(config: DbConfig): Database {
-  const dialect = config.dialect || getDatabaseDialect();
+  // Auto-detect dialect from URL if not explicitly set
+  let dialect = config.dialect;
+
+  if (!dialect) {
+    // Check if URL starts with postgresql://, postgres://, or pg://
+    if (config.url.startsWith('postgresql://') || config.url.startsWith('postgres://') || config.url.startsWith('pg://')) {
+      dialect = 'postgresql';
+    } else {
+      // Fall back to environment variable or default
+      dialect = getDatabaseDialect();
+    }
+  }
 
   if (dialect === 'postgresql') {
     return createPostgresDatabase(config);

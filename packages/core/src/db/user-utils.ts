@@ -9,8 +9,7 @@ import { eq } from 'drizzle-orm';
 import { generateId } from '../lib/ids';
 import type { User, UserID } from '../types';
 import type { Database } from './client';
-import { select, insert } from './database-wrapper';
-import { users } from './schema';
+import { select, insert, isSQLiteDatabase } from './database-wrapper';
 
 /**
  * Create user input
@@ -33,8 +32,13 @@ export interface CreateUserData {
  * @returns Created user
  */
 export async function createUser(db: Database, data: CreateUserData): Promise<User> {
+  // Get the correct schema based on database type
+  const schema = isSQLiteDatabase(db)
+    ? await import('./schema.sqlite').then(m => m.users)
+    : await import('./schema.postgres').then(m => m.users);
+
   // Check if email already exists
-  const existing = await select(db).from(users).where(eq(users.email, data.email)).one();
+  const existing = await select(db).from(schema).where(eq(schema.email, data.email)).one();
 
   if (existing) {
     throw new Error(`User with email ${data.email} already exists`);
@@ -55,7 +59,7 @@ export async function createUser(db: Database, data: CreateUserData): Promise<Us
   const createdAt = now;
   const updatedAt = now;
 
-  const row = await insert(db, users)
+  const row = await insert(db, schema)
     .values({
       user_id,
       email: data.email,
@@ -97,7 +101,12 @@ export async function createUser(db: Database, data: CreateUserData): Promise<Us
  * @returns True if user exists
  */
 export async function userExists(db: Database, email: string): Promise<boolean> {
-  const existing = await select(db).from(users).where(eq(users.email, email)).one();
+  // Get the correct schema based on database type
+  const schema = isSQLiteDatabase(db)
+    ? await import('./schema.sqlite').then(m => m.users)
+    : await import('./schema.postgres').then(m => m.users);
+
+  const existing = await select(db).from(schema).where(eq(schema.email, email)).one();
   return !!existing;
 }
 
@@ -109,7 +118,12 @@ export async function userExists(db: Database, email: string): Promise<boolean> 
  * @returns User or null if not found
  */
 export async function getUserByEmail(db: Database, email: string): Promise<User | null> {
-  const row = await select(db).from(users).where(eq(users.email, email)).one();
+  // Get the correct schema based on database type
+  const schema = isSQLiteDatabase(db)
+    ? await import('./schema.sqlite').then(m => m.users)
+    : await import('./schema.postgres').then(m => m.users);
+
+  const row = await select(db).from(schema).where(eq(schema.email, email)).one();
 
   if (!row) {
     return null;
