@@ -11,6 +11,7 @@ import {
   ToolOutlined,
 } from '@ant-design/icons';
 import { Button, Popover, Tag, Typography, theme } from 'antd';
+import React from 'react';
 import type { SocketEvent } from '../../hooks/useEventStream';
 
 const { Text } = Typography;
@@ -19,7 +20,7 @@ export interface EventItemProps {
   event: SocketEvent;
 }
 
-export const EventItem = ({ event }: EventItemProps) => {
+export const EventItem = ({ event }: EventItemProps): React.JSX.Element => {
   const { token } = theme.useToken();
 
   // Get icon based on event type
@@ -82,7 +83,7 @@ export const EventItem = ({ event }: EventItemProps) => {
   };
 
   // JSON details popover content
-  const detailsContent = event.data ? (
+  const detailsContent: React.JSX.Element = event.data ? (
     <div style={{ maxWidth: 400, maxHeight: 400, overflow: 'auto' }}>
       <pre
         style={{
@@ -115,15 +116,12 @@ export const EventItem = ({ event }: EventItemProps) => {
         fontSize: 12,
       }}
     >
-      {/* Icon */}
       {getIcon()}
 
-      {/* Timestamp */}
       <Text code style={{ fontSize: 11, color: token.colorTextSecondary, minWidth: 85 }}>
         {formatTime(event.timestamp)}
       </Text>
 
-      {/* Type badge */}
       <Tag
         color={getTagColor()}
         style={{ margin: 0, fontSize: 11, minWidth: 70, textAlign: 'center' }}
@@ -131,7 +129,6 @@ export const EventItem = ({ event }: EventItemProps) => {
         {event.type}
       </Tag>
 
-      {/* Event name */}
       <Text
         strong
         style={{
@@ -145,17 +142,18 @@ export const EventItem = ({ event }: EventItemProps) => {
         {event.eventName}
       </Text>
 
-      {/* View details button */}
-      {event.data && (
-        <Popover content={detailsContent} title="Event Data" trigger="click" placement="left">
-          <Button
-            type="text"
-            size="small"
-            icon={<InfoCircleOutlined />}
-            style={{ padding: '0 4px' }}
-          />
-        </Popover>
-      )}
+      <>
+        {event.data && (
+          <Popover content={detailsContent} title="Event Data" trigger="click" placement="left">
+            <Button
+              type="text"
+              size="small"
+              icon={<InfoCircleOutlined />}
+              style={{ padding: '0 4px' }}
+            />
+          </Popover>
+        )}
+      </>
     </div>
   );
 };
