@@ -214,8 +214,7 @@ export class MessagesRepository {
     }
 
     const { generateId } = await import('../../lib/ids');
-    const { max, and, asc } = await import('drizzle-orm');
-    const { isSQLiteDatabase } = await import('../database-wrapper');
+    const { and } = await import('drizzle-orm');
 
     // Get current max queue position for session
     const result = await select(this.db)

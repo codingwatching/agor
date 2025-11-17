@@ -119,18 +119,16 @@ export class WorktreeRepository implements BaseRepository<Worktree, Partial<Work
   async findById(id: string): Promise<Worktree | null> {
     // Exact match (full UUID)
     if (id.length === 36 && id.includes('-')) {
-      const [row] = await this.db
-        .select()
+      const row = await select(this.db)
         .from(worktrees)
         .where(eq(worktrees.worktree_id, id))
-        .limit(1);
+        .one();
       return row ? this.rowToWorktree(row) : null;
     }
 
     // Short ID match (prefix) - just use the id directly as a prefix since it's already short
     const prefix = id.replace(/-/g, '').toLowerCase();
-    const matches = await this.db
-      .select()
+    const matches = await select(this.db)
       .from(worktrees)
       .where(like(worktrees.worktree_id, `${prefix}%`))
       .limit(2); // Fetch 2 to detect ambiguity
@@ -240,11 +238,10 @@ export class WorktreeRepository implements BaseRepository<Worktree, Partial<Work
    * Find worktree by repo_id and name
    */
   async findByRepoAndName(repoId: UUID, name: string): Promise<Worktree | null> {
-    const [row] = await this.db
-      .select()
+    const row = await select(this.db)
       .from(worktrees)
       .where(sql`${worktrees.repo_id} = ${repoId} AND ${worktrees.name} = ${name}`)
-      .limit(1);
+      .one();
 
     return row ? this.rowToWorktree(row) : null;
   }
