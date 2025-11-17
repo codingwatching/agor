@@ -150,7 +150,9 @@
     "test:ui": "vitest --ui",
     "test:coverage": "vitest run --coverage",
     "db:push": "drizzle-kit push",
-    "db:generate": "drizzle-kit generate",
+    "db:generate": "pnpm db:generate:sqlite && pnpm db:generate:postgres",
+    "db:generate:sqlite": "drizzle-kit generate --config=drizzle.sqlite.config.ts",
+    "db:generate:postgres": "drizzle-kit generate --config=drizzle.postgres.config.ts",
     "db:studio": "drizzle-kit studio",
     "db:setup": "tsx src/db/scripts/setup-db.ts",
     "db:test": "tsx src/db/scripts/test-integration.ts",
@@ -179,6 +181,7 @@
     "cronstrue": "^3.9.0",
     "drizzle-orm": "^0.44.6",
     "js-yaml": "^4.1.1",
+    "postgres": "^3.4.7",
     "simple-git": "^3.28.0",
     "socket.io-client": "^4.8.1",
     "uuid": "^13.0.0"

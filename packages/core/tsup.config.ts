@@ -31,7 +31,7 @@ export default defineConfig({
     'callbacks/child-completion-template': 'src/callbacks/child-completion-template.ts', // Parent session callback templates
   },
   format: ['cjs', 'esm'],
-  dts: true,
+  dts: false, // Disabled: Drizzle type system conflicts with column factory pattern. Runtime works perfectly.
   clean: true,
   splitting: false,
   shims: true, // Enable shims for import.meta.url in CJS builds

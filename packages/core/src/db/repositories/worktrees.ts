@@ -8,6 +8,7 @@ import type { UUID, Worktree, WorktreeID } from '@agor/core/types';
 import { and, eq, like, sql } from 'drizzle-orm';
 import { formatShortId, generateId } from '../../lib/ids';
 import type { Database } from '../client';
+import { select, insert, update, deleteFrom } from '../database-wrapper';
 import { type WorktreeInsert, type WorktreeRow, worktrees } from '../schema';
 import { AmbiguousIdError, type BaseRepository, EntityNotFoundError } from './base';
 import { deepMerge } from './merge-utils';
@@ -107,8 +108,8 @@ export class WorktreeRepository implements BaseRepository<Worktree, Partial<Work
    * Create a new worktree
    */
   async create(worktree: Partial<Worktree>): Promise<Worktree> {
-    const insert = this.worktreeToInsert(worktree);
-    const [row] = await this.db.insert(worktrees).values(insert).returning();
+    const insertData = this.worktreeToInsert(worktree);
+    const row = await insert(this.db, worktrees).values(insertData).returning().one();
     return this.rowToWorktree(row);
   }
 
@@ -189,11 +190,10 @@ export class WorktreeRepository implements BaseRepository<Worktree, Partial<Work
     // Use transaction to make read-merge-write atomic
     return await this.db.transaction(async (tx) => {
       // STEP 2: Re-read within transaction to ensure we have latest data
-      const currentRow = await tx
-        .select()
+      const currentRow = await select(tx)
         .from(worktrees)
         .where(eq(worktrees.worktree_id, existing.worktree_id))
-        .get();
+        .one();
 
       if (!currentRow) {
         throw new EntityNotFoundError('Worktree', id);
@@ -211,14 +211,14 @@ export class WorktreeRepository implements BaseRepository<Worktree, Partial<Work
         updated_at: new Date().toISOString(), // Always update timestamp
       });
 
-      const insert = this.worktreeToInsert(merged);
+      const insertData = this.worktreeToInsert(merged);
 
       // STEP 4: Write merged worktree (within same transaction)
-      const [row] = await tx
-        .update(worktrees)
-        .set(insert)
+      const row = await update(tx, worktrees)
+        .set(insertData)
         .where(eq(worktrees.worktree_id, current.worktree_id))
-        .returning();
+        .returning()
+        .one();
 
       return this.rowToWorktree(row);
     });
@@ -233,7 +233,7 @@ export class WorktreeRepository implements BaseRepository<Worktree, Partial<Work
       throw new EntityNotFoundError('Worktree', id);
     }
 
-    await this.db.delete(worktrees).where(eq(worktrees.worktree_id, existing.worktree_id));
+    await deleteFrom(this.db, worktrees).where(eq(worktrees.worktree_id, existing.worktree_id));
   }
 
   /**

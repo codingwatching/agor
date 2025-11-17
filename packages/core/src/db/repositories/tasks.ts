@@ -9,6 +9,7 @@ import { TaskStatus } from '@agor/core/types';
 import { eq, like, sql } from 'drizzle-orm';
 import { formatShortId, generateId } from '../../lib/ids';
 import type { Database } from '../client';
+import { select, insert, update, deleteFrom } from '../database-wrapper';
 import { type TaskInsert, type TaskRow, tasks } from '../schema';
 import {
   AmbiguousIdError,
@@ -123,10 +124,10 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
    */
   async create(data: Partial<Task>): Promise<Task> {
     try {
-      const insert = this.taskToInsert(data);
-      await this.db.insert(tasks).values(insert);
+      const insertData = this.taskToInsert(data);
+      await insert(this.db, tasks).values(insertData);
 
-      const row = await this.db.select().from(tasks).where(eq(tasks.task_id, insert.task_id)).get();
+      const row = await select(this.db).from(tasks).where(eq(tasks.task_id, insertData.task_id)).one();
 
       if (!row) {
         throw new RepositoryError('Failed to retrieve created task');
@@ -155,7 +156,7 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
       const inserts = taskList.map((task) => this.taskToInsert(task));
 
       // Bulk insert all tasks
-      await this.db.insert(tasks).values(inserts);
+      await insert(this.db, tasks).values(inserts);
 
       // Retrieve all inserted tasks
       const taskIds = inserts.map((t) => t.task_id);
@@ -181,7 +182,7 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
   async findById(id: string): Promise<Task | null> {
     try {
       const fullId = await this.resolveId(id);
-      const row = await this.db.select().from(tasks).where(eq(tasks.task_id, fullId)).get();
+      const row = await select(this.db).from(tasks).where(eq(tasks.task_id, fullId)).one();
 
       return row ? this.rowToTask(row) : null;
     } catch (error) {
@@ -199,7 +200,7 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
    */
   async findAll(): Promise<Task[]> {
     try {
-      const rows = await this.db.select().from(tasks).all();
+      const rows = await select(this.db).from(tasks).all();
       return rows.map((row) => this.rowToTask(row));
     } catch (error) {
       throw new RepositoryError(
@@ -276,7 +277,7 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
    */
   async findByStatus(status: Task['status']): Promise<Task[]> {
     try {
-      const rows = await this.db.select().from(tasks).where(eq(tasks.status, status)).all();
+      const rows = await select(this.db).from(tasks).where(eq(tasks.status, status)).all();
 
       return rows.map((row) => this.rowToTask(row));
     } catch (error) {
@@ -300,7 +301,7 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
       // Use transaction to make read-merge-write atomic
       return await this.db.transaction(async (tx) => {
         // STEP 1: Read current task (within transaction)
-        const currentRow = await tx.select().from(tasks).where(eq(tasks.task_id, fullId)).get();
+        const currentRow = await select(tx).from(tasks).where(eq(tasks.task_id, fullId)).one();
 
         if (!currentRow) {
           throw new EntityNotFoundError('Task', id);
@@ -311,17 +312,17 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
         // STEP 2: Deep merge updates into current task (in memory)
         // Preserves nested objects like message_range when doing partial updates
         const merged = deepMerge(current, updates);
-        const insert = this.taskToInsert(merged);
+        const insertData = this.taskToInsert(merged);
 
         // STEP 3: Write merged task (within same transaction)
-        await tx
-          .update(tasks)
+        await update(tx, tasks)
           .set({
-            status: insert.status,
-            completed_at: insert.completed_at,
-            data: insert.data,
+            status: insertData.status,
+            completed_at: insertData.completed_at,
+            data: insertData.data,
           })
-          .where(eq(tasks.task_id, fullId));
+          .where(eq(tasks.task_id, fullId))
+          .run();
 
         // Return merged task (no need to re-fetch, we have it in memory)
         return merged;
@@ -343,7 +344,7 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
     try {
       const fullId = await this.resolveId(id);
 
-      const result = await this.db.delete(tasks).where(eq(tasks.task_id, fullId)).run();
+      const result = await deleteFrom(this.db, tasks).where(eq(tasks.task_id, fullId)).run();
 
       if (result.rowsAffected === 0) {
         throw new EntityNotFoundError('Task', id);
@@ -366,7 +367,7 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
         .select({ count: sql<number>`count(*)` })
         .from(tasks)
         .where(eq(tasks.session_id, sessionId))
-        .get();
+        .one();
 
       return result?.count ?? 0;
     } catch (error) {

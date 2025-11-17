@@ -22,7 +22,7 @@ async function main() {
   const db = drizzle(client);
 
   // Find all tasks
-  const allTasks = await db.select().from(tasks).all();
+  const allTasks = await (db as any).select().from(tasks).all();
   console.log(`Found ${allTasks.length} tasks total\n`);
 
   let fixedSessions = 0;

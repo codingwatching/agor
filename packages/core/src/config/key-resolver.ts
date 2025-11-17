@@ -1,5 +1,6 @@
 import { decryptApiKey, eq } from '../db';
 import type { Database } from '../db/client';
+import { select } from '../db/database-wrapper';
 import { users } from '../db/schema';
 import type { UserID } from '../types';
 import { getCredential } from './config-manager';
@@ -30,7 +31,7 @@ export async function resolveApiKey(
   // 1. Check per-user key (highest precedence)
   if (context.userId && context.db) {
     try {
-      const row = await context.db
+      const row = await (context.db as any)
         .select()
         .from(users)
         .where(eq(users.user_id, context.userId))

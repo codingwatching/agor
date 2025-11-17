@@ -22,8 +22,11 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { eq, sql } from 'drizzle-orm';
-import { migrate } from 'drizzle-orm/libsql/migrator';
+import { migrate as migrateSQLite } from 'drizzle-orm/libsql/migrator';
+import { migrate as migratePostgres } from 'drizzle-orm/postgres-js/migrator';
 import type { Database } from './client';
+import { getDatabaseDialect } from './schema-factory';
+import { isSQLiteDatabase, isPostgresDatabase, select, insert } from './database-wrapper';
 import { boards } from './schema';
 
 /**
@@ -40,15 +43,24 @@ export class MigrationError extends Error {
 }
 
 /**
- * Check if migrations tracking table exists
+ * Check if migrations tracking table exists (dialect-aware)
  */
 async function hasMigrationsTable(db: Database): Promise<boolean> {
   try {
-    const result = await db.run(sql`
-      SELECT name FROM sqlite_master
-      WHERE type='table' AND name='__drizzle_migrations'
-    `);
-    return result.rows.length > 0;
+    if (isSQLiteDatabase(db)) {
+      const result = await db.run(sql`
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='__drizzle_migrations'
+      `);
+      return result.rows.length > 0;
+    } else if (isPostgresDatabase(db)) {
+      const result = await db.execute(sql`
+        SELECT tablename FROM pg_tables
+        WHERE schemaname = 'public' AND tablename = '__drizzle_migrations'
+      `);
+      return result.length > 0;
+    }
+    return false;
   } catch (error) {
     throw new MigrationError(
       `Failed to check migrations table: ${error instanceof Error ? error.message : String(error)}`,
@@ -78,7 +90,7 @@ async function _bootstrapMigrations(db: Database): Promise<void> {
     }
 
     // Create migrations table (Drizzle's schema)
-    await db.run(sql`
+    await (db as any).run(sql`
       CREATE TABLE __drizzle_migrations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         hash TEXT NOT NULL,
@@ -89,7 +101,7 @@ async function _bootstrapMigrations(db: Database): Promise<void> {
     // Mark baseline migration as applied
     // This hash comes from drizzle/meta/_journal.json: "tag": "0000_pretty_mac_gargan"
     const baselineHash = '0000_pretty_mac_gargan';
-    await db.run(sql`
+    await (db as any).run(sql`
       INSERT INTO __drizzle_migrations (hash, created_at)
       VALUES (${baselineHash}, ${Date.now()})
     `);
@@ -106,13 +118,14 @@ async function _bootstrapMigrations(db: Database): Promise<void> {
 }
 
 /**
- * Get migrations folder path
+ * Get migrations folder path (dialect-aware)
  */
-function getMigrationsFolder(): string {
+function getMigrationsFolder(db: Database): string {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);
   const isProduction = __dirname.includes('/dist/');
-  return join(__dirname, isProduction ? '..' : '../..', 'drizzle');
+  const dialect = isSQLiteDatabase(db) ? 'sqlite' : 'postgres';
+  return join(__dirname, isProduction ? '..' : '../..', 'drizzle', dialect);
 }
 
 /**
@@ -127,7 +140,7 @@ export async function checkMigrationStatus(
   db: Database
 ): Promise<{ hasPending: boolean; pending: string[]; applied: string[] }> {
   try {
-    const migrationsFolder = getMigrationsFolder();
+    const migrationsFolder = getMigrationsFolder(db);
 
     // Read expected migrations from journal
     const journalPath = join(migrationsFolder, 'meta', '_journal.json');
@@ -160,10 +173,14 @@ export async function checkMigrationStatus(
       };
     }
 
-    const result = await db.run(sql`SELECT hash FROM __drizzle_migrations ORDER BY id`);
-    const appliedHashes: string[] = result.rows.map((row: Record<string, unknown>) =>
-      String(row.hash)
-    );
+    let appliedHashes: string[] = [];
+    if (isSQLiteDatabase(db)) {
+      const result = await db.run(sql`SELECT hash FROM __drizzle_migrations ORDER BY id`);
+      appliedHashes = result.rows.map((row: Record<string, unknown>) => String(row.hash));
+    } else if (isPostgresDatabase(db)) {
+      const result = await db.execute(sql`SELECT hash FROM __drizzle_migrations ORDER BY id`);
+      appliedHashes = result.map((row: Record<string, unknown>) => String(row.hash));
+    }
 
     // Use applied hashes as-is
     const normalizedAppliedHashes = appliedHashes;
@@ -224,14 +241,20 @@ export async function runMigrations(db: Database): Promise<void> {
   try {
     console.log('Running database migrations...');
 
-    const migrationsFolder = getMigrationsFolder();
+    const migrationsFolder = getMigrationsFolder(db);
 
     // Drizzle handles everything:
     // 1. Creates __drizzle_migrations table if needed
     // 2. Checks which migrations are pending
     // 3. Runs them in order within transaction
     // 4. Updates tracking table
-    await migrate(db, { migrationsFolder });
+    if (isSQLiteDatabase(db)) {
+      await migrateSQLite(db, { migrationsFolder });
+    } else if (isPostgresDatabase(db)) {
+      await migratePostgres(db, { migrationsFolder });
+    } else {
+      throw new MigrationError('Unknown database dialect');
+    }
 
     console.log('✅ Migrations complete');
   } catch (error) {
@@ -262,32 +285,29 @@ export async function initializeDatabase(db: Database): Promise<void> {
 export async function seedInitialData(db: Database): Promise<void> {
   try {
     const { generateId } = await import('../lib/ids');
-    const now = Date.now();
+    const now = new Date();
 
     // 1. Check if default board exists (by slug to avoid duplicates)
-    const existingBoard = await db.select().from(boards).where(eq(boards.slug, 'default')).get();
+    const existingBoard = await select(db).from(boards).where(eq(boards.slug, 'default')).one();
 
     if (!existingBoard) {
       // Create default board
       const boardId = generateId();
 
-      await db.run(sql`
-        INSERT INTO boards (board_id, name, slug, created_at, updated_at, created_by, data)
-        VALUES (
-          ${boardId},
-          ${'Main Board'},
-          ${'default'},
-          ${now},
-          ${now},
-          ${'anonymous'},
-          ${JSON.stringify({
-            description: 'Main board for all sessions',
-            sessions: [],
-            color: '#1677ff',
-            icon: '⭐',
-          })}
-        )
-      `);
+      await insert(db, boards).values({
+        board_id: boardId,
+        name: 'Main Board',
+        slug: 'default',
+        created_at: now,
+        updated_at: now,
+        created_by: 'anonymous',
+        data: {
+          description: 'Main board for all sessions',
+          sessions: [],
+          color: '#1677ff',
+          icon: '⭐',
+        },
+      });
 
       console.log('✅ Main Board created');
     }

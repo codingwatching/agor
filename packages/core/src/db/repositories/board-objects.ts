@@ -9,6 +9,7 @@ import type { BoardEntityObject, BoardID, WorktreeID } from '@agor/core/types';
 import { eq } from 'drizzle-orm';
 import { generateId } from '../../lib/ids';
 import type { Database } from '../client';
+import { select, insert, update, deleteFrom } from '../database-wrapper';
 import { type BoardObjectInsert, type BoardObjectRow, boardObjects } from '../schema';
 import { EntityNotFoundError, RepositoryError } from './base';
 
@@ -23,7 +24,7 @@ export class BoardObjectRepository {
    */
   async findAll(): Promise<BoardEntityObject[]> {
     try {
-      const rows = await this.db.select().from(boardObjects).all();
+      const rows = await select(this.db).from(boardObjects).all();
 
       return rows.map(this.rowToEntity);
     } catch (error) {
@@ -63,7 +64,7 @@ export class BoardObjectRepository {
         .select()
         .from(boardObjects)
         .where(eq(boardObjects.object_id, objectId))
-        .get();
+        .one();
 
       return row ? this.rowToEntity(row) : null;
     } catch (error) {
@@ -83,7 +84,7 @@ export class BoardObjectRepository {
         .select()
         .from(boardObjects)
         .where(eq(boardObjects.worktree_id, worktreeId))
-        .get();
+        .one();
 
       return row ? this.rowToEntity(row) : null;
     } catch (error) {
@@ -109,7 +110,7 @@ export class BoardObjectRepository {
         .select()
         .from(boardObjects)
         .where(eq(boardObjects.worktree_id, data.worktree_id))
-        .get();
+        .one();
 
       if (existing) {
         throw new RepositoryError(`Worktree already on a board (object_id: ${existing.object_id})`);
@@ -126,14 +127,14 @@ export class BoardObjectRepository {
         },
       };
 
-      await this.db.insert(boardObjects).values(insert);
+      await insert(this.db, boardObjects).values(insert);
 
       // Fetch and return created object
       const row = await this.db
         .select()
         .from(boardObjects)
         .where(eq(boardObjects.object_id, insert.object_id))
-        .get();
+        .one();
 
       if (!row) {
         throw new RepositoryError('Failed to retrieve created board object');
@@ -161,7 +162,7 @@ export class BoardObjectRepository {
         .select()
         .from(boardObjects)
         .where(eq(boardObjects.object_id, objectId))
-        .get();
+        .one();
 
       if (!existing) {
         throw new EntityNotFoundError('BoardObject', objectId);
@@ -185,7 +186,7 @@ export class BoardObjectRepository {
         .select()
         .from(boardObjects)
         .where(eq(boardObjects.object_id, objectId))
-        .get();
+        .one();
 
       if (!row) {
         throw new RepositoryError('Failed to retrieve updated board object');
@@ -213,7 +214,7 @@ export class BoardObjectRepository {
         .select()
         .from(boardObjects)
         .where(eq(boardObjects.object_id, objectId))
-        .get();
+        .one();
 
       if (!existing) {
         throw new EntityNotFoundError('BoardObject', objectId);
@@ -238,7 +239,7 @@ export class BoardObjectRepository {
         .select()
         .from(boardObjects)
         .where(eq(boardObjects.object_id, objectId))
-        .get();
+        .one();
 
       if (!row) {
         throw new RepositoryError('Failed to retrieve updated board object');
@@ -281,7 +282,7 @@ export class BoardObjectRepository {
    */
   async removeByWorktreeId(worktreeId: WorktreeID): Promise<void> {
     try {
-      await this.db.delete(boardObjects).where(eq(boardObjects.worktree_id, worktreeId));
+      await deleteFrom(this.db, boardObjects).where(eq(boardObjects.worktree_id, worktreeId));
     } catch (error) {
       throw new RepositoryError(
         `Failed to remove board objects by worktree: ${error instanceof Error ? error.message : String(error)}`,

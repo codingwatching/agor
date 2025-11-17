@@ -8,6 +8,7 @@
 import type { Message, MessageID, SessionID, TaskID, UUID } from '@agor/core/types';
 import { eq } from 'drizzle-orm';
 import type { Database } from '../client';
+import { select, insert, update, deleteFrom } from '../database-wrapper';
 import { type MessageInsert, type MessageRow, messages } from '../schema';
 
 export class MessagesRepository {
@@ -65,7 +66,7 @@ export class MessagesRepository {
    */
   async create(message: Message): Promise<Message> {
     const row = this.messageToRow(message);
-    const [inserted] = await this.db.insert(messages).values(row).returning();
+    const [inserted] = await insert(this.db, messages).values(row).returning();
     return this.rowToMessage(inserted);
   }
 
@@ -74,7 +75,7 @@ export class MessagesRepository {
    */
   async createMany(messageList: Message[]): Promise<Message[]> {
     const rows = messageList.map((m) => this.messageToRow(m));
-    const inserted = await this.db.insert(messages).values(rows).returning();
+    const inserted = await insert(this.db, messages).values(rows).returning();
     return inserted.map((r) => this.rowToMessage(r));
   }
 
@@ -95,7 +96,7 @@ export class MessagesRepository {
    * Get all messages (used by FeathersJS service adapter)
    */
   async findAll(): Promise<Message[]> {
-    const rows = await this.db.select().from(messages).orderBy(messages.index);
+    const rows = await select(this.db).from(messages).orderBy(messages.index);
     return rows.map((r) => this.rowToMessage(r));
   }
 
@@ -185,14 +186,14 @@ export class MessagesRepository {
    * Delete all messages for a session (cascades automatically via FK)
    */
   async deleteBySessionId(sessionId: SessionID): Promise<void> {
-    await this.db.delete(messages).where(eq(messages.session_id, sessionId));
+    await deleteFrom(this.db, messages).where(eq(messages.session_id, sessionId));
   }
 
   /**
    * Delete a single message
    */
   async delete(messageId: MessageID): Promise<void> {
-    await this.db.delete(messages).where(eq(messages.message_id, messageId));
+    await deleteFrom(this.db, messages).where(eq(messages.message_id, messageId));
   }
 
   /**

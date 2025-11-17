@@ -19,6 +19,7 @@ import type {
 import { and, eq, like } from 'drizzle-orm';
 import { formatShortId, generateId } from '../../lib/ids';
 import type { Database } from '../client';
+import { select, insert, update, deleteFrom } from '../database-wrapper';
 import { type MCPServerInsert, type MCPServerRow, mcpServers } from '../schema';
 import {
   AmbiguousIdError,
@@ -156,14 +157,13 @@ export class MCPServerRepository
    */
   async create(data: CreateMCPServerInput): Promise<MCPServer> {
     try {
-      const insert = this.mcpServerToInsert(data);
-      await this.db.insert(mcpServers).values(insert);
+      const insertData = this.mcpServerToInsert(data);
+      await insert(this.db, mcpServers).values(insertData);
 
-      const row = await this.db
-        .select()
+      const row = await select(this.db)
         .from(mcpServers)
-        .where(eq(mcpServers.mcp_server_id, insert.mcp_server_id))
-        .get();
+        .where(eq(mcpServers.mcp_server_id, insertData.mcp_server_id))
+        .one();
 
       if (!row) {
         throw new RepositoryError('Failed to retrieve created MCP server');
@@ -189,7 +189,7 @@ export class MCPServerRepository
         .select()
         .from(mcpServers)
         .where(eq(mcpServers.mcp_server_id, fullId))
-        .get();
+        .one();
 
       return row ? this.rowToMCPServer(row) : null;
     } catch (error) {
@@ -207,7 +207,7 @@ export class MCPServerRepository
    */
   async findAll(filters?: MCPServerFilters): Promise<MCPServer[]> {
     try {
-      let query = this.db.select().from(mcpServers);
+      let query = select(this.db).from(mcpServers);
 
       // Apply filters
       const conditions = [];
@@ -277,7 +277,7 @@ export class MCPServerRepository
       }
 
       const merged = { ...current, ...updates };
-      const insert = this.mcpServerToInsert(merged);
+      const insertData = this.mcpServerToInsert(merged);
 
       await this.db
         .update(mcpServers)
@@ -285,7 +285,7 @@ export class MCPServerRepository
           enabled: insert.enabled,
           scope: insert.scope,
           updated_at: new Date(),
-          data: insert.data,
+          data: insertData.data,
         })
         .where(eq(mcpServers.mcp_server_id, fullId));
 

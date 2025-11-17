@@ -9,6 +9,7 @@ import { TaskStatus } from '@agor/core/types';
 import { describe, expect } from 'vitest';
 import { generateId } from '../../lib/ids';
 import type { Database } from '../client';
+import { select, insert, update, deleteFrom } from '../database-wrapper';
 import { dbTest } from '../test-helpers';
 import { AmbiguousIdError, EntityNotFoundError, RepositoryError } from './base';
 import { RepoRepository } from './repos';

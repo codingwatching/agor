@@ -9,6 +9,7 @@ import { SessionStatus } from '@agor/core/types';
 import { eq, like, or, sql } from 'drizzle-orm';
 import { formatShortId, generateId } from '../../lib/ids';
 import type { Database } from '../client';
+import { select, insert, update, deleteFrom } from '../database-wrapper';
 import { type SessionInsert, type SessionRow, sessions } from '../schema';
 import {
   AmbiguousIdError,
@@ -159,14 +160,13 @@ export class SessionRepository implements BaseRepository<Session, Partial<Sessio
    */
   async create(data: Partial<Session>): Promise<Session> {
     try {
-      const insert = this.sessionToInsert(data);
-      await this.db.insert(sessions).values(insert);
+      const insertData = this.sessionToInsert(data);
+      await insert(this.db, sessions).values(insertData);
 
-      const row = await this.db
-        .select()
+      const row = await select(this.db)
         .from(sessions)
-        .where(eq(sessions.session_id, insert.session_id))
-        .get();
+        .where(eq(sessions.session_id, insertData.session_id))
+        .one();
 
       if (!row) {
         throw new RepositoryError('Failed to retrieve created session');
@@ -192,7 +192,7 @@ export class SessionRepository implements BaseRepository<Session, Partial<Sessio
         .select()
         .from(sessions)
         .where(eq(sessions.session_id, fullId))
-        .get();
+        .one();
 
       return row ? this.rowToSession(row) : null;
     } catch (error) {
@@ -210,7 +210,7 @@ export class SessionRepository implements BaseRepository<Session, Partial<Sessio
    */
   async findAll(): Promise<Session[]> {
     try {
-      const rows = await this.db.select().from(sessions).all();
+      const rows = await select(this.db).from(sessions).all();
       return rows.map((row) => this.rowToSession(row));
     } catch (error) {
       throw new RepositoryError(
@@ -225,7 +225,7 @@ export class SessionRepository implements BaseRepository<Session, Partial<Sessio
    */
   async findByStatus(status: Session['status']): Promise<Session[]> {
     try {
-      const rows = await this.db.select().from(sessions).where(eq(sessions.status, status)).all();
+      const rows = await select(this.db).from(sessions).where(eq(sessions.status, status)).all();
 
       return rows.map((row) => this.rowToSession(row));
     } catch (error) {
@@ -347,11 +347,10 @@ export class SessionRepository implements BaseRepository<Session, Partial<Sessio
       // This prevents race conditions where another update happens between read and write
       return await this.db.transaction(async (tx) => {
         // STEP 1: Read current session (within transaction)
-        const currentRow = await tx
-          .select()
+        const currentRow = await select(tx)
           .from(sessions)
           .where(eq(sessions.session_id, fullId))
-          .get();
+          .one();
 
         if (!currentRow) {
           throw new EntityNotFoundError('Session', id);
@@ -373,18 +372,18 @@ export class SessionRepository implements BaseRepository<Session, Partial<Sessio
           console.log(`   After merge: ${JSON.stringify(merged.permission_config)}`);
         }
 
-        const insert = this.sessionToInsert(merged);
+        const insertData = this.sessionToInsert(merged);
 
         // STEP 3: Write merged session (within same transaction)
-        await tx
-          .update(sessions)
+        await update(tx, sessions)
           .set({
-            status: insert.status,
+            status: insertData.status,
             updated_at: new Date(),
-            ready_for_prompt: insert.ready_for_prompt,
-            data: insert.data,
+            ready_for_prompt: insertData.ready_for_prompt,
+            data: insertData.data,
           })
-          .where(eq(sessions.session_id, fullId));
+          .where(eq(sessions.session_id, fullId))
+          .run();
 
         console.log(`✅ [SessionRepository] Atomic update complete`);
 
@@ -408,7 +407,7 @@ export class SessionRepository implements BaseRepository<Session, Partial<Sessio
     try {
       const fullId = await this.resolveId(id);
 
-      const result = await this.db.delete(sessions).where(eq(sessions.session_id, fullId)).run();
+      const result = await deleteFrom(this.db, sessions).where(eq(sessions.session_id, fullId)).run();
 
       if (result.rowsAffected === 0) {
         throw new EntityNotFoundError('Session', id);
@@ -434,7 +433,7 @@ export class SessionRepository implements BaseRepository<Session, Partial<Sessio
    */
   async count(): Promise<number> {
     try {
-      const result = await this.db.select({ count: sql<number>`count(*)` }).from(sessions).get();
+      const result = await (this.db as any).select({ count: sql<number>`count(*)` }).from(sessions).one();
 
       return result?.count ?? 0;
     } catch (error) {

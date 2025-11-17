@@ -7,6 +7,7 @@
 import type { MCPServer, MCPServerID, SessionID, SessionMCPServer } from '@agor/core/types';
 import { and, eq } from 'drizzle-orm';
 import type { Database } from '../client';
+import { select, insert, update, deleteFrom } from '../database-wrapper';
 import { type SessionMCPServerInsert, sessionMcpServers } from '../schema';
 import { EntityNotFoundError, RepositoryError } from './base';
 import { MCPServerRepository } from './mcp-servers';
@@ -51,7 +52,7 @@ export class SessionMCPServerRepository {
             eq(sessionMcpServers.mcp_server_id, serverId)
           )
         )
-        .get();
+        .one();
 
       if (existing) {
         // Already exists, just ensure it's enabled
@@ -75,7 +76,7 @@ export class SessionMCPServerRepository {
         added_at: new Date(),
       };
 
-      await this.db.insert(sessionMcpServers).values(insert);
+      await insert(this.db, sessionMcpServers).values(insert);
     } catch (error) {
       if (error instanceof EntityNotFoundError) throw error;
       throw new RepositoryError(
@@ -189,7 +190,7 @@ export class SessionMCPServerRepository {
       }
 
       // Remove all existing relationships
-      await this.db.delete(sessionMcpServers).where(eq(sessionMcpServers.session_id, sessionId));
+      await deleteFrom(this.db, sessionMcpServers).where(eq(sessionMcpServers.session_id, sessionId));
 
       // Add new relationships
       if (serverIds.length > 0) {
@@ -200,7 +201,7 @@ export class SessionMCPServerRepository {
           added_at: new Date(),
         }));
 
-        await this.db.insert(sessionMcpServers).values(inserts);
+        await insert(this.db, sessionMcpServers).values(inserts);
       }
     } catch (error) {
       if (error instanceof EntityNotFoundError) throw error;
@@ -228,7 +229,7 @@ export class SessionMCPServerRepository {
             eq(sessionMcpServers.mcp_server_id, serverId)
           )
         )
-        .get();
+        .one();
 
       if (!row) {
         return null;
