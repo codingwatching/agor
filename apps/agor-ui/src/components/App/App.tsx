@@ -18,6 +18,7 @@ import type {
 import { PermissionScope } from '@agor/core/types';
 import { Layout } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
+import { useEventStream } from '../../hooks/useEventStream';
 import { useFaviconStatus } from '../../hooks/useFaviconStatus';
 import { usePresence } from '../../hooks/usePresence';
 import type { AgenticToolOption } from '../../types';
@@ -25,6 +26,7 @@ import { useThemedMessage } from '../../utils/message';
 import { AppHeader } from '../AppHeader';
 import { CommentsPanel } from '../CommentsPanel';
 import { EnvironmentLogsModal } from '../EnvironmentLogsModal';
+import { EventStreamDrawer } from '../EventStreamDrawer';
 import { NewSessionButton } from '../NewSessionButton';
 import { type NewSessionConfig, NewSessionModal } from '../NewSessionModal';
 import { type NewWorktreeConfig, NewWorktreeModal } from '../NewWorktreeModal';
@@ -199,6 +201,7 @@ export const App: React.FC<AppProps> = ({
   const [worktreeModalWorktreeId, setWorktreeModalWorktreeId] = useState<string | null>(null);
   const [logsModalWorktreeId, setLogsModalWorktreeId] = useState<string | null>(null);
   const [themeEditorOpen, setThemeEditorOpen] = useState(false);
+  const [eventStreamOpen, setEventStreamOpen] = useState(false);
 
   // Initialize current board from localStorage or fallback to first board or initialBoardId
   const [currentBoardId, setCurrentBoardId] = useState(() => {
@@ -231,6 +234,15 @@ export const App: React.FC<AppProps> = ({
 
   // Update favicon based on session activity on current board
   useFaviconStatus(currentBoardId, sessions, boardObjects);
+
+  // Check if event stream is enabled in user preferences
+  const eventStreamEnabled = user?.preferences?.eventStream?.enabled ?? false;
+
+  // Event stream hook - only captures events when drawer is open
+  const { events, clearEvents } = useEventStream({
+    client,
+    enabled: eventStreamOpen,
+  });
 
   const handleOpenTerminal = (commands: string[] = [], worktreeId?: string) => {
     setTerminalCommands(commands);
@@ -427,6 +439,7 @@ export const App: React.FC<AppProps> = ({
         connecting={connecting}
         onMenuClick={() => setListDrawerOpen(true)}
         onCommentsClick={() => setCommentsPanelCollapsed(!commentsPanelCollapsed)}
+        onEventStreamClick={() => setEventStreamOpen(!eventStreamOpen)}
         onSettingsClick={() => setSettingsOpen(true)}
         onUserSettingsClick={() => {
           setSettingsActiveTab('users');
@@ -443,6 +456,7 @@ export const App: React.FC<AppProps> = ({
             (c) => c.board_id === currentBoardId && !c.resolved && !c.parent_comment_id
           ).length
         }
+        eventStreamEnabled={eventStreamEnabled}
       />
       <Content style={{ position: 'relative', overflow: 'hidden', display: 'flex' }}>
         <CommentsPanel
@@ -672,6 +686,12 @@ export const App: React.FC<AppProps> = ({
         />
       )}
       <ThemeEditorModal open={themeEditorOpen} onClose={() => setThemeEditorOpen(false)} />
+      <EventStreamDrawer
+        open={eventStreamOpen}
+        onClose={() => setEventStreamOpen(false)}
+        events={events}
+        onClear={clearEvents}
+      />
     </Layout>
   );
 };

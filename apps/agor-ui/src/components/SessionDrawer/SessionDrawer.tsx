@@ -515,9 +515,7 @@ const SessionDrawer = ({
 
       // Register helper to check if value is defined (not undefined)
       // This allows us to distinguish between false and undefined
-      Handlebars.registerHelper('isDefined', function (value) {
-        return value !== undefined;
-      });
+      Handlebars.registerHelper('isDefined', (value) => value !== undefined);
 
       const compiledTemplate = Handlebars.compile(spawnSubsessionTemplate);
 
