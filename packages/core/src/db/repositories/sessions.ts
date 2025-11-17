@@ -134,8 +134,7 @@ export class SessionRepository implements BaseRepository<Session, Partial<Sessio
     const normalized = id.replace(/-/g, '').toLowerCase();
     const pattern = `${normalized}%`;
 
-    const results = await this.db
-      .select({ session_id: sessions.session_id })
+    const results = await select(this.db)
       .from(sessions)
       .where(like(sessions.session_id, pattern))
       .all();
@@ -243,8 +242,7 @@ export class SessionRepository implements BaseRepository<Session, Partial<Sessio
     try {
       // OPTIMIZED: Uses materialized board_id column for O(1) indexed lookup
       // Previously loaded ALL sessions and filtered in-memory (O(n) full table scan)
-      const rows = await this.db
-        .select()
+      const rows = await select(this.db)
         .from(sessions)
         .where(eq(sessions.board_id, boardId))
         .all();
@@ -266,8 +264,7 @@ export class SessionRepository implements BaseRepository<Session, Partial<Sessio
       const fullId = await this.resolveId(sessionId);
 
       // Query sessions where parent_session_id or forked_from_session_id matches
-      const rows = await this.db
-        .select()
+      const rows = await select(this.db)
         .from(sessions)
         .where(
           or(

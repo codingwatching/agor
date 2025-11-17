@@ -215,13 +215,16 @@ export class MessagesRepository {
     }
 
     const { generateId } = await import('../../lib/ids');
-    const { max, and } = await import('drizzle-orm');
+    const { max, and, asc } = await import('drizzle-orm');
+    const { isSQLiteDatabase } = await import('../database-wrapper');
 
     // Get current max queue position for session
-    const result = await this.db
+    const query = this.db
       .select({ max: max(messages.queue_position) })
       .from(messages)
       .where(and(eq(messages.session_id, sessionId), eq(messages.status, 'queued')));
+
+    const result = isSQLiteDatabase(this.db) ? await query.all() : await query;
 
     const nextPosition = (result[0]?.max || 0) + 1;
 

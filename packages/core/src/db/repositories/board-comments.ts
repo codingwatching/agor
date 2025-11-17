@@ -117,8 +117,7 @@ export class BoardCommentsRepository
     const normalized = id.replace(/-/g, '').toLowerCase();
     const pattern = `${normalized}%`;
 
-    const results = await this.db
-      .select({ comment_id: boardComments.comment_id })
+    const results = await select(this.db)
       .from(boardComments)
       .where(like(boardComments.comment_id, pattern))
       .all();
@@ -330,8 +329,7 @@ export class BoardCommentsRepository
       await deleteFrom(this.db, boardComments).where(eq(boardComments.parent_comment_id, fullId)).run();
 
       // Then delete the comment itself
-      const result = await this.db
-        .delete(boardComments)
+      const result = await deleteFrom(this.db, boardComments)
         .where(eq(boardComments.comment_id, fullId))
         .run();
 
@@ -409,8 +407,7 @@ export class BoardCommentsRepository
 
       // Fetch all created comments
       const commentIds = inserts.map((insert) => insertData.comment_id);
-      const rows = await this.db
-        .select()
+      const rows = await select(this.db)
         .from(boardComments)
         .where(
           eq(

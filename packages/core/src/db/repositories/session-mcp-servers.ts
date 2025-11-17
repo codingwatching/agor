@@ -91,8 +91,7 @@ export class SessionMCPServerRepository {
    */
   async removeServer(sessionId: SessionID, serverId: MCPServerID): Promise<void> {
     try {
-      const result = await this.db
-        .delete(sessionMcpServers)
+      const result = await deleteFrom(this.db, sessionMcpServers)
         .where(
           and(
             eq(sessionMcpServers.session_id, sessionId),
@@ -118,8 +117,7 @@ export class SessionMCPServerRepository {
    */
   async toggleServer(sessionId: SessionID, serverId: MCPServerID, enabled: boolean): Promise<void> {
     try {
-      const result = await this.db
-        .update(sessionMcpServers)
+      const result = await update(this.db, sessionMcpServers)
         .set({ enabled })
         .where(
           and(
@@ -153,8 +151,7 @@ export class SessionMCPServerRepository {
         conditions.push(eq(sessionMcpServers.enabled, true));
       }
 
-      const relationships = await this.db
-        .select()
+      const relationships = await select(this.db)
         .from(sessionMcpServers)
         .where(and(...conditions))
         .all();

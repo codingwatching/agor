@@ -131,8 +131,7 @@ export class MCPServerRepository
     const normalized = id.replace(/-/g, '').toLowerCase();
     const pattern = `${normalized}%`;
 
-    const results = await this.db
-      .select({ mcp_server_id: mcpServers.mcp_server_id })
+    const results = await select(this.db)
       .from(mcpServers)
       .where(like(mcpServers.mcp_server_id, pattern))
       .all();
@@ -312,8 +311,7 @@ export class MCPServerRepository
     try {
       const fullId = await this.resolveId(id);
 
-      const result = await this.db
-        .delete(mcpServers)
+      const result = await deleteFrom(this.db, mcpServers)
         .where(eq(mcpServers.mcp_server_id, fullId))
         .run();
 

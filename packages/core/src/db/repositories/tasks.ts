@@ -98,8 +98,7 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
     const normalized = id.replace(/-/g, '').toLowerCase();
     const pattern = `${normalized}%`;
 
-    const results = await this.db
-      .select({ task_id: tasks.task_id })
+    const results = await select(this.db)
       .from(tasks)
       .where(like(tasks.task_id, pattern))
       .all();
@@ -215,8 +214,7 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
    */
   async findBySession(sessionId: string): Promise<Task[]> {
     try {
-      const rows = await this.db
-        .select()
+      const rows = await select(this.db)
         .from(tasks)
         .where(eq(tasks.session_id, sessionId))
         .orderBy(tasks.created_at)
@@ -236,8 +234,7 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
    */
   async findRunning(): Promise<Task[]> {
     try {
-      const rows = await this.db
-        .select()
+      const rows = await select(this.db)
         .from(tasks)
         .where(eq(tasks.status, TaskStatus.RUNNING))
         .all();
@@ -257,8 +254,7 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
    */
   async findOrphaned(): Promise<Task[]> {
     try {
-      const rows = await this.db
-        .select()
+      const rows = await select(this.db)
         .from(tasks)
         .where(sql`${tasks.status} IN ('running', 'stopping', 'awaiting_permission')`)
         .all();

@@ -82,8 +82,7 @@ export class RepoRepository implements BaseRepository<Repo, Partial<Repo>> {
     const normalized = id.replace(/-/g, '').toLowerCase();
     const pattern = `${normalized}%`;
 
-    const results = await this.db
-      .select({ repo_id: repos.repo_id })
+    const results = await select(this.db)
       .from(repos)
       .where(like(repos.repo_id, pattern))
       .all();

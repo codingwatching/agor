@@ -40,8 +40,7 @@ export class BoardObjectRepository {
    */
   async findByBoardId(boardId: BoardID): Promise<BoardEntityObject[]> {
     try {
-      const rows = await this.db
-        .select()
+      const rows = await select(this.db)
         .from(boardObjects)
         .where(eq(boardObjects.board_id, boardId))
         .all();
@@ -260,8 +259,7 @@ export class BoardObjectRepository {
    */
   async remove(objectId: string): Promise<void> {
     try {
-      const result = await this.db
-        .delete(boardObjects)
+      const result = await deleteFrom(this.db, boardObjects)
         .where(eq(boardObjects.object_id, objectId))
         .run();
 

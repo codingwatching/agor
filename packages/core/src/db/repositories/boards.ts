@@ -87,8 +87,7 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
     const normalized = id.replace(/-/g, '').toLowerCase();
     const pattern = `${normalized}%`;
 
-    const results = await this.db
-      .select({ board_id: boards.board_id })
+    const results = await select(this.db)
       .from(boards)
       .where(like(boards.board_id, pattern))
       .all();
@@ -201,15 +200,15 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
       const merged = { ...current, ...updates };
       const insertData = this.boardToInsert(merged);
 
-      await this.db
-        .update(boards)
+      await update(this.db, boards)
         .set({
           name: insertData.name,
           slug: insertData.slug,
           updated_at: new Date(),
           data: insertData.data,
         })
-        .where(eq(boards.board_id, fullId));
+        .where(eq(boards.board_id, fullId))
+        .run();
 
       const updated = await this.findById(fullId);
       if (!updated) {
