@@ -1649,9 +1649,15 @@ async function main() {
       const forkedSession = await sessionsService.fork(id, data, params);
       console.log(`✅ Fork created: ${forkedSession.session_id.substring(0, 8)}`);
 
-      // Manually emit 'created' event for WebSocket broadcasting
-      // The fork() method calls create() internally, but the custom route doesn't auto-broadcast
-      app.service('sessions').emit('created', forkedSession);
+      // Manually broadcast the event to all connected clients
+      // Internal service calls don't trigger automatic event publishing even with provider param
+      console.log('📡 [FORK] Manually broadcasting created event to all clients');
+
+      // Manually publish to Socket.io using app.io
+      // Note: We only emit to Socket.io, not the service, to avoid duplicate events
+      if (app.io) {
+        app.io.emit('sessions created', forkedSession);
+      }
 
       return forkedSession;
     },
@@ -1666,9 +1672,15 @@ async function main() {
       const spawnedSession = await sessionsService.spawn(id, data, params);
       console.log(`✅ Spawn created: ${spawnedSession.session_id.substring(0, 8)}`);
 
-      // Manually emit 'created' event for WebSocket broadcasting
-      // The spawn() method calls create() internally, but the custom route doesn't auto-broadcast
-      app.service('sessions').emit('created', spawnedSession);
+      // Manually broadcast the event to all connected clients
+      // Internal service calls don't trigger automatic event publishing even with provider param
+      console.log('📡 [SPAWN] Manually broadcasting created event to all clients');
+
+      // Manually publish to Socket.io using app.io
+      // Note: We only emit to Socket.io, not the service, to avoid duplicate events
+      if (app.io) {
+        app.io.emit('sessions created', spawnedSession);
+      }
 
       return spawnedSession;
     },
