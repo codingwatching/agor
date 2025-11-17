@@ -802,6 +802,7 @@ const SessionDrawer = ({
         scheduledFromWorktree={session.scheduled_from_worktree}
         scheduledRunAt={session.scheduled_run_at}
         isActive={open}
+        genealogy={session.genealogy}
       />
 
       {/* Queued Messages Drawer - Above Footer */}

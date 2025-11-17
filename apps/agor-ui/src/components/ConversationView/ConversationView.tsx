@@ -14,10 +14,12 @@
 
 import type { AgorClient } from '@agor/core/api';
 import type { MessageID, PermissionScope, SessionID, User } from '@agor/core/types';
-import { Alert, Spin, Typography } from 'antd';
+import { BranchesOutlined, CopyOutlined, ForkOutlined } from '@ant-design/icons';
+import { Alert, Spin, Typography, theme } from 'antd';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStreamingMessages, useTasks } from '../../hooks';
 import type { StreamingMessage } from '../../hooks/useStreamingMessages';
+import { useCopyToClipboard } from '../../utils/clipboard';
 import { TaskBlock } from '../TaskBlock';
 
 const { Text } = Typography;
@@ -109,6 +111,18 @@ export interface ConversationViewProps {
    * Whether the view is currently visible/active (pauses sockets when false)
    */
   isActive?: boolean;
+
+  /**
+   * Session genealogy for showing fork/spawn origin
+   */
+  genealogy?: {
+    forked_from_session_id?: string;
+    fork_point_task_id?: string;
+    fork_point_message_index?: number;
+    parent_session_id?: string;
+    spawn_point_task_id?: string;
+    spawn_point_message_index?: number;
+  };
 }
 
 export const ConversationView = React.memo<ConversationViewProps>(
@@ -126,8 +140,11 @@ export const ConversationView = React.memo<ConversationViewProps>(
     scheduledRunAt,
     emptyStateMessage = 'No messages yet. Send a prompt to start the conversation.',
     isActive = true,
+    genealogy,
   }) => {
     const containerRef = useRef<HTMLDivElement>(null);
+    const { token } = theme.useToken();
+    const [copied, copy] = useCopyToClipboard();
 
     // Check if user is scrolled near the bottom (within 100px)
     const isNearBottom = useCallback(() => {
@@ -304,6 +321,62 @@ export const ConversationView = React.memo<ConversationViewProps>(
       );
     }
 
+    // Genealogy banner component
+    const isForked = !!genealogy?.forked_from_session_id;
+    const isSpawned = !!genealogy?.parent_session_id;
+
+    const GenealogyBanner = () => {
+      if (!isForked && !isSpawned) return null;
+
+      const sessionId = isForked ? genealogy?.forked_from_session_id : genealogy?.parent_session_id;
+      const messageIndex = isForked
+        ? genealogy?.fork_point_message_index
+        : genealogy?.spawn_point_message_index;
+      const icon = isForked ? <ForkOutlined /> : <BranchesOutlined />;
+      const actionText = isForked ? 'Forked' : 'Spawned';
+      const shortId = sessionId?.substring(0, 8);
+
+      return (
+        <div
+          style={{
+            margin: '12px 0',
+            padding: `${token.sizeUnit * 2}px ${token.sizeUnit * 3}px`,
+            background: isForked ? token.colorInfoBg : token.colorPrimaryBg,
+            border: `1px solid ${isForked ? token.colorInfoBorder : token.colorPrimaryBorder}`,
+            borderRadius: token.borderRadius,
+            display: 'flex',
+            alignItems: 'center',
+            gap: token.sizeUnit * 2,
+          }}
+        >
+          <span style={{ fontSize: 16, color: token.colorTextSecondary }}>{icon}</span>
+          <div style={{ flex: 1 }}>
+            <Text>
+              {actionText} from session{' '}
+              <Text code strong>
+                {shortId}
+              </Text>
+              {messageIndex !== undefined && (
+                <>
+                  {' '}
+                  as of message <Text code>{messageIndex}</Text>
+                </>
+              )}
+            </Text>
+          </div>
+          <CopyOutlined
+            onClick={() => sessionId && copy(sessionId)}
+            style={{
+              cursor: 'pointer',
+              fontSize: 14,
+              color: copied ? token.colorSuccess : token.colorTextSecondary,
+            }}
+            title={copied ? 'Copied!' : 'Copy session ID'}
+          />
+        </div>
+      );
+    };
+
     return (
       <div
         ref={containerRef}
@@ -314,6 +387,9 @@ export const ConversationView = React.memo<ConversationViewProps>(
           minHeight: 0,
         }}
       >
+        {/* Genealogy Banner */}
+        <GenealogyBanner />
+
         {/* Task-organized conversation */}
         {tasks.map((task) => (
           <TaskBlock
