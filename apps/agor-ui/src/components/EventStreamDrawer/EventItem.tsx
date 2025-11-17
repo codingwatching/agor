@@ -124,14 +124,12 @@ export const EventItem = ({ event }: EventItemProps) => {
       </Text>
 
       {/* Type badge */}
-      <>
-        <Tag
-          color={getTagColor()}
-          style={{ margin: 0, fontSize: 11, minWidth: 70, textAlign: 'center' }}
-        >
-          {String(event.type)}
-        </Tag>
-      </>
+      <Tag
+        color={getTagColor()}
+        style={{ margin: 0, fontSize: 11, minWidth: 70, textAlign: 'center' }}
+      >
+        {event.type}
+      </Tag>
 
       {/* Event name */}
       <Text
