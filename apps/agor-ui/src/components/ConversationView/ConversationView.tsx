@@ -340,26 +340,29 @@ export const ConversationView = React.memo<ConversationViewProps>(
         <div
           style={{
             margin: '12px 0',
-            padding: `${token.sizeUnit * 2}px ${token.sizeUnit * 3}px`,
+            padding: `${token.sizeUnit * 3}px ${token.sizeUnit * 4}px`,
             background: isForked ? token.colorInfoBg : token.colorPrimaryBg,
             border: `1px solid ${isForked ? token.colorInfoBorder : token.colorPrimaryBorder}`,
-            borderRadius: token.borderRadius,
+            borderRadius: token.borderRadiusLG,
             display: 'flex',
             alignItems: 'center',
-            gap: token.sizeUnit * 2,
+            gap: token.sizeUnit * 3,
           }}
         >
-          <span style={{ fontSize: 16, color: token.colorTextSecondary }}>{icon}</span>
+          <span style={{ fontSize: 20, color: token.colorTextSecondary }}>{icon}</span>
           <div style={{ flex: 1 }}>
-            <Text>
+            <Text style={{ fontSize: token.fontSizeLG }}>
               {actionText} from session{' '}
-              <Text code strong>
+              <Text code strong style={{ fontSize: token.fontSizeLG }}>
                 {shortId}
               </Text>
               {messageIndex !== undefined && (
                 <>
                   {' '}
-                  as of message <Text code>{messageIndex}</Text>
+                  as of message{' '}
+                  <Text code strong style={{ fontSize: token.fontSizeLG }}>
+                    {messageIndex}
+                  </Text>
                 </>
               )}
             </Text>
@@ -368,7 +371,7 @@ export const ConversationView = React.memo<ConversationViewProps>(
             onClick={() => sessionId && copy(sessionId)}
             style={{
               cursor: 'pointer',
-              fontSize: 14,
+              fontSize: 16,
               color: copied ? token.colorSuccess : token.colorTextSecondary,
             }}
             title={copied ? 'Copied!' : 'Copy session ID'}

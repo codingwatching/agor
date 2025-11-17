@@ -30,9 +30,7 @@ const { TextArea } = Input;
 
 // Register helper to check if value is defined (not undefined)
 // This allows us to distinguish between false and undefined in templates
-Handlebars.registerHelper('isDefined', function (value) {
-  return value !== undefined;
-});
+Handlebars.registerHelper('isDefined', (value) => value !== undefined);
 
 // Compile template once at module load (after helper registration)
 const compiledSpawnTemplate = Handlebars.compile(spawnSubsessionTemplate);

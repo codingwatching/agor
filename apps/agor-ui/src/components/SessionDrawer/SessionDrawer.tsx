@@ -52,13 +52,11 @@ import { CreatedByTag } from '../metadata';
 import { PermissionModeSelector } from '../PermissionModeSelector';
 import {
   ContextWindowPill,
-  ForkPill,
   IssuePill,
   MessageCountPill,
   PullRequestPill,
   RepoPill,
   SessionIdPill,
-  SpawnPill,
   TimerPill,
   TokenCountPill,
 } from '../Pill';
@@ -614,9 +612,6 @@ const SessionDrawer = ({
     }
   };
 
-  const isForked = !!session.genealogy.forked_from_session_id;
-  const isSpawned = !!session.genealogy.parent_session_id;
-
   // Check if session is currently running (disable prompts to avoid confusion)
   const isRunning = session.status === SessionStatus.RUNNING;
 
@@ -715,24 +710,9 @@ const SessionDrawer = ({
       }}
     >
       {/* All pills in one line */}
-      {(isForked || isSpawned || worktree || sessionMcpServerIds.length > 0) && (
+      {(worktree || sessionMcpServerIds.length > 0) && (
         <div style={{ marginBottom: token.sizeUnit }}>
           <Space size={8} wrap>
-            {/* Genealogy Tags */}
-            {isForked && session.genealogy.forked_from_session_id && (
-              <ForkPill
-                fromSessionId={session.genealogy.forked_from_session_id}
-                taskId={session.genealogy.fork_point_task_id}
-                messageIndex={session.genealogy.fork_point_message_index}
-              />
-            )}
-            {isSpawned && session.genealogy.parent_session_id && (
-              <SpawnPill
-                fromSessionId={session.genealogy.parent_session_id}
-                taskId={session.genealogy.spawn_point_task_id}
-                messageIndex={session.genealogy.spawn_point_message_index}
-              />
-            )}
             {/* Worktree Info */}
             {worktree && repo && (
               <RepoPill
