@@ -205,8 +205,7 @@ export class BoardObjectRepository {
     zoneId: string | undefined | null
   ): Promise<BoardEntityObject> {
     try {
-      const existing = await this.db
-        .select()
+      const existing = await select(this.db)
         .from(boardObjects)
         .where(eq(boardObjects.object_id, objectId))
         .one();
@@ -219,8 +218,7 @@ export class BoardObjectRepository {
       const existingData =
         typeof existing.data === 'string' ? JSON.parse(existing.data) : existing.data;
 
-      await this.db
-        .update(boardObjects)
+      await update(this.db, boardObjects)
         .set({
           data: {
             position: existingData.position,
@@ -228,7 +226,8 @@ export class BoardObjectRepository {
             zone_id: zoneId === null ? undefined : zoneId,
           },
         })
-        .where(eq(boardObjects.object_id, objectId));
+        .where(eq(boardObjects.object_id, objectId))
+        .run();
 
       const row = await select(this.db)
         .from(boardObjects)
