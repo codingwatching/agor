@@ -124,7 +124,7 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
   async create(data: Partial<Task>): Promise<Task> {
     try {
       const insertData = this.taskToInsert(data);
-      await insert(this.db, tasks).values(insertData);
+      await insert(this.db, tasks).values(insertData).run();
 
       const row = await select(this.db).from(tasks).where(eq(tasks.task_id, insertData.task_id)).one();
 
@@ -155,7 +155,7 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
       const inserts = taskList.map((task) => this.taskToInsert(task));
 
       // Bulk insert all tasks
-      await insert(this.db, tasks).values(inserts);
+      await insert(this.db, tasks).values(inserts).run();
 
       // Retrieve all inserted tasks
       const taskIds = inserts.map((t) => t.task_id);

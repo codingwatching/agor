@@ -108,7 +108,7 @@ export class RepoRepository implements BaseRepository<Repo, Partial<Repo>> {
   async create(data: Partial<Repo>): Promise<Repo> {
     try {
       const insertData = this.repoToInsert(data);
-      await insert(this.db, repos).values(insertData);
+      await insert(this.db, repos).values(insertData).run();
 
       const row = await select(this.db).from(repos).where(eq(repos.repo_id, insertData.repo_id)).one();
 

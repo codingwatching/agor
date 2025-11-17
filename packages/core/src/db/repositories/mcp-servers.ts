@@ -157,7 +157,7 @@ export class MCPServerRepository
   async create(data: CreateMCPServerInput): Promise<MCPServer> {
     try {
       const insertData = this.mcpServerToInsert(data);
-      await insert(this.db, mcpServers).values(insertData);
+      await insert(this.db, mcpServers).values(insertData).run();
 
       const row = await select(this.db)
         .from(mcpServers)

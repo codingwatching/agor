@@ -66,7 +66,7 @@ export class MessagesRepository {
    */
   async create(message: Message): Promise<Message> {
     const row = this.messageToRow(message);
-    const [inserted] = await insert(this.db, messages).values(row).returning();
+    const inserted = await insert(this.db, messages).values(row).returning().one();
     return this.rowToMessage(inserted);
   }
 
@@ -75,7 +75,7 @@ export class MessagesRepository {
    */
   async createMany(messageList: Message[]): Promise<Message[]> {
     const rows = messageList.map((m) => this.messageToRow(m));
-    const inserted = await insert(this.db, messages).values(rows).returning();
+    const inserted = await insert(this.db, messages).values(rows).returning().all();
     return inserted.map((r) => this.rowToMessage(r));
   }
 
@@ -96,7 +96,7 @@ export class MessagesRepository {
    * Get all messages (used by FeathersJS service adapter)
    */
   async findAll(): Promise<Message[]> {
-    const rows = await select(this.db).from(messages).orderBy(messages.index);
+    const rows = await select(this.db).from(messages).orderBy(messages.index).all();
     return rows.map((r) => this.rowToMessage(r));
   }
 
@@ -104,11 +104,11 @@ export class MessagesRepository {
    * Get all messages for a session (ordered by index)
    */
   async findBySessionId(sessionId: SessionID): Promise<Message[]> {
-    const rows = await this.db
-      .select()
+    const rows = await select(this.db)
       .from(messages)
       .where(eq(messages.session_id, sessionId))
-      .orderBy(messages.index);
+      .orderBy(messages.index)
+      .all();
 
     return rows.map((r) => this.rowToMessage(r));
   }
@@ -117,11 +117,11 @@ export class MessagesRepository {
    * Get all messages for a task (ordered by index)
    */
   async findByTaskId(taskId: TaskID): Promise<Message[]> {
-    const rows = await this.db
-      .select()
+    const rows = await select(this.db)
       .from(messages)
       .where(eq(messages.task_id, taskId))
-      .orderBy(messages.index);
+      .orderBy(messages.index)
+      .all();
 
     return rows.map((r) => this.rowToMessage(r));
   }
@@ -135,11 +135,11 @@ export class MessagesRepository {
     startIndex: number,
     endIndex: number
   ): Promise<Message[]> {
-    const rows = await this.db
-      .select()
+    const rows = await select(this.db)
       .from(messages)
       .where(eq(messages.session_id, sessionId))
-      .orderBy(messages.index);
+      .orderBy(messages.index)
+      .all();
 
     // Filter by range in memory (simpler than complex SQL)
     return rows
@@ -160,11 +160,11 @@ export class MessagesRepository {
     const updated = { ...existing, ...updates };
     const row = this.messageToRow(updated);
 
-    const [result] = await this.db
-      .update(messages)
+    const result = await update(this.db, messages)
       .set(row)
       .where(eq(messages.message_id, messageId))
-      .returning();
+      .returning()
+      .one();
 
     return this.rowToMessage(result);
   }
@@ -173,11 +173,11 @@ export class MessagesRepository {
    * Update message task assignment
    */
   async assignToTask(messageId: MessageID, taskId: TaskID): Promise<Message> {
-    const [updated] = await this.db
-      .update(messages)
+    const updated = await update(this.db, messages)
       .set({ task_id: taskId })
       .where(eq(messages.message_id, messageId))
-      .returning();
+      .returning()
+      .one();
 
     return this.rowToMessage(updated);
   }
@@ -186,14 +186,14 @@ export class MessagesRepository {
    * Delete all messages for a session (cascades automatically via FK)
    */
   async deleteBySessionId(sessionId: SessionID): Promise<void> {
-    await deleteFrom(this.db, messages).where(eq(messages.session_id, sessionId));
+    await deleteFrom(this.db, messages).where(eq(messages.session_id, sessionId)).run();
   }
 
   /**
    * Delete a single message
    */
   async delete(messageId: MessageID): Promise<void> {
-    await deleteFrom(this.db, messages).where(eq(messages.message_id, messageId));
+    await deleteFrom(this.db, messages).where(eq(messages.message_id, messageId)).run();
   }
 
   /**

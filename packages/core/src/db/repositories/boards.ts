@@ -113,7 +113,7 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
   async create(data: Partial<Board>): Promise<Board> {
     try {
       const insertData = this.boardToInsert(data);
-      await insert(this.db, boards).values(insertData);
+      await insert(this.db, boards).values(insertData).run();
 
       const row = await select(this.db)
         .from(boards)

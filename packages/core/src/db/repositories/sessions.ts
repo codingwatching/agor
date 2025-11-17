@@ -160,7 +160,7 @@ export class SessionRepository implements BaseRepository<Session, Partial<Sessio
   async create(data: Partial<Session>): Promise<Session> {
     try {
       const insertData = this.sessionToInsert(data);
-      await insert(this.db, sessions).values(insertData);
+      await insert(this.db, sessions).values(insertData).run();
 
       const row = await select(this.db)
         .from(sessions)

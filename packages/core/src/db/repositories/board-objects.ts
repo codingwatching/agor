@@ -126,7 +126,7 @@ export class BoardObjectRepository {
         },
       };
 
-      await insert(this.db, boardObjects).values(insert);
+      await insert(this.db, boardObjects).values(insert).run();
 
       // Fetch and return created object
       const row = await this.db
@@ -280,7 +280,7 @@ export class BoardObjectRepository {
    */
   async removeByWorktreeId(worktreeId: WorktreeID): Promise<void> {
     try {
-      await deleteFrom(this.db, boardObjects).where(eq(boardObjects.worktree_id, worktreeId));
+      await deleteFrom(this.db, boardObjects).where(eq(boardObjects.worktree_id, worktreeId)).run();
     } catch (error) {
       throw new RepositoryError(
         `Failed to remove board objects by worktree: ${error instanceof Error ? error.message : String(error)}`,

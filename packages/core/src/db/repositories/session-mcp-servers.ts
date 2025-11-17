@@ -76,7 +76,7 @@ export class SessionMCPServerRepository {
         added_at: new Date(),
       };
 
-      await insert(this.db, sessionMcpServers).values(insert);
+      await insert(this.db, sessionMcpServers).values(insert).run();
     } catch (error) {
       if (error instanceof EntityNotFoundError) throw error;
       throw new RepositoryError(
@@ -187,7 +187,7 @@ export class SessionMCPServerRepository {
       }
 
       // Remove all existing relationships
-      await deleteFrom(this.db, sessionMcpServers).where(eq(sessionMcpServers.session_id, sessionId));
+      await deleteFrom(this.db, sessionMcpServers).where(eq(sessionMcpServers.session_id, sessionId)).run();
 
       // Add new relationships
       if (serverIds.length > 0) {
@@ -198,7 +198,7 @@ export class SessionMCPServerRepository {
           added_at: new Date(),
         }));
 
-        await insert(this.db, sessionMcpServers).values(inserts);
+        await insert(this.db, sessionMcpServers).values(inserts).run();
       }
     } catch (error) {
       if (error instanceof EntityNotFoundError) throw error;

@@ -233,7 +233,7 @@ export class WorktreeRepository implements BaseRepository<Worktree, Partial<Work
       throw new EntityNotFoundError('Worktree', id);
     }
 
-    await deleteFrom(this.db, worktrees).where(eq(worktrees.worktree_id, existing.worktree_id));
+    await deleteFrom(this.db, worktrees).where(eq(worktrees.worktree_id, existing.worktree_id)).run();
   }
 
   /**

@@ -143,7 +143,7 @@ export class BoardCommentsRepository
   async create(data: Partial<BoardComment>): Promise<BoardComment> {
     try {
       const insertData = this.commentToInsert(data);
-      await insert(this.db, boardComments).values(insertData);
+      await insert(this.db, boardComments).values(insertData).run();
 
       const row = await select(this.db)
         .from(boardComments)
@@ -403,7 +403,7 @@ export class BoardCommentsRepository
       const inserts = comments.map((comment) => this.commentToInsert(comment));
 
       // Batch insert
-      await insert(this.db, boardComments).values(inserts);
+      await insert(this.db, boardComments).values(inserts).run();
 
       // Fetch all created comments
       const commentIds = inserts.map((insert) => insertData.comment_id);
