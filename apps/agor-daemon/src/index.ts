@@ -1648,6 +1648,11 @@ async function main() {
       console.log(`🔀 Forking session: ${id.substring(0, 8)}`);
       const forkedSession = await sessionsService.fork(id, data, params);
       console.log(`✅ Fork created: ${forkedSession.session_id.substring(0, 8)}`);
+
+      // Manually emit 'created' event for WebSocket broadcasting
+      // The fork() method calls create() internally, but the custom route doesn't auto-broadcast
+      app.service('sessions').emit('created', forkedSession);
+
       return forkedSession;
     },
   });
@@ -1660,6 +1665,11 @@ async function main() {
       console.log(`🌱 Spawning session from: ${id.substring(0, 8)}`);
       const spawnedSession = await sessionsService.spawn(id, data, params);
       console.log(`✅ Spawn created: ${spawnedSession.session_id.substring(0, 8)}`);
+
+      // Manually emit 'created' event for WebSocket broadcasting
+      // The spawn() method calls create() internally, but the custom route doesn't auto-broadcast
+      app.service('sessions').emit('created', spawnedSession);
+
       return spawnedSession;
     },
   });
