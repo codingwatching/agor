@@ -282,8 +282,7 @@ export class BoardCommentsRepository
 
       const insertData = this.commentToInsert(merged);
 
-      await this.db
-        .update(boardComments)
+      await update(this.db, boardComments)
         .set({
           content: insert.content,
           content_preview: insert.content_preview,
@@ -298,7 +297,8 @@ export class BoardCommentsRepository
           updated_at: new Date(),
           data: insertData.data,
         })
-        .where(eq(boardComments.comment_id, fullId));
+        .where(eq(boardComments.comment_id, fullId))
+        .run();
 
       const updated = await this.findById(fullId);
       if (!updated) {

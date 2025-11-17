@@ -277,15 +277,15 @@ export class MCPServerRepository
       const merged = { ...current, ...updates };
       const insertData = this.mcpServerToInsert(merged);
 
-      await this.db
-        .update(mcpServers)
+      await update(this.db, mcpServers)
         .set({
           enabled: insert.enabled,
           scope: insert.scope,
           updated_at: new Date(),
           data: insertData.data,
         })
-        .where(eq(mcpServers.mcp_server_id, fullId));
+        .where(eq(mcpServers.mcp_server_id, fullId))
+        .run();
 
       const updated = await this.findById(fullId);
       if (!updated) {

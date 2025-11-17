@@ -103,8 +103,7 @@ export class BoardObjectRepository {
   }): Promise<BoardEntityObject> {
     try {
       // Check if worktree already on a board
-      const existing = await this.db
-        .select()
+      const existing = await select(this.db)
         .from(boardObjects)
         .where(eq(boardObjects.worktree_id, data.worktree_id))
         .one();
@@ -154,8 +153,7 @@ export class BoardObjectRepository {
     position: { x: number; y: number }
   ): Promise<BoardEntityObject> {
     try {
-      const existing = await this.db
-        .select()
+      const existing = await select(this.db)
         .from(boardObjects)
         .where(eq(boardObjects.object_id, objectId))
         .one();
@@ -168,15 +166,15 @@ export class BoardObjectRepository {
       const existingData =
         typeof existing.data === 'string' ? JSON.parse(existing.data) : existing.data;
 
-      await this.db
-        .update(boardObjects)
+      await update(this.db, boardObjects)
         .set({
           data: {
             position,
             zone_id: existingData.zone_id,
           },
         })
-        .where(eq(boardObjects.object_id, objectId));
+        .where(eq(boardObjects.object_id, objectId))
+        .run();
 
       const row = await select(this.db)
         .from(boardObjects)

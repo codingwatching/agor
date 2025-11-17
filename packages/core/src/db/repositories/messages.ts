@@ -83,13 +83,12 @@ export class MessagesRepository {
    * Get message by ID
    */
   async findById(messageId: MessageID): Promise<Message | null> {
-    const rows = await this.db
-      .select()
+    const row = await select(this.db)
       .from(messages)
       .where(eq(messages.message_id, messageId))
-      .limit(1);
+      .one();
 
-    return rows[0] ? this.rowToMessage(rows[0]) : null;
+    return row ? this.rowToMessage(row) : null;
   }
 
   /**
@@ -219,14 +218,13 @@ export class MessagesRepository {
     const { isSQLiteDatabase } = await import('../database-wrapper');
 
     // Get current max queue position for session
-    const query = this.db
-      .select({ max: max(messages.queue_position) })
+    const result = await select(this.db)
       .from(messages)
-      .where(and(eq(messages.session_id, sessionId), eq(messages.status, 'queued')));
+      .where(and(eq(messages.session_id, sessionId), eq(messages.status, 'queued')))
+      .all();
 
-    const result = isSQLiteDatabase(this.db) ? await query.all() : await query;
-
-    const nextPosition = (result[0]?.max || 0) + 1;
+    const maxPosition = result.reduce((max, row) => Math.max(max, row.queue_position || 0), 0);
+    const nextPosition = maxPosition + 1;
 
     // Determine message type based on metadata
     const messageType = metadata?.is_agor_callback ? 'system' : 'user';
@@ -256,11 +254,11 @@ export class MessagesRepository {
   async findQueued(sessionId: SessionID): Promise<Message[]> {
     const { and, asc } = await import('drizzle-orm');
 
-    const rows = await this.db
-      .select()
+    const rows = await select(this.db)
       .from(messages)
       .where(and(eq(messages.session_id, sessionId), eq(messages.status, 'queued')))
-      .orderBy(asc(messages.queue_position));
+      .orderBy(asc(messages.queue_position))
+      .all();
 
     return rows.map((r) => this.rowToMessage(r));
   }
