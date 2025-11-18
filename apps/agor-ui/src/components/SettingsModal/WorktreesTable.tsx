@@ -36,10 +36,10 @@ import { ArchiveDeleteWorktreeModal } from '../ArchiveDeleteWorktreeModal';
 import { WorktreeFormFields } from '../WorktreeFormFields';
 
 interface WorktreesTableProps {
-  worktrees: Worktree[];
+  worktreeById: Map<string, Worktree>;
   repos: Repo[];
   boards: Board[];
-  sessions: Session[];
+  sessionsByWorktree: Map<string, Session[]>; // O(1) worktree filtering
   onArchiveOrDelete?: (
     worktreeId: string,
     options: {
@@ -65,10 +65,10 @@ interface WorktreesTableProps {
 }
 
 export const WorktreesTable: React.FC<WorktreesTableProps> = ({
-  worktrees,
+  worktreeById,
   repos,
   boards,
-  sessions,
+  sessionsByWorktree,
   onArchiveOrDelete,
   onUnarchive,
   onCreate,
@@ -366,7 +366,7 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
       key: 'sessions',
       width: 100,
       render: (_: unknown, record: Worktree) => {
-        const sessionCount = sessions.filter((s) => s.worktree_id === record.worktree_id).length;
+        const sessionCount = (sessionsByWorktree.get(record.worktree_id) || []).length;
         return (
           <Typography.Text type="secondary">
             {sessionCount} {sessionCount === 1 ? 'session' : 'sessions'}
@@ -453,7 +453,7 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
 
   const filteredWorktrees = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
-    const sorted = [...worktrees].sort(
+    const sorted = Array.from(worktreeById.values()).sort(
       (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     );
 
@@ -488,7 +488,7 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
         return value.toString().toLowerCase().includes(term);
       });
     });
-  }, [archiveFilter, reposById, searchTerm, worktrees]);
+  }, [archiveFilter, reposById, searchTerm, worktreeById]);
 
   return (
     <div>
@@ -531,20 +531,7 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
         </Space>
       </Space>
 
-      {!worktrees && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            minHeight: 400,
-          }}
-        >
-          <Empty description="Loading worktrees..." />
-        </div>
-      )}
-
-      {worktrees && repos.length === 0 && (
+      {repos.length === 0 && (
         <div
           style={{
             display: 'flex',
@@ -561,7 +548,7 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
         </div>
       )}
 
-      {repos.length > 0 && worktrees.length === 0 && (
+      {repos.length > 0 && worktreeById.size === 0 && (
         <div
           style={{
             display: 'flex',
@@ -578,7 +565,7 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
         </div>
       )}
 
-      {worktrees.length > 0 && (
+      {worktreeById.size > 0 && (
         <Table
           dataSource={filteredWorktrees}
           columns={columns}
@@ -621,9 +608,7 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
         <ArchiveDeleteWorktreeModal
           open={archiveDeleteModalOpen}
           worktree={selectedWorktree}
-          sessionCount={
-            sessions.filter((s) => s.worktree_id === selectedWorktree.worktree_id).length
-          }
+          sessionCount={(sessionsByWorktree.get(selectedWorktree.worktree_id) || []).length}
           environmentRunning={selectedWorktree.environment_instance?.status === 'running'}
           onConfirm={(options) => {
             handleArchiveOrDelete(selectedWorktree.worktree_id, options);

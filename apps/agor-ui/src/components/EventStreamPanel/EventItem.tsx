@@ -2,9 +2,12 @@
  * EventItem - Display a single socket event with timestamp, type, and data
  */
 
+import type { Worktree } from '@agor/core/types';
 import {
   AimOutlined,
   ApiOutlined,
+  CodeOutlined,
+  FolderOutlined,
   InfoCircleOutlined,
   MessageOutlined,
   ThunderboltOutlined,
@@ -13,14 +16,16 @@ import {
 import { Button, Popover, Tag, Typography, theme } from 'antd';
 import type React from 'react';
 import type { SocketEvent } from '../../hooks/useEventStream';
+import { EventStreamPill } from './EventStreamPill';
 
 const { Text } = Typography;
 
 export interface EventItemProps {
   event: SocketEvent;
+  worktreeById: Map<string, Worktree>;
 }
 
-export const EventItem = ({ event }: EventItemProps): React.JSX.Element => {
+export const EventItem = ({ event, worktreeById }: EventItemProps): React.JSX.Element => {
   const { token } = theme.useToken();
 
   // Get icon based on event type
@@ -82,6 +87,17 @@ export const EventItem = ({ event }: EventItemProps): React.JSX.Element => {
     }
   };
 
+  // Extract session_id and worktree_id from event data
+  const sessionId =
+    event.data && typeof event.data === 'object' && 'session_id' in event.data
+      ? (event.data.session_id as string)
+      : undefined;
+
+  const worktreeId =
+    event.data && typeof event.data === 'object' && 'worktree_id' in event.data
+      ? (event.data.worktree_id as string)
+      : undefined;
+
   // JSON details popover content
   const detailsContent: React.JSX.Element = event.data ? (
     <div style={{ maxWidth: 400, maxHeight: 400, overflow: 'auto' }}>
@@ -141,6 +157,22 @@ export const EventItem = ({ event }: EventItemProps): React.JSX.Element => {
       >
         {event.eventName}
       </Text>
+
+      {/* Session ID pill */}
+      {sessionId && (
+        <EventStreamPill id={sessionId} icon={CodeOutlined} color="cyan" copyLabel="Session ID" />
+      )}
+
+      {/* Worktree ID pill */}
+      {worktreeId && (
+        <EventStreamPill
+          id={worktreeId}
+          label={worktreeById.get(worktreeId)?.name}
+          icon={FolderOutlined}
+          color="geekblue"
+          copyLabel="Worktree ID"
+        />
+      )}
 
       {event.data ? (
         <Popover content={detailsContent} title="Event Data" trigger="click" placement="left">

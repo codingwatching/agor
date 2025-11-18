@@ -122,13 +122,14 @@ function AppContent() {
 
   // Fetch data (only when connected and authenticated)
   const {
-    sessions,
+    sessionById,
+    sessionsByWorktree,
     tasks,
     boards,
     boardObjects,
     comments,
     repos,
-    worktrees,
+    worktreeById,
     users,
     mcpServers,
     sessionMcpServerIds,
@@ -158,10 +159,10 @@ function AppContent() {
 
   // Mark as loaded once we have data
   useEffect(() => {
-    if (!loading && (sessions.length > 0 || boards.length > 0 || repos.length > 0)) {
+    if (!loading && (sessionById.size > 0 || boards.length > 0 || repos.length > 0)) {
       setHasLoadedOnce(true);
     }
-  }, [loading, sessions.length, boards.length, repos.length]);
+  }, [loading, sessionById.size, boards.length, repos.length]);
 
   // Get current user from users array (real-time updates via WebSocket)
   // This ensures we get the latest onboarding_completed status
@@ -172,10 +173,10 @@ function AppContent() {
   const welcomeStats = useMemo(
     () => ({
       repoCount: repos.length,
-      worktreeCount: worktrees.length,
-      sessionCount: sessions.length,
+      worktreeCount: worktreeById.size,
+      sessionCount: sessionById.size,
     }),
-    [repos.length, worktrees.length, sessions.length]
+    [repos.length, worktreeById.size, sessionById.size]
   );
 
   // Show welcome modal if user hasn't completed onboarding
@@ -915,7 +916,7 @@ function AppContent() {
   };
 
   // Generate repo reference options for dropdowns
-  const allOptions = getRepoReferenceOptions(repos, worktrees);
+  const allOptions = getRepoReferenceOptions(repos, Array.from(worktreeById.values()));
   const _worktreeOptions = allOptions.filter((opt) => opt.type === 'managed-worktree');
   const _repoOptions = allOptions.filter((opt) => opt.type === 'managed');
 
@@ -991,12 +992,13 @@ function AppContent() {
             <MobileApp
               client={client}
               user={user}
-              sessions={sessions}
+              sessionById={sessionById}
+              sessionsByWorktree={sessionsByWorktree}
               tasks={tasks}
               boards={boards}
               comments={comments}
               repos={repos}
-              worktrees={worktrees}
+              worktreeById={worktreeById}
               users={users}
               onSendPrompt={handleSendPrompt}
               onSendComment={handleSendComment}
@@ -1034,14 +1036,15 @@ function AppContent() {
                 user={currentUser}
                 connected={connected}
                 connecting={connecting}
-                sessions={sessions}
+                sessionById={sessionById}
+                sessionsByWorktree={sessionsByWorktree}
                 tasks={tasks}
                 availableAgents={AVAILABLE_AGENTS}
                 boards={boards}
                 boardObjects={boardObjects}
                 comments={comments}
                 repos={repos}
-                worktrees={worktrees}
+                worktreeById={worktreeById}
                 users={users}
                 mcpServers={mcpServers}
                 sessionMcpServerIds={sessionMcpServerIds}

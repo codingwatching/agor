@@ -14,12 +14,13 @@ const { Text } = Typography;
 interface MobileAppProps {
   client: AgorClient | null;
   user?: User | null;
-  sessions: Session[];
+  sessionById: Map<string, Session>; // O(1) ID lookups
+  sessionsByWorktree: Map<string, Session[]>; // O(1) worktree filtering
   tasks: Record<string, Task[]>;
   boards: Board[];
   comments: BoardComment[];
   repos: Repo[];
-  worktrees: Worktree[];
+  worktreeById: Map<string, Worktree>;
   users: User[];
   onSendPrompt?: (sessionId: string, prompt: string) => void;
   onSendComment: (boardId: string, content: string) => void;
@@ -35,12 +36,13 @@ interface MobileAppProps {
 export const MobileApp: React.FC<MobileAppProps> = ({
   client,
   user,
-  sessions,
+  sessionById,
+  sessionsByWorktree,
   tasks,
   boards,
   comments,
   repos,
-  worktrees,
+  worktreeById,
   users,
   onSendPrompt,
   onSendComment,
@@ -69,8 +71,8 @@ export const MobileApp: React.FC<MobileAppProps> = ({
       >
         <MobileNavTree
           boards={boards}
-          worktrees={worktrees}
-          sessions={sessions}
+          worktreeById={worktreeById}
+          sessionsByWorktree={sessionsByWorktree}
           tasks={tasks}
           comments={comments}
           onNavigate={() => setDrawerOpen(false)}
@@ -123,8 +125,8 @@ export const MobileApp: React.FC<MobileAppProps> = ({
           element={
             <SessionPage
               client={client}
-              sessions={sessions}
-              worktrees={worktrees}
+              sessionById={sessionById}
+              worktreeById={worktreeById}
               repos={repos}
               users={users}
               currentUser={user}
@@ -144,7 +146,7 @@ export const MobileApp: React.FC<MobileAppProps> = ({
               client={client}
               boards={boards}
               comments={comments}
-              worktrees={worktrees}
+              worktreeById={worktreeById}
               users={users}
               currentUser={user}
               onMenuClick={() => setDrawerOpen(true)}

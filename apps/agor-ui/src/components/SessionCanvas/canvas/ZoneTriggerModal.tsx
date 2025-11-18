@@ -30,7 +30,7 @@ interface ZoneTriggerModalProps {
   onCancel: () => void;
   worktreeId: WorktreeID;
   worktree: Worktree | undefined;
-  sessions: Session[];
+  sessionsByWorktree: Map<string, Session[]>; // O(1) worktree filtering
   zoneName: string;
   trigger: ZoneTrigger;
   boardName?: string;
@@ -56,7 +56,7 @@ export const ZoneTriggerModal = ({
   onCancel,
   worktreeId,
   worktree,
-  sessions,
+  sessionsByWorktree,
   zoneName,
   trigger,
   boardName,
@@ -91,10 +91,10 @@ export const ZoneTriggerModal = ({
     mcpServerIds?: string[];
   }>({});
 
-  // Filter sessions for this worktree
+  // Filter sessions for this worktree using O(1) Map lookup
   const worktreeSessions = useMemo(() => {
-    return sessions.filter((s) => s.worktree_id === worktreeId);
-  }, [sessions, worktreeId]);
+    return sessionsByWorktree.get(worktreeId) || [];
+  }, [sessionsByWorktree, worktreeId]);
 
   // Smart default: Most recent active/completed session
   const smartDefaultSession = useMemo(() => {

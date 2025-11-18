@@ -20,13 +20,14 @@ import type {
 import { useCallback, useEffect, useState } from 'react';
 
 interface UseAgorDataResult {
-  sessions: Session[];
+  sessionById: Map<string, Session>; // O(1) lookups by session_id - efficient, stable references
+  sessionsByWorktree: Map<string, Session[]>; // O(1) worktree-scoped filtering
   tasks: Record<string, Task[]>;
   boards: Board[];
   boardObjects: BoardEntityObject[]; // Positioned worktrees on boards
   comments: BoardComment[]; // Board comments for collaboration
   repos: Repo[];
-  worktrees: Worktree[];
+  worktreeById: Map<string, Worktree>; // Primary storage - efficient lookups, stable references
   users: User[];
   mcpServers: MCPServer[];
   sessionMcpServerIds: Record<string, string[]>; // Map: sessionId -> mcpServerIds[]
@@ -42,13 +43,14 @@ interface UseAgorDataResult {
  * @returns Sessions, tasks (grouped by session), boards, loading state, and refetch function
  */
 export function useAgorData(client: AgorClient | null): UseAgorDataResult {
-  const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionById, setSessionById] = useState<Map<string, Session>>(new Map());
+  const [sessionsByWorktree, setSessionsByWorktree] = useState<Map<string, Session[]>>(new Map());
   const [tasks, setTasks] = useState<Record<string, Task[]>>({});
   const [boards, setBoards] = useState<Board[]>([]);
   const [boardObjects, setBoardObjects] = useState<BoardEntityObject[]>([]);
   const [comments, setComments] = useState<BoardComment[]>([]);
   const [repos, setRepos] = useState<Repo[]>([]);
-  const [worktrees, setWorktrees] = useState<Worktree[]>([]);
+  const [worktreeById, setWorktreeById] = useState<Map<string, Worktree>>(new Map());
   const [users, setUsers] = useState<User[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
   const [sessionMcpServerIds, setSessionMcpServerIds] = useState<Record<string, string[]>>({});
@@ -118,7 +120,24 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
         ? sessionMcpResult
         : sessionMcpResult.data;
 
-      setSessions(sessionsList);
+      // Build session Maps for efficient lookups
+      const sessionsById = new Map<string, Session>();
+      const sessionsByWorktreeId = new Map<string, Session[]>();
+
+      for (const session of sessionsList) {
+        // sessionById: O(1) ID lookups
+        sessionsById.set(session.session_id, session);
+
+        // sessionsByWorktree: O(1) worktree-scoped filtering
+        const worktreeId = session.worktree_id;
+        if (!sessionsByWorktreeId.has(worktreeId)) {
+          sessionsByWorktreeId.set(worktreeId, []);
+        }
+        sessionsByWorktreeId.get(worktreeId)!.push(session);
+      }
+
+      setSessionById(sessionsById);
+      setSessionsByWorktree(sessionsByWorktreeId);
 
       // Group tasks by session_id
       const tasksMap: Record<string, Task[]> = {};
@@ -134,7 +153,14 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
       setBoardObjects(boardObjectsList);
       setComments(commentsList);
       setRepos(reposList);
-      setWorktrees(worktreesList);
+
+      // Build worktree Map for efficient lookups
+      const worktreesMap = new Map<string, Worktree>();
+      for (const worktree of worktreesList) {
+        worktreesMap.set(worktree.worktree_id, worktree);
+      }
+      setWorktreeById(worktreesMap);
+
       setUsers(usersList);
       setMcpServers(mcpServersList);
 
@@ -170,13 +196,107 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
     // Subscribe to session events
     const sessionsService = client.service('sessions');
     const handleSessionCreated = (session: Session) => {
-      setSessions((prev) => [...prev, session]);
+      // Update sessionById - only create new Map if session doesn't exist
+      setSessionById((prev) => {
+        if (prev.has(session.session_id)) return prev; // Already exists, shouldn't happen
+        const next = new Map(prev);
+        next.set(session.session_id, session);
+        return next;
+      });
+
+      // Update sessionsByWorktree - only create new Map when adding new session
+      setSessionsByWorktree((prev) => {
+        const worktreeSessions = prev.get(session.worktree_id) || [];
+        const next = new Map(prev);
+        next.set(session.worktree_id, [...worktreeSessions, session]);
+        return next;
+      });
     };
     const handleSessionPatched = (session: Session) => {
-      setSessions((prev) => prev.map((s) => (s.session_id === session.session_id ? session : s)));
+      // Track old worktree_id for migration detection
+      let oldWorktreeId: string | null = null;
+
+      // Update sessionById - ONLY create new Map if session changed
+      setSessionById((prev) => {
+        const existing = prev.get(session.session_id);
+        if (existing === session) return prev; // Same reference, no change
+
+        // Capture old worktree_id before updating
+        oldWorktreeId = existing?.worktree_id || null;
+
+        const next = new Map(prev);
+        next.set(session.session_id, session);
+        return next;
+      });
+
+      // Update sessionsByWorktree - handle both in-place updates and worktree migrations
+      setSessionsByWorktree((prev) => {
+        const newWorktreeId = session.worktree_id;
+        const worktreeSessions = prev.get(newWorktreeId) || [];
+        const index = worktreeSessions.findIndex((s) => s.session_id === session.session_id);
+
+        // Check if session migrated to a different worktree
+        const worktreeMigrated = oldWorktreeId && oldWorktreeId !== newWorktreeId;
+
+        if (worktreeMigrated) {
+          // Session moved between worktrees - remove from old, add to new
+          const next = new Map(prev);
+
+          // Remove from old worktree bucket
+          const oldSessions = prev.get(oldWorktreeId!) || [];
+          const filteredOldSessions = oldSessions.filter(
+            (s) => s.session_id !== session.session_id
+          );
+          if (filteredOldSessions.length > 0) {
+            next.set(oldWorktreeId!, filteredOldSessions);
+          } else {
+            next.delete(oldWorktreeId!); // Remove empty bucket
+          }
+
+          // Add to new worktree bucket
+          const newSessions = prev.get(newWorktreeId) || [];
+          next.set(newWorktreeId, [...newSessions, session]);
+
+          return next;
+        }
+
+        // Session not found in this worktree and didn't migrate (shouldn't happen, but be safe)
+        if (index === -1) return prev;
+
+        // Check if session actually changed (reference equality is sufficient for socket updates)
+        if (worktreeSessions[index] === session) return prev;
+
+        // Create new array with updated session (in-place update)
+        const updatedSessions = [...worktreeSessions];
+        updatedSessions[index] = session;
+
+        // Only create new Map with updated worktree entry
+        const next = new Map(prev);
+        next.set(newWorktreeId, updatedSessions);
+        return next;
+      });
     };
     const handleSessionRemoved = (session: Session) => {
-      setSessions((prev) => prev.filter((s) => s.session_id !== session.session_id));
+      // Update sessionById
+      setSessionById((prev) => {
+        const next = new Map(prev);
+        next.delete(session.session_id);
+        return next;
+      });
+
+      // Update sessionsByWorktree
+      setSessionsByWorktree((prev) => {
+        const next = new Map(prev);
+        const worktreeSessions = next.get(session.worktree_id) || [];
+        const filtered = worktreeSessions.filter((s) => s.session_id !== session.session_id);
+        if (filtered.length > 0) {
+          next.set(session.worktree_id, filtered);
+        } else {
+          // Clean up empty arrays
+          next.delete(session.worktree_id);
+        }
+        return next;
+      });
     };
 
     sessionsService.on('created', handleSessionCreated);
@@ -268,15 +388,29 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
     // Subscribe to worktree events
     const worktreesService = client.service('worktrees');
     const handleWorktreeCreated = (worktree: Worktree) => {
-      setWorktrees((prev) => [...prev, worktree]);
+      setWorktreeById((prev) => {
+        if (prev.has(worktree.worktree_id)) return prev; // Already exists, shouldn't happen
+        const next = new Map(prev);
+        next.set(worktree.worktree_id, worktree);
+        return next;
+      });
     };
     const handleWorktreePatched = (worktree: Worktree) => {
-      setWorktrees((prev) =>
-        prev.map((w) => (w.worktree_id === worktree.worktree_id ? worktree : w))
-      );
+      setWorktreeById((prev) => {
+        const existing = prev.get(worktree.worktree_id);
+        if (existing === worktree) return prev; // Same reference, no change
+        const next = new Map(prev);
+        next.set(worktree.worktree_id, worktree);
+        return next;
+      });
     };
     const handleWorktreeRemoved = (worktree: Worktree) => {
-      setWorktrees((prev) => prev.filter((w) => w.worktree_id !== worktree.worktree_id));
+      setWorktreeById((prev) => {
+        if (!prev.has(worktree.worktree_id)) return prev; // Doesn't exist, nothing to remove
+        const next = new Map(prev);
+        next.delete(worktree.worktree_id);
+        return next;
+      });
     };
 
     worktreesService.on('created', handleWorktreeCreated);
@@ -419,13 +553,14 @@ export function useAgorData(client: AgorClient | null): UseAgorDataResult {
   }, [client, fetchData, hasInitiallyFetched]);
 
   return {
-    sessions,
+    sessionById,
+    sessionsByWorktree,
     tasks,
     boards,
     boardObjects,
     comments,
     repos,
-    worktrees,
+    worktreeById,
     users,
     mcpServers,
     sessionMcpServerIds,

@@ -32,8 +32,9 @@ export interface SettingsModalProps {
   boards: Board[];
   boardObjects: BoardEntityObject[];
   repos: Repo[];
-  worktrees: Worktree[];
-  sessions: Session[];
+  worktreeById: Map<string, Worktree>;
+  sessionById: Map<string, Session>; // O(1) ID lookups - efficient, stable references
+  sessionsByWorktree: Map<string, Session[]>; // O(1) worktree filtering
   users: User[];
   mcpServers: MCPServer[];
   activeTab?: string; // Control which tab is shown when modal opens
@@ -85,8 +86,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   boards,
   boardObjects,
   repos,
-  worktrees,
-  sessions,
+  worktreeById,
+  sessionsByWorktree,
   users,
   mcpServers,
   activeTab = 'boards',
@@ -121,7 +122,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     // Snapshot the data when opening modal
     setSelectedWorktree(worktree);
     setSelectedRepo(repos.find((r) => r.repo_id === worktree.repo_id) || null);
-    setWorktreeSessions(sessions.filter((s) => s.worktree_id === worktree.worktree_id));
+    setWorktreeSessions(sessionsByWorktree.get(worktree.worktree_id) || []);
     setWorktreeModalOpen(true);
   };
 
@@ -164,8 +165,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             children: (
               <BoardsTable
                 boards={boards}
-                sessions={sessions}
-                worktrees={worktrees}
+                sessionsByWorktree={sessionsByWorktree}
+                worktreeById={worktreeById}
                 onCreate={onCreateBoard}
                 onUpdate={onUpdateBoard}
                 onDelete={onDeleteBoard}
@@ -189,10 +190,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             label: 'Worktrees & Environments',
             children: (
               <WorktreesTable
-                worktrees={worktrees}
+                worktreeById={worktreeById}
                 repos={repos}
                 boards={boards}
-                sessions={sessions}
+                sessionsByWorktree={sessionsByWorktree}
                 onArchiveOrDelete={onArchiveOrDeleteWorktree}
                 onUnarchive={onUnarchiveWorktree}
                 onCreate={onCreateWorktree}

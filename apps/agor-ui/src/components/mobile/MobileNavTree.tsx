@@ -8,8 +8,8 @@ const { Text } = Typography;
 
 interface MobileNavTreeProps {
   boards: Board[];
-  worktrees: Worktree[];
-  sessions: Session[];
+  worktreeById: Map<string, Worktree>;
+  sessionsByWorktree: Map<string, Session[]>; // O(1) worktree filtering
   tasks: Record<string, Task[]>;
   comments: BoardComment[];
   onNavigate?: () => void;
@@ -17,8 +17,8 @@ interface MobileNavTreeProps {
 
 export const MobileNavTree: React.FC<MobileNavTreeProps> = ({
   boards,
-  worktrees,
-  sessions,
+  worktreeById,
+  sessionsByWorktree,
   tasks,
   comments,
   onNavigate,
@@ -44,39 +44,27 @@ export const MobileNavTree: React.FC<MobileNavTreeProps> = ({
   };
 
   // Group worktrees by board
-  const worktreesByBoard = worktrees.reduce(
-    (acc, worktree) => {
-      const boardId = worktree.board_id || 'unassigned';
-      if (!acc[boardId]) {
-        acc[boardId] = [];
-      }
-      acc[boardId].push(worktree);
-      return acc;
-    },
-    {} as Record<string, Worktree[]>
-  );
-
-  // Group sessions by worktree and sort by last_updated DESC
-  const sessionsByWorktree = sessions.reduce(
-    (acc, session) => {
-      const worktreeId = session.worktree_id;
-      if (!acc[worktreeId]) {
-        acc[worktreeId] = [];
-      }
-      acc[worktreeId].push(session);
-      return acc;
-    },
-    {} as Record<string, Session[]>
-  );
+  const worktreesByBoard = {} as Record<string, Worktree[]>;
+  for (const worktree of worktreeById.values()) {
+    const boardId = worktree.board_id || 'unassigned';
+    if (!worktreesByBoard[boardId]) {
+      worktreesByBoard[boardId] = [];
+    }
+    worktreesByBoard[boardId].push(worktree);
+  }
 
   // Sort sessions within each worktree by last_updated (most recent first)
-  Object.keys(sessionsByWorktree).forEach((worktreeId) => {
-    sessionsByWorktree[worktreeId].sort((a, b) => {
-      const aTime = new Date(a.last_updated).getTime();
-      const bTime = new Date(b.last_updated).getTime();
-      return bTime - aTime; // DESC (most recent first)
-    });
-  });
+  // Convert Map to sorted Map for consistent rendering
+  const sortedSessionsByWorktree = new Map(
+    Array.from(sessionsByWorktree.entries()).map(([worktreeId, worktreeSessions]) => [
+      worktreeId,
+      [...worktreeSessions].sort((a, b) => {
+        const aTime = new Date(a.last_updated).getTime();
+        const bTime = new Date(b.last_updated).getTime();
+        return bTime - aTime; // DESC (most recent first)
+      }),
+    ])
+  );
 
   // Get the first task prompt for a session as its title
   const getSessionTitle = (sessionId: string): string => {
@@ -153,13 +141,13 @@ export const MobileNavTree: React.FC<MobileNavTreeProps> = ({
                     .sort((a, b) => {
                       // Sort worktrees by most recent session activity
                       const aMaxActivity = Math.max(
-                        ...(sessionsByWorktree[a.worktree_id] || []).map((s) =>
+                        ...(sortedSessionsByWorktree.get(a.worktree_id) || []).map((s) =>
                           new Date(s.last_updated).getTime()
                         ),
                         0
                       );
                       const bMaxActivity = Math.max(
-                        ...(sessionsByWorktree[b.worktree_id] || []).map((s) =>
+                        ...(sortedSessionsByWorktree.get(b.worktree_id) || []).map((s) =>
                           new Date(s.last_updated).getTime()
                         ),
                         0
@@ -167,7 +155,8 @@ export const MobileNavTree: React.FC<MobileNavTreeProps> = ({
                       return bMaxActivity - aMaxActivity; // DESC (most recent first)
                     })
                     .map((worktree) => {
-                      const worktreeSessions = sessionsByWorktree[worktree.worktree_id] || [];
+                      const worktreeSessions =
+                        sortedSessionsByWorktree.get(worktree.worktree_id) || [];
 
                       return {
                         key: worktree.worktree_id,

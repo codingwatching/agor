@@ -93,8 +93,8 @@ const BACKGROUND_PRESETS = [
 
 interface BoardsTableProps {
   boards: Board[];
-  sessions: Session[];
-  worktrees: Worktree[];
+  sessionsByWorktree: Map<string, Session[]>; // O(1) worktree filtering
+  worktreeById: Map<string, Worktree>;
   onCreate?: (board: Partial<Board>) => void;
   onUpdate?: (boardId: string, updates: Partial<Board>) => void;
   onDelete?: (boardId: string) => void;
@@ -102,8 +102,8 @@ interface BoardsTableProps {
 
 export const BoardsTable: React.FC<BoardsTableProps> = ({
   boards,
-  sessions,
-  worktrees,
+  sessionsByWorktree,
+  worktreeById,
   onCreate,
   onUpdate,
   onDelete,
@@ -128,20 +128,24 @@ export const BoardsTable: React.FC<BoardsTableProps> = ({
     const counts = new Map<string, number>();
 
     boards.forEach((board) => {
-      // Get worktrees for this board
-      const boardWorktrees = worktrees.filter((wt) => wt.board_id === board.board_id);
-      const boardWorktreeIds = new Set(boardWorktrees.map((wt) => wt.worktree_id));
+      // Get worktree IDs for this board by iterating the Map
+      const boardWorktreeIds: string[] = [];
+      for (const worktree of worktreeById.values()) {
+        if (worktree.board_id === board.board_id) {
+          boardWorktreeIds.push(worktree.worktree_id);
+        }
+      }
 
-      // Count sessions for these worktrees
-      const sessionCount = sessions.filter(
-        (session) => session.worktree_id && boardWorktreeIds.has(session.worktree_id)
+      // Count sessions for these worktrees using O(1) Map lookups
+      const sessionCount = boardWorktreeIds.flatMap(
+        (worktreeId) => sessionsByWorktree.get(worktreeId) || []
       ).length;
 
       counts.set(board.board_id, sessionCount);
     });
 
     return counts;
-  }, [boards, sessions, worktrees]);
+  }, [boards, sessionsByWorktree, worktreeById]);
 
   const handleCreate = () => {
     form.validateFields().then((values) => {

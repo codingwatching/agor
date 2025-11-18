@@ -71,11 +71,13 @@ const { Paragraph } = Typography;
 interface SessionCanvasProps {
   board: Board | null;
   client: AgorClient | null;
-  sessions: Session[];
+  sessionById: Map<string, Session>; // O(1) ID lookups
+  sessionsByWorktree: Map<string, Session[]>; // O(1) worktree filtering
   tasks: Record<string, Task[]>;
   users: User[];
   repos: Repo[];
   worktrees: Worktree[];
+  worktreeById: Map<string, Worktree>;
   boardObjects: BoardEntityObject[];
   comments: BoardComment[];
   currentUserId?: string;
@@ -226,9 +228,11 @@ const nodeTypes = {
 const SessionCanvas = ({
   board,
   client,
-  sessions,
+  sessionById,
+  sessionsByWorktree,
   repos,
   worktrees,
+  worktreeById,
   boardObjects,
   comments,
   tasks,
@@ -262,20 +266,8 @@ const SessionCanvas = ({
   const defaultBackground = DEFAULT_BACKGROUNDS[isDarkMode ? 'dark' : 'light'];
   const canvasBackground = board?.background_color ?? defaultBackground;
 
-  // Lookup maps to avoid repeated O(n) scans during render cycles
-  const sessionsByWorktree = useMemo(() => {
-    const map = new Map<string, Session[]>();
-    for (const session of sessions) {
-      if (!session.worktree_id) continue;
-      const list = map.get(session.worktree_id);
-      if (list) {
-        list.push(session);
-      } else {
-        map.set(session.worktree_id, [session]);
-      }
-    }
-    return map;
-  }, [sessions]);
+  // Note: sessionsByWorktree is now passed as prop (no longer computed locally)
+  // This enables efficient O(1) lookups and stable references across re-renders
 
   const boardObjectByWorktree = useMemo(() => {
     if (!board) return new Map<string, BoardEntityObject>();
@@ -304,13 +296,8 @@ const SessionCanvas = ({
     return map;
   }, [users]);
 
-  const worktreeById = useMemo(() => {
-    const map = new Map<string, Worktree>();
-    for (const worktree of worktrees) {
-      map.set(worktree.worktree_id, worktree);
-    }
-    return map;
-  }, [worktrees]);
+  // Note: worktreeById is now passed as prop from parent (no longer computed locally)
+  // This enables efficient O(1) lookups and stable references across re-renders
 
   // Tool state for canvas annotations
   const [activeTool, setActiveTool] = useState<
@@ -417,7 +404,7 @@ const SessionCanvas = ({
   const { getBoardObjectNodes, batchUpdateObjectPositions, deleteObject } = useBoardObjects({
     board,
     client,
-    sessions,
+    sessionsByWorktree,
     worktrees,
     boardObjects,
     setNodes,
@@ -2033,7 +2020,7 @@ const SessionCanvas = ({
       {triggerModal &&
         (() => {
           // Pre-render the template for display in modal
-          const session = sessions.find((s) => s.session_id === triggerModal.sessionId);
+          const session = sessionById.get(triggerModal.sessionId);
           let renderedPromptPreview = triggerModal.trigger.template;
 
           if (session) {
@@ -2096,7 +2083,7 @@ const SessionCanvas = ({
                   const { sessionId, trigger } = triggerModal;
 
                   // Find the session to get its data for Handlebars context
-                  const session = sessions.find((s) => s.session_id === sessionId);
+                  const session = sessionById.get(sessionId);
                   if (!session) {
                     console.error('❌ Session not found:', sessionId);
                     setTriggerModal(null);
@@ -2284,7 +2271,7 @@ const SessionCanvas = ({
           onCancel={() => setWorktreeTriggerModal(null)}
           worktreeId={worktreeTriggerModal.worktreeId}
           worktree={worktrees.find((wt) => wt.worktree_id === worktreeTriggerModal.worktreeId)}
-          sessions={sessions}
+          sessionsByWorktree={sessionsByWorktree}
           zoneName={worktreeTriggerModal.zoneName}
           trigger={worktreeTriggerModal.trigger}
           boardName={board?.name}

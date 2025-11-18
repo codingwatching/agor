@@ -47,14 +47,15 @@ export interface AppProps {
   user?: User | null;
   connected?: boolean;
   connecting?: boolean;
-  sessions: Session[];
+  sessionById: Map<string, Session>; // O(1) lookups by session_id - efficient, stable references
+  sessionsByWorktree: Map<string, Session[]>; // O(1) worktree-scoped filtering
   tasks: Record<string, Task[]>;
   availableAgents: AgenticToolOption[];
   boards: Board[];
   boardObjects: BoardEntityObject[]; // Positioned worktrees on boards
   comments: BoardComment[]; // Board comments for collaboration
   repos: Repo[];
-  worktrees: Worktree[];
+  worktreeById: Map<string, Worktree>; // Efficient worktree lookups
   users: User[]; // All users for multiplayer metadata
   mcpServers: MCPServer[];
   sessionMcpServerIds: Record<string, string[]>; // Map: sessionId -> mcpServerIds[]
@@ -119,14 +120,15 @@ export const App: React.FC<AppProps> = ({
   user,
   connected = false,
   connecting = false,
-  sessions,
+  sessionById,
+  sessionsByWorktree,
   tasks,
   availableAgents,
   boards,
   boardObjects,
   comments,
   repos,
-  worktrees,
+  worktreeById,
   users,
   mcpServers,
   sessionMcpServerIds,
@@ -243,7 +245,7 @@ export const App: React.FC<AppProps> = ({
   }, [boards, currentBoardId]);
 
   // Update favicon based on session activity on current board
-  useFaviconStatus(currentBoardId, sessions, boardObjects);
+  useFaviconStatus(currentBoardId, sessionsByWorktree, boardObjects);
 
   // Check if event stream is enabled in user preferences
   const eventStreamEnabled = user?.preferences?.eventStream?.enabled ?? false;
@@ -302,13 +304,13 @@ export const App: React.FC<AppProps> = ({
     setSelectedSessionId(sessionId);
 
     // Clear the ready_for_prompt flag when opening the conversation
-    const session = sessions.find((s) => s.session_id === sessionId);
+    const session = sessionById.get(sessionId);
     if (session?.ready_for_prompt) {
       onUpdateSession?.(sessionId, { ready_for_prompt: false });
     }
 
     // Clear the worktree's needs_attention flag when user interacts with it
-    const worktree = worktrees.find((w) => w.worktree_id === session?.worktree_id);
+    const worktree = session?.worktree_id ? worktreeById.get(session.worktree_id) : undefined;
     if (worktree?.needs_attention) {
       onUpdateWorktree?.(worktree.worktree_id, { needs_attention: false });
     }
@@ -316,7 +318,7 @@ export const App: React.FC<AppProps> = ({
 
   const handleSendPrompt = async (prompt: string, permissionMode?: PermissionMode) => {
     if (selectedSessionId) {
-      const session = sessions.find((s) => s.session_id === selectedSessionId);
+      const session = sessionById.get(selectedSessionId);
       const agentName = session?.agentic_tool || 'agentic_tool';
 
       // Show loading state
@@ -380,43 +382,34 @@ export const App: React.FC<AppProps> = ({
     [client, user?.user_id]
   );
 
-  const selectedSession = sessions.find((s) => s.session_id === selectedSessionId) || null;
+  const selectedSession = selectedSessionId ? sessionById.get(selectedSessionId) || null : null;
   const selectedSessionWorktree = selectedSession
-    ? worktrees.find((w) => w.worktree_id === selectedSession.worktree_id)
+    ? worktreeById.get(selectedSession.worktree_id)
     : null;
-  const sessionSettingsSession = sessionSettingsId
-    ? sessions.find((s) => s.session_id === sessionSettingsId)
-    : null;
+  const sessionSettingsSession = sessionSettingsId ? sessionById.get(sessionSettingsId) : null;
   const _selectedSessionTasks = selectedSessionId ? tasks[selectedSessionId] || [] : [];
   const currentBoard = boards.find((b) => b.board_id === currentBoardId);
 
   // Find worktree and repo for WorktreeModal
   const selectedWorktree = worktreeModalWorktreeId
-    ? worktrees.find((w) => w.worktree_id === worktreeModalWorktreeId)
+    ? worktreeById.get(worktreeModalWorktreeId)
     : null;
   const selectedWorktreeRepo = selectedWorktree
     ? repos.find((r) => r.repo_id === selectedWorktree.repo_id)
     : null;
   const worktreeSessions = selectedWorktree
-    ? sessions.filter((s) => s.worktree_id === selectedWorktree.worktree_id)
+    ? sessionsByWorktree.get(selectedWorktree.worktree_id) || []
     : [];
 
   // Find worktree for NewSessionModal
-  const newSessionWorktree = newSessionWorktreeId
-    ? worktrees.find((w) => w.worktree_id === newSessionWorktreeId)
-    : null;
+  const newSessionWorktree = newSessionWorktreeId ? worktreeById.get(newSessionWorktreeId) : null;
 
   // Filter worktrees by current board (via board_objects)
-  const boardWorktreeIds = boardObjects
+  // Optimized: use Map lookups instead of array.filter
+  const boardWorktrees = boardObjects
     .filter((bo) => bo.board_id === currentBoard?.board_id)
-    .map((bo) => bo.worktree_id);
-
-  const boardWorktrees = worktrees.filter((wt) => boardWorktreeIds.includes(wt.worktree_id));
-
-  // Filter sessions by current board's worktrees
-  const boardSessions = sessions.filter((session) =>
-    boardWorktreeIds.includes(session.worktree_id)
-  );
+    .map((bo) => worktreeById.get(bo.worktree_id))
+    .filter((wt): wt is Worktree => wt !== undefined);
 
   // Track active users via cursor presence
   const { activeUsers } = usePresence({
@@ -476,7 +469,7 @@ export const App: React.FC<AppProps> = ({
           users={users}
           currentUserId={user?.user_id || 'anonymous'}
           boardObjects={currentBoard?.objects}
-          worktrees={boardWorktrees}
+          worktreeById={worktreeById}
           collapsed={commentsPanelCollapsed}
           onToggleCollapse={() => setCommentsPanelCollapsed(!commentsPanelCollapsed)}
           onSendComment={(content) => onSendComment?.(currentBoardId || '', content)}
@@ -491,11 +484,13 @@ export const App: React.FC<AppProps> = ({
           <SessionCanvas
             board={currentBoard || null}
             client={client}
-            sessions={boardSessions}
+            sessionById={sessionById}
+            sessionsByWorktree={sessionsByWorktree}
             tasks={tasks}
             users={users}
             repos={repos}
             worktrees={boardWorktrees}
+            worktreeById={worktreeById}
             boardObjects={boardObjects}
             comments={comments}
             currentUserId={user?.user_id}
@@ -546,6 +541,7 @@ export const App: React.FC<AppProps> = ({
           onToggleCollapse={() => setEventStreamPanelCollapsed(!eventStreamPanelCollapsed)}
           events={events}
           onClear={clearEvents}
+          worktreeById={worktreeById}
         />
       </Content>
       {newSessionWorktreeId && (
@@ -567,7 +563,6 @@ export const App: React.FC<AppProps> = ({
         users={users}
         currentUserId={user?.user_id}
         repos={repos}
-        worktrees={worktrees}
         mcpServers={mcpServers}
         sessionMcpServerIds={selectedSessionId ? sessionMcpServerIds[selectedSessionId] || [] : []}
         open={!!selectedSessionId}
@@ -604,8 +599,9 @@ export const App: React.FC<AppProps> = ({
         boards={boards}
         boardObjects={boardObjects}
         repos={repos}
-        worktrees={worktrees}
-        sessions={sessions}
+        worktreeById={worktreeById}
+        sessionById={sessionById}
+        sessionsByWorktree={sessionsByWorktree}
         users={users}
         mcpServers={mcpServers}
         activeTab={effectiveSettingsTab}
@@ -672,8 +668,8 @@ export const App: React.FC<AppProps> = ({
         boards={boards}
         currentBoardId={currentBoardId}
         onBoardChange={setCurrentBoardId}
-        sessions={sessions}
-        worktrees={worktrees}
+        sessionsByWorktree={sessionsByWorktree}
+        worktreeById={worktreeById}
         onSessionClick={setSelectedSessionId}
       />
       <TerminalModal
@@ -698,7 +694,7 @@ export const App: React.FC<AppProps> = ({
         <EnvironmentLogsModal
           open={!!logsModalWorktreeId}
           onClose={() => setLogsModalWorktreeId(null)}
-          worktree={worktrees.find((w) => w.worktree_id === logsModalWorktreeId)!}
+          worktree={worktreeById.get(logsModalWorktreeId)!}
           client={client}
         />
       )}
