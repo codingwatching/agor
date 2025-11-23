@@ -154,7 +154,7 @@ export interface AgorExecutionSettings {
   /** Enable Unix user impersonation for executors (default: false) */
   run_as_unix_user?: boolean;
 
-  /** Default Unix user for executors when user not linked (e.g., 'agor_executor') */
+  /** Default Unix user for executors (default: 'agor', only used when run_as_unix_user: true) */
   executor_unix_user?: string;
 
   /** Maximum number of concurrent executors (default: 10) */

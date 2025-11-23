@@ -836,7 +836,9 @@ async function main() {
     }
 
     // Spawn executor process with Feathers/WebSocket mode
-    const executorPath = path.join(__dirname, '../../executor/dist/cli.js');
+    const dirname =
+      typeof __dirname !== 'undefined' ? __dirname : path.dirname(fileURLToPath(import.meta.url));
+    const executorPath = path.join(dirname, '../../executor/dist/cli.js');
     const daemonUrl = `http://localhost:${DAEMON_PORT}`;
 
     const executorProcess = spawn(
