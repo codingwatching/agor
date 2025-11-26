@@ -141,7 +141,14 @@ export class BoardsService extends DrizzleService<Board, Partial<Board>, BoardPa
     const userId = params?.user?.user_id || 'anonymous';
     this.boardRepo.validateBoardBlob(blob);
     const data = this.buildBoardDataFromBlob(blob, userId);
-    return super.create(data, this.withServerProvider(params)) as Promise<Board>;
+
+    // Create board through repository (not super.create to avoid double-emit issues)
+    const board = await this.boardRepo.create(data);
+
+    // Note: Events must be emitted by the caller using app.service('boards').emit()
+    // this.emit() doesn't work reliably in custom methods due to execution context
+
+    return board;
   }
 
   /**
@@ -200,7 +207,14 @@ export class BoardsService extends DrizzleService<Board, Partial<Board>, BoardPa
     const resolvedBoardId = await this.resolveBoardId(boardIdentifier);
     const blob = await this.boardRepo.toBlob(resolvedBoardId);
     const boardData = this.buildBoardDataFromBlob(blob, userId, name);
-    return super.create(boardData, this.withServerProvider(params)) as Promise<Board>;
+    // Create board through repository (not super.create to avoid double-emit issues)
+    const clonedBoard = await this.boardRepo.create(boardData);
+
+    // Note: Events must be emitted by the caller using app.service('boards').emit()
+    // this.emit() doesn't work reliably in custom methods due to execution context
+    // See: apps/agor-daemon/src/index.ts for examples of manual emission
+
+    return clonedBoard;
   }
 
   private async resolveBoardId(
@@ -218,13 +232,6 @@ export class BoardsService extends DrizzleService<Board, Partial<Board>, BoardPa
     }
 
     return board.board_id;
-  }
-
-  private withServerProvider(params?: BoardParams): BoardParams {
-    return {
-      ...(params ?? {}),
-      provider: params?.provider ?? 'server',
-    } as BoardParams;
   }
 
   private buildBoardDataFromBlob(
