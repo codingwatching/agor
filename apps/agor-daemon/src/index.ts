@@ -3633,35 +3633,48 @@ async function main() {
   app.use('/opencode/models', {
     async find() {
       try {
-        const opencodeConfig = config.opencode;
+        // Reload config to get latest OpenCode settings (no caching)
+        const freshConfig = await loadConfig();
+        const opencodeConfig = freshConfig.opencode;
         if (!opencodeConfig?.enabled) {
           throw new Error('OpenCode is not enabled in configuration');
         }
 
         const serverUrl = opencodeConfig.serverUrl || 'http://localhost:4096';
+        console.log('[OpenCode] Fetching models from server:', serverUrl);
+
+        // Fetch from /config/providers which returns only configured providers
+        // with models that are enabled in OpenCode settings
         const response = await fetch(`${serverUrl}/config/providers`);
 
         if (!response.ok) {
           throw new Error(`OpenCode server returned ${response.status}: ${response.statusText}`);
         }
 
-        // biome-ignore lint/suspicious/noExplicitAny: OpenCode API response structure not formally typed
-        const data = (await response.json()) as { providers?: any[]; default?: string };
+        // Response structure: { providers: Provider[], default: {[key: string]: string} }
+        // Provider has: { id, name, models: {[modelId]: Model} }
+        const data = (await response.json()) as {
+          providers: Array<{
+            id: string;
+            name: string;
+            models: Record<string, { name?: string }>;
+          }>;
+          default: Record<string, string>;
+        };
+
+        // Use all providers from this endpoint (they're already filtered to configured ones)
+        const connectedProviders = data.providers;
 
         // Transform to frontend-friendly format
-        // OpenCode returns: { providers: [{id, name, models: {modelId: {id, name, ...}}}] }
-        // We need to convert models object to array
-        // biome-ignore lint/suspicious/noExplicitAny: Dynamic provider structure from OpenCode API
-        const transformedProviders = (data.providers || []).map((provider: any) => ({
+        const transformedProviders = connectedProviders.map((provider) => ({
           id: provider.id,
           name: provider.name,
-          models: provider.models
-            ? // biome-ignore lint/suspicious/noExplicitAny: Dynamic model metadata from OpenCode API
-              Object.entries(provider.models).map(([modelId, modelMeta]: [string, any]) => ({
-                id: modelId,
-                name: modelMeta.name || modelId,
-              }))
-            : [],
+          models: Object.entries(provider.models)
+            .map(([modelId, modelMeta]) => ({
+              id: modelId,
+              name: modelMeta.name || modelId,
+            }))
+            .sort((a, b) => a.name.localeCompare(b.name)),
         }));
 
         return {
@@ -3688,15 +3701,27 @@ async function main() {
 
   // OpenCode health check endpoint - proxy to test connection
   app.use('/opencode/health', {
-    async find() {
+    // biome-ignore lint/suspicious/noExplicitAny: FeathersJS params type varies, runtime query param check
+    async find(params?: any) {
       try {
-        const opencodeConfig = config.opencode;
-        if (!opencodeConfig?.enabled) {
-          throw new Error('OpenCode is not enabled in configuration');
+        // Use serverUrl from query params if provided, otherwise fall back to saved config
+        let serverUrl: string;
+
+        if (params?.query?.serverUrl) {
+          // Test with the provided serverUrl (from frontend, not yet saved)
+          serverUrl = params.query.serverUrl;
+        } else {
+          // Fall back to saved config
+          const freshConfig = await loadConfig();
+          const opencodeConfig = freshConfig.opencode;
+          if (!opencodeConfig?.enabled) {
+            throw new Error('OpenCode is not enabled in configuration');
+          }
+          serverUrl = opencodeConfig.serverUrl || 'http://localhost:4096';
         }
 
-        const serverUrl = opencodeConfig.serverUrl || 'http://localhost:4096';
-        const response = await fetch(`${serverUrl}/health`);
+        // OpenCode doesn't have a /health endpoint - use /config as a lightweight test
+        const response = await fetch(`${serverUrl}/config`);
 
         return {
           connected: response.ok,
