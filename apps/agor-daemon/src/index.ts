@@ -1052,9 +1052,218 @@ async function main() {
     },
   });
 
+  // Require authentication for test-jwt endpoint to prevent abuse
+  // (hammering external APIs, using as proxy, resource exhaustion)
   app.service('mcp-servers/test-jwt').hooks({
     before: {
-      create: [requireAuth, requireMinimumRole('admin', 'test MCP server JWT auth')],
+      create: [requireAuth],
+    },
+  });
+
+  // Discover MCP server capabilities endpoint
+  app.use('/mcp-servers/discover', {
+    async create(data: { mcp_server_id: string }, params?: AuthenticatedParams) {
+      try {
+        const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+        const { SSEClientTransport } = await import('@modelcontextprotocol/sdk/client/sse.js');
+        const { resolveMCPAuthHeaders } = await import('@agor/core/tools/mcp/jwt-auth');
+
+        const mcpServerRepo = new MCPServerRepository(db);
+        const server = await mcpServerRepo.findById(data.mcp_server_id);
+
+        if (!server) {
+          return { success: false, error: 'MCP server not found' };
+        }
+
+        // SECURITY: Verify user has access to this MCP server
+        // Skip authorization for internal calls (params.provider is falsy)
+        if (params?.provider && params.user) {
+          const userId = params.user.user_id;
+
+          // For global servers, only the owner can discover them
+          // For session-scoped servers, admins can discover them (sessions service already checks ownership)
+          if (server.scope === 'global' && server.owner_user_id !== userId) {
+            return {
+              success: false,
+              error: 'Access denied: only server owner can discover this MCP server',
+            };
+          }
+
+          // For session-scoped servers, require admin role since discovery is a privileged operation
+          // that reveals server capabilities and can trigger outbound connections
+          if (server.scope === 'session') {
+            const userRole = params.user.role?.toLowerCase();
+            if (userRole !== 'admin' && userRole !== 'owner') {
+              return {
+                success: false,
+                error: 'Access denied: admin role required to discover session-scoped MCP servers',
+              };
+            }
+          }
+        }
+
+        // Infer transport from URL if not set (backwards compatibility)
+        const transport = server.transport || (server.url ? 'http' : 'stdio');
+
+        // Only support HTTP/SSE (stdio requires process spawning)
+        if (transport === 'stdio') {
+          return {
+            success: false,
+            error: `Tool discovery not supported for stdio servers (requires active session)`,
+          };
+        }
+
+        if (!server.url) {
+          return { success: false, error: 'Server URL not configured' };
+        }
+
+        console.log('[MCP Discovery] Starting discovery for:', server.name || server.mcp_server_id);
+        console.log('[MCP Discovery] URL:', server.url);
+        console.log('[MCP Discovery] Transport:', transport);
+
+        // Get auth headers
+        const authHeaders = await resolveMCPAuthHeaders(server.auth);
+        console.log('[MCP Discovery] Auth headers present:', !!authHeaders);
+        if (authHeaders) {
+          console.log('[MCP Discovery] Auth headers keys:', Object.keys(authHeaders));
+        }
+
+        // Build headers (auth + Accept for MCP servers that require it)
+        const headers: Record<string, string> = {
+          Accept: 'application/json, text/event-stream',
+        };
+        if (authHeaders) {
+          Object.assign(headers, authHeaders);
+        }
+
+        // Create SSE transport with headers
+        const sseTransport = new SSEClientTransport(new URL(server.url), {
+          requestInit: {
+            headers,
+          },
+        });
+
+        // Create MCP client
+        const client = new Client(
+          {
+            name: 'agor-discovery',
+            version: '1.0.0',
+          },
+          {
+            capabilities: {},
+          }
+        );
+
+        let connected = false;
+
+        try {
+          console.log('[MCP Discovery] Connecting...');
+
+          // Add timeout to prevent hanging indefinitely
+          const connectTimeout = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Connection timeout after 30 seconds')), 30000);
+          });
+
+          await Promise.race([client.connect(sseTransport), connectTimeout]);
+          connected = true;
+          console.log('[MCP Discovery] Connected!');
+
+          // List capabilities with timeout
+          const listTimeout = new Promise((_, reject) => {
+            setTimeout(
+              () => reject(new Error('List capabilities timeout after 15 seconds')),
+              15000
+            );
+          });
+
+          interface MCPListResult<T> {
+            [key: string]: T[];
+          }
+
+          type ToolsResult = MCPListResult<{
+            name: string;
+            description?: string;
+            inputSchema?: Record<string, unknown>;
+          }>;
+          type ResourcesResult = MCPListResult<{
+            uri: string;
+            name: string;
+            mimeType?: string;
+          }>;
+          type PromptsResult = MCPListResult<{
+            name: string;
+            description?: string;
+            arguments?: Array<{
+              name: string;
+              description?: string;
+              required?: boolean;
+            }>;
+          }>;
+
+          const [toolsResult, resourcesResult, promptsResult] = (await Promise.race([
+            Promise.all([client.listTools(), client.listResources(), client.listPrompts()]),
+            listTimeout,
+          ])) as [ToolsResult, ResourcesResult, PromptsResult];
+
+          console.log('[MCP Discovery] Found', toolsResult.tools.length, 'tools');
+          console.log('[MCP Discovery] Found', resourcesResult.resources.length, 'resources');
+          console.log('[MCP Discovery] Found', promptsResult.prompts.length, 'prompts');
+
+          // Update server with discovered capabilities
+          await mcpServerRepo.update(data.mcp_server_id, {
+            tools: toolsResult.tools.map((t) => ({
+              name: t.name,
+              description: t.description || '',
+              input_schema: t.inputSchema,
+            })),
+            resources: resourcesResult.resources.map((r) => ({
+              uri: r.uri,
+              name: r.name,
+              mimeType: r.mimeType,
+            })),
+            prompts: promptsResult.prompts.map((p) => ({
+              name: p.name,
+              description: p.description || '',
+              arguments: p.arguments?.map((a) => ({
+                name: a.name,
+                description: a.description || '',
+                required: a.required,
+              })),
+            })),
+          });
+
+          return {
+            success: true,
+            capabilities: {
+              tools: toolsResult.tools.length,
+              resources: resourcesResult.resources.length,
+              prompts: promptsResult.prompts.length,
+            },
+          };
+        } finally {
+          // Always close connection if it was established
+          if (connected) {
+            try {
+              await client.close();
+              console.log('[MCP Discovery] Connection closed');
+            } catch (closeError) {
+              console.error('[MCP Discovery] Error closing connection:', closeError);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('MCP discovery error:', error);
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+  });
+
+  app.service('mcp-servers/discover').hooks({
+    before: {
+      create: [requireAuth],
     },
   });
 

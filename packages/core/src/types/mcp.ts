@@ -56,7 +56,7 @@ export type JSONSchema = Record<string, unknown>;
 export interface MCPTool {
   name: string; // e.g., "mcp__filesystem__list_files"
   description: string;
-  input_schema: JSONSchema;
+  input_schema?: JSONSchema; // Optional - not all MCP servers provide schemas
 }
 
 /**
@@ -94,6 +94,12 @@ export interface MCPCapabilities {
   resources?: MCPResource[];
   prompts?: MCPPrompt[];
 }
+
+/**
+ * Tool permission setting
+ * Controls whether a tool requires permission approval
+ */
+export type ToolPermission = 'ask' | 'allow' | 'deny';
 
 /**
  * MCP Server entity
@@ -135,6 +141,9 @@ export interface MCPServer {
   tools?: MCPTool[];
   resources?: MCPResource[];
   prompts?: MCPPrompt[];
+
+  // Tool permissions (per-tool permission settings)
+  tool_permissions?: Record<string, ToolPermission>; // e.g., { "list_files": "allow", "write_file": "ask" }
 
   // Timestamps
   created_at: Date;
@@ -196,6 +205,11 @@ export interface UpdateMCPServerInput {
   auth?: MCPAuth;
   scope?: MCPScope;
   enabled?: boolean;
+  transport?: 'stdio' | 'http' | 'sse';
+  tool_permissions?: Record<string, ToolPermission>;
+  tools?: MCPTool[];
+  resources?: MCPResource[];
+  prompts?: MCPPrompt[];
 }
 
 /**

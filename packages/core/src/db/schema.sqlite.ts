@@ -648,7 +648,7 @@ export const mcpServers = sqliteTable(
         tools?: Array<{
           name: string;
           description: string;
-          input_schema: Record<string, unknown>;
+          input_schema?: Record<string, unknown>; // Optional - not all MCP servers provide schemas
         }>;
         resources?: Array<{
           uri: string;
@@ -664,6 +664,9 @@ export const mcpServers = sqliteTable(
             required?: boolean;
           }>;
         }>;
+
+        // Tool permissions configuration
+        tool_permissions?: Record<string, 'ask' | 'allow' | 'deny'>;
       }>()
       .notNull(),
   },
