@@ -126,9 +126,15 @@ function getMigrationsFolder(db: Database): string {
   const __dirname = dirname(__filename);
   const isProduction = __dirname.includes('/dist/');
   const dialect = isSQLiteDatabase(db) ? 'sqlite' : 'postgres';
-  // In production (dist/db/migrate.js), go up 2 levels to reach packages/core/
-  // In dev (src/db/migrate.ts), go up 2 levels to reach packages/core/
-  return join(__dirname, isProduction ? '../..' : '../..', 'drizzle', dialect);
+
+  // Detect if running from bundled structure (agor-live package)
+  // In bundled package: dist/core/db/index.js → go up 1 level to dist/core/
+  // In monorepo dev: src/db/migrate.ts → go up 2 levels to packages/core/
+  // In monorepo prod: dist/db/migrate.js → go up 2 levels to packages/core/
+  const isBundled = __dirname.includes('/dist/core/');
+  const levelsUp = isProduction && isBundled ? '..' : '../..';
+
+  return join(__dirname, levelsUp, 'drizzle', dialect);
 }
 
 /**
