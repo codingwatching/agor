@@ -398,11 +398,12 @@ export default class SyncUnix extends Command {
 
         // Prefetch all worktree ownerships in a single query to avoid N+1
         const userIds = validUsers.map((u) => u.user_id);
-        const allOwnerships = await select(db)
+        // biome-ignore lint/suspicious/noExplicitAny: Join query requires type assertion
+        const allOwnerships = await (db as any)
+          .select()
           .from(worktreeOwners)
           .innerJoin(worktrees, eq(worktreeOwners.worktree_id, worktrees.worktree_id))
-          .where(inArray(worktreeOwners.user_id, userIds))
-          .all();
+          .where(inArray(worktreeOwners.user_id, userIds));
 
         // Group ownerships by user_id for O(1) lookup
         const ownershipsByUser = new Map<string, WorktreeOwnership[]>();
