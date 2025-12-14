@@ -690,7 +690,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
       width={900}
       style={{ top: 40 }}
       styles={{
-        content: {
+        wrapper: {
           padding: 0,
           overflow: 'hidden',
         },
