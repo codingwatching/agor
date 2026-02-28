@@ -15,13 +15,7 @@
 import type { Message } from '@agor/core/types';
 import { theme } from 'antd';
 import { useMemo } from 'react';
-import { TodoListRenderer } from '../ToolUseRenderer/renderers/TodoListRenderer';
-
-interface TodoItem {
-  content: string;
-  activeForm: string;
-  status: 'pending' | 'in_progress' | 'completed';
-}
+import { parseTodosInput, TodoListRenderer } from '../ToolUseRenderer/renderers/TodoListRenderer';
 
 interface StickyTodoRendererProps {
   /**
@@ -50,8 +44,8 @@ export function StickyTodoRenderer({ messages }: StickyTodoRendererProps) {
           if (block.type === 'tool_use' && block.name === 'TodoWrite') {
             // Found the latest TodoWrite - return its todos and exit immediately
             const input = block.input as Record<string, unknown> | undefined;
-            const todos = input?.todos as TodoItem[] | undefined;
-            return todos || null;
+            const todos = parseTodosInput(input?.todos);
+            return todos.length > 0 ? todos : null;
           }
         }
       }
