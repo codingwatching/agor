@@ -9,7 +9,7 @@ import type {
   Worktree,
 } from '@agor/core/types';
 import { getPersistedAgentConfig, isPersistedAgent } from '@agor/core/types';
-import { Modal, Tabs } from 'antd';
+import { Badge, Modal, Tabs, theme } from 'antd';
 import { useMemo, useState } from 'react';
 import { mapToArray } from '@/utils/mapHelpers';
 import { AgentTab } from './tabs/AgentTab';
@@ -17,6 +17,7 @@ import { EnvironmentTab } from './tabs/EnvironmentTab';
 import { FilesTab } from './tabs/FilesTab';
 import { GeneralTab, type WorktreeUpdate } from './tabs/GeneralTab';
 import { ScheduleTab } from './tabs/ScheduleTab';
+import { SessionsTab } from './tabs/SessionsTab';
 
 export interface WorktreeModalProps {
   open: boolean;
@@ -39,6 +40,7 @@ export interface WorktreeModalProps {
     }
   ) => void;
   onOpenSettings?: () => void; // Navigate to Settings → Repositories
+  onSessionClick?: (sessionId: string) => void;
 }
 
 export const WorktreeModal: React.FC<WorktreeModalProps> = ({
@@ -56,7 +58,9 @@ export const WorktreeModal: React.FC<WorktreeModalProps> = ({
   onUpdateRepo,
   onArchiveOrDelete,
   onOpenSettings,
+  onSessionClick,
 }) => {
+  const { token } = theme.useToken();
   const [activeTab, setActiveTab] = useState('general');
 
   const isAgent = worktree ? isPersistedAgent(worktree) : false;
@@ -100,6 +104,31 @@ export const WorktreeModal: React.FC<WorktreeModalProps> = ({
           onUpdate={onUpdateWorktree}
           onArchiveOrDelete={onArchiveOrDelete}
           onClose={onClose}
+        />
+      ),
+    },
+    {
+      key: 'sessions',
+      label: (
+        <span>
+          Sessions{' '}
+          <Badge
+            count={sessions.length}
+            showZero
+            size="small"
+            style={{ backgroundColor: token.colorPrimaryBgHover }}
+          />
+        </span>
+      ),
+      children: (
+        <SessionsTab
+          worktree={worktree}
+          sessions={sessions}
+          client={client}
+          onSessionClick={(sessionId) => {
+            onSessionClick?.(sessionId);
+            onClose();
+          }}
         />
       ),
     },
