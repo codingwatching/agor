@@ -390,6 +390,11 @@ export default class Init extends Command {
       }
     }
 
+    // Prompt for persisted agent setup (unless --force or skipped prompts)
+    if (!skipPrompts) {
+      await this.promptPersistedAgent();
+    }
+
     // Success summary
     this.log('');
     this.log(chalk.green.bold('✅ Agor initialized successfully!'));
@@ -537,6 +542,56 @@ export default class Init extends Command {
     });
 
     this.log(`${chalk.green('   ✓')} Admin user created (${chalk.gray(email)})`);
+  }
+
+  /**
+   * Prompt user for persisted agent setup
+   *
+   * Stores intent in config.yaml for the UI wizard to pick up.
+   * The openclaw repo is public, so HTTPS always works.
+   */
+  private async promptPersistedAgent(): Promise<void> {
+    this.log('');
+    this.log(chalk.bold('🤖 Persisted Agent'));
+    this.log('');
+    this.log(
+      chalk.gray(
+        'A persisted agent is a long-lived AI-powered workspace for managing your Agor instance.'
+      )
+    );
+    this.log(
+      chalk.gray('It includes pre-configured tasks, templates, and an AI agent ready to help.')
+    );
+    this.log('');
+
+    const { setupPersistedAgent } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'setupPersistedAgent',
+        message: 'Set up your persisted agent?',
+        default: true,
+      },
+    ]);
+
+    if (setupPersistedAgent) {
+      const frameworkRepoUrl = 'https://github.com/mistercrunch/agor-openclaw.git';
+      await setConfigValue('onboarding.persistedAgentPending', true);
+      await setConfigValue('onboarding.frameworkRepoUrl', frameworkRepoUrl);
+      this.log(`${chalk.green('   ✓')} Persisted agent setup queued for the UI wizard`);
+
+      // Check for ANTHROPIC_API_KEY
+      if (!process.env.ANTHROPIC_API_KEY) {
+        this.log('');
+        this.log(
+          chalk.yellow(
+            '   💡 Tip: Set ANTHROPIC_API_KEY in your environment for Claude Code agents'
+          )
+        );
+        this.log(chalk.gray('   You can also configure API keys in the UI after setup'));
+      }
+    } else {
+      this.log(chalk.gray('   Skipped. You can set this up later from the UI.'));
+    }
   }
 
   /**

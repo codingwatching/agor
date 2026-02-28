@@ -1,24 +1,16 @@
-import { renderTemplate } from '@agor/core/templates/handlebars-helpers';
 import type { Board, Repo, Session, Worktree } from '@agor/core/types';
+import { isPersistedAgent } from '@agor/core/types';
 import {
   BranchesOutlined,
-  CheckCircleOutlined,
-  CloseCircleOutlined,
   CodeSandboxOutlined,
   DeleteOutlined,
   DropboxOutlined,
   EditOutlined,
   FolderOutlined,
-  GlobalOutlined,
-  LoadingOutlined,
-  MinusCircleOutlined,
-  PlayCircleOutlined,
   PlusOutlined,
-  PoweroffOutlined,
-  WarningOutlined,
+  RobotOutlined,
 } from '@ant-design/icons';
 import {
-  Badge,
   Button,
   Empty,
   Form,
@@ -35,6 +27,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { mapToArray } from '@/utils/mapHelpers';
 import { ArchiveDeleteWorktreeModal } from '../ArchiveDeleteWorktreeModal';
 import { WorktreeFormFields } from '../WorktreeFormFields';
+import { renderEnvCell } from './WorktreeEnvColumn';
 
 interface WorktreesTableProps {
   worktreeById: Map<string, Worktree>;
@@ -86,7 +79,9 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [isFormValid, setIsFormValid] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [archiveFilter, setArchiveFilter] = useState<'all' | 'active' | 'archived'>('active');
+  const [archiveFilter, setArchiveFilter] = useState<'all' | 'active' | 'archived' | 'agents'>(
+    'active'
+  );
   const [archiveDeleteModalOpen, setArchiveDeleteModalOpen] = useState(false);
   const [selectedWorktree, setSelectedWorktree] = useState<Worktree | null>(null);
   const [hoveredArchiveButton, setHoveredArchiveButton] = useState<string | null>(null);
@@ -140,66 +135,6 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
   const getRepoName = (repoId: string): string => {
     const repo = repoById.get(repoId as Repo['repo_id']);
     return repo?.name || 'Unknown Repo';
-  };
-
-  // Helper to get environment status icon
-  const getEnvStatusIcon = (worktree: Worktree) => {
-    const status = worktree.environment_instance?.status;
-    const healthStatus = worktree.environment_instance?.last_health_check?.status;
-
-    if (!status || status === 'stopped') {
-      return (
-        <Tooltip title="Environment stopped">
-          <MinusCircleOutlined style={{ color: token.colorTextDisabled }} />
-        </Tooltip>
-      );
-    }
-
-    if (status === 'starting' || status === 'stopping') {
-      return (
-        <Tooltip title={`Environment ${status}`}>
-          <LoadingOutlined style={{ color: token.colorPrimary }} />
-        </Tooltip>
-      );
-    }
-
-    if (status === 'error') {
-      return (
-        <Tooltip
-          title={`Error: ${worktree.environment_instance?.last_health_check?.message || 'Unknown'}`}
-        >
-          <CloseCircleOutlined style={{ color: token.colorError }} />
-        </Tooltip>
-      );
-    }
-
-    if (status === 'running') {
-      // Show health status if available
-      if (healthStatus === 'healthy') {
-        return (
-          <Tooltip title="Running (healthy)">
-            <CheckCircleOutlined style={{ color: token.colorSuccess }} />
-          </Tooltip>
-        );
-      }
-      if (healthStatus === 'unhealthy') {
-        return (
-          <Tooltip
-            title={`Running (unhealthy): ${worktree.environment_instance?.last_health_check?.message || ''}`}
-          >
-            <WarningOutlined style={{ color: token.colorWarning }} />
-          </Tooltip>
-        );
-      }
-      // Running but no health check yet
-      return (
-        <Tooltip title="Running">
-          <Badge status="processing" />
-        </Tooltip>
-      );
-    }
-
-    return null;
   };
 
   // Get selected repo's default branch
@@ -268,9 +203,13 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
       title: 'Name',
       dataIndex: 'name',
       key: 'name',
-      render: (name: string, _record: Worktree) => (
+      render: (name: string, record: Worktree) => (
         <Space>
-          <BranchesOutlined />
+          {isPersistedAgent(record) ? (
+            <RobotOutlined style={{ color: token.colorInfo }} />
+          ) : (
+            <BranchesOutlined />
+          )}
           <Typography.Text strong>{name}</Typography.Text>
         </Space>
       ),
@@ -281,73 +220,8 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
       width: 120,
       align: 'center' as const,
       render: (_: unknown, record: Worktree) => {
-        const status = record.environment_instance?.status;
-        const healthStatus = record.environment_instance?.last_health_check?.status;
         const repo = repos.find((r: Repo) => r.repo_id === record.repo_id);
-        const hasEnvConfig = !!repo?.environment_config;
-
-        const isRunningOrHealthy =
-          status === 'running' || status === 'starting' || healthStatus === 'healthy';
-
-        return (
-          <Space size={4}>
-            {getEnvStatusIcon(record)}
-            {hasEnvConfig && (
-              <>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<PlayCircleOutlined />}
-                  disabled={isRunningOrHealthy}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onStartEnvironment?.(record.worktree_id);
-                  }}
-                  style={{ padding: '0 4px' }}
-                />
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<PoweroffOutlined />}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onStopEnvironment?.(record.worktree_id);
-                  }}
-                  style={{ padding: '0 4px' }}
-                />
-                {repo.environment_config?.health_check?.url_template && (
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<GlobalOutlined />}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      // Render the URL template with worktree context
-                      const templateContext = {
-                        worktree: {
-                          unique_id: record.worktree_unique_id,
-                          name: record.name,
-                          path: record.path,
-                        },
-                        repo: {
-                          slug: repo.slug,
-                        },
-                      };
-                      const url = renderTemplate(
-                        repo.environment_config?.health_check?.url_template || '',
-                        templateContext
-                      );
-                      if (url) {
-                        window.open(url, '_blank');
-                      }
-                    }}
-                    style={{ padding: '0 4px' }}
-                  />
-                )}
-              </>
-            )}
-          </Space>
-        );
+        return renderEnvCell(record, repo, token, { onStartEnvironment, onStopEnvironment });
       },
     },
     {
@@ -463,12 +337,14 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
       (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     );
 
-    // Filter by archive status
+    // Filter by archive status / type
     let filtered = sorted;
     if (archiveFilter === 'active') {
       filtered = sorted.filter((w) => !w.archived);
     } else if (archiveFilter === 'archived') {
       filtered = sorted.filter((w) => w.archived);
+    } else if (archiveFilter === 'agents') {
+      filtered = sorted.filter((w) => !w.archived && isPersistedAgent(w));
     }
 
     // Filter by search term
@@ -521,6 +397,7 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
               style={{ width: 120 }}
               options={[
                 { value: 'active', label: 'Active' },
+                { value: 'agents', label: 'Agents' },
                 { value: 'all', label: 'All' },
                 { value: 'archived', label: 'Archived' },
               ]}
