@@ -445,6 +445,17 @@ interface RouteParams extends Params {
 // Priority: env vars > config.yaml > defaults (see getDatabaseUrl for details)
 const DB_PATH = getDatabaseUrl();
 
+/**
+ * Sanitize a user-provided field (name, email) before interpolating into prompts.
+ * Strips newlines and control characters to prevent prompt injection, and caps length.
+ */
+function sanitizeUserField(value: string, maxLength = 100): string {
+  return value
+    .replace(/[\r\n\t]/g, ' ')
+    .trim()
+    .substring(0, maxLength);
+}
+
 // Main async function
 async function main() {
   // Initialize Handlebars helpers for template rendering
@@ -4499,6 +4510,29 @@ async function main() {
         // This ensures WebSocket events flush immediately, not batched with request
         const useStreaming = data.stream !== false; // Default to true
 
+        // Build prompt for executor, adding prompter context when prompter differs from session owner.
+        // This helps agents know WHO is talking to them in multi-user sessions.
+        // NOTE: The task's full_prompt stores the original clean prompt, but the user message
+        // created by the executor WILL contain the prefix (so the UI shows it too).
+        let promptForExecutor = data.prompt;
+        const prompterUserId = params.user?.user_id;
+        if (prompterUserId && prompterUserId !== session.created_by) {
+          try {
+            const prompterUserRepo = new UsersRepository(db);
+            const prompterUser = await prompterUserRepo.findById(prompterUserId);
+            if (prompterUser) {
+              const prompterName = sanitizeUserField(prompterUser.name || prompterUser.email);
+              const prompterEmail = sanitizeUserField(prompterUser.email);
+              promptForExecutor = `[Prompted by: ${prompterName} (${prompterEmail})]\n\n${data.prompt}`;
+            }
+          } catch (err) {
+            console.warn(
+              `[Prompt] Failed to look up prompter user ${prompterUserId.substring(0, 8)}:`,
+              err
+            );
+          }
+        }
+
         // FEATHERS/WEBSOCKET MODE: Route through new executor architecture
         // Call the executeTask handler which spawns the executor process
         setImmediate(async () => {
@@ -4511,7 +4545,7 @@ async function main() {
               id,
               {
                 taskId: task.task_id,
-                prompt: data.prompt,
+                prompt: promptForExecutor,
                 permissionMode: data.permissionMode,
                 stream: useStreaming,
                 messageSource,
