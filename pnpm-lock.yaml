@@ -488,6 +488,9 @@ importers:
       jsonwebtoken:
         specifier: ^9.0.3
         version: 9.0.3
+      md-to-slack:
+        specifier: ^1.1.7
+        version: 1.1.7
       multer:
         specifier: ^2.1.1
         version: 2.1.1
@@ -599,6 +602,9 @@ importers:
       js-yaml:
         specifier: ^4.1.1
         version: 4.1.1
+      md-to-slack:
+        specifier: ^1.1.7
+        version: 1.1.7
       open:
         specifier: ^11.0.0
         version: 11.0.0
@@ -6554,6 +6560,10 @@ packages:
   mathjax-full@3.2.2:
     resolution: {integrity: sha512-+LfG9Fik+OuI8SLwsiR02IVdjcnRCy5MufYLi0C3TdMT56L/pjB0alMVGgoWJF8pN9Rc7FESycZB9BMNWIid5w==}
     deprecated: Version 4 replaces this package with the scoped package @mathjax/src
+
+  md-to-slack@1.1.7:
+    resolution: {integrity: sha512-DJsByDZGQaXEkwCw/V+luLsUPD58uAm2thJqYMPegdNVwFWDUxsgLsor/W1sKHI7GTyFWGuYSeD7EDrdZNG34w==}
+    engines: {node: '>=22.16.0'}
 
   mdast-util-find-and-replace@3.0.2:
     resolution: {integrity: sha512-Tmd1Vg/m3Xz43afeNxDIhWRtFZgM2VLyaf4vSTYwudTyeuTneoL3qtWMA5jeLyz/O1vDJmmV4QuScFCA2tBPwg==}
@@ -15980,6 +15990,10 @@ snapshots:
       mhchemparser: 4.2.1
       mj-context-menu: 0.6.1
       speech-rule-engine: 4.1.2
+
+  md-to-slack@1.1.7:
+    dependencies:
+      marked: 16.4.1
 
   mdast-util-find-and-replace@3.0.2:
     dependencies:
