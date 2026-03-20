@@ -129,17 +129,19 @@ export class LeaderboardService {
     }
 
     if (startDate) {
-      // Use Date object for Postgres compatibility (timestamp with time zone)
-      // For SQLite (stored as integer ms), Drizzle will auto-convert Date to ms
-      const startDateObj = new Date(startDate);
-      conditions.push(sql`${tasks.created_at} >= ${startDateObj}`);
+      const parsed = new Date(startDate);
+      if (Number.isNaN(parsed.getTime())) {
+        throw new Error(`Invalid startDate: "${startDate}". Expected ISO 8601 format.`);
+      }
+      conditions.push(sql`${tasks.created_at} >= ${parsed.toISOString()}`);
     }
 
     if (endDate) {
-      // Use Date object for Postgres compatibility (timestamp with time zone)
-      // For SQLite (stored as integer ms), Drizzle will auto-convert Date to ms
-      const endDateObj = new Date(endDate);
-      conditions.push(sql`${tasks.created_at} <= ${endDateObj}`);
+      const parsed = new Date(endDate);
+      if (Number.isNaN(parsed.getTime())) {
+        throw new Error(`Invalid endDate: "${endDate}". Expected ISO 8601 format.`);
+      }
+      conditions.push(sql`${tasks.created_at} <= ${parsed.toISOString()}`);
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
