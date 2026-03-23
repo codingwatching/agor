@@ -385,6 +385,8 @@ import { gatewayRouteHook } from './hooks/gateway-route';
 import { createBoardCommentsService } from './services/board-comments';
 import { createBoardObjectsService } from './services/board-objects';
 import { createBoardsService } from './services/boards';
+import { createCardTypesService } from './services/card-types';
+import { createCardsService } from './services/cards';
 import { createConfigService } from './services/config';
 import { createContextService } from './services/context';
 import { createFileService } from './services/file';
@@ -1149,6 +1151,12 @@ async function main() {
 
   // Register board-objects service (positioned entities on boards)
   app.use('/board-objects', createBoardObjectsService(db));
+
+  // Register card-types service (global card type definitions)
+  app.use('/card-types', createCardTypesService(db));
+
+  // Register cards service (generic entities on boards)
+  app.use('/cards', createCardsService(db));
 
   // Register board-comments service (human-to-human conversations)
   app.use('/board-comments', createBoardCommentsService(db));
@@ -2833,8 +2841,11 @@ async function main() {
                     if (hasAccess) {
                       authorizedBoardObjects.push(boardObject);
                     }
+                  } else if (boardObject.card_id) {
+                    // Card board objects: cards inherit board-level access (no per-card RBAC)
+                    authorizedBoardObjects.push(boardObject);
                   } else {
-                    // No worktree reference - allow access (e.g., zones, other board objects)
+                    // No worktree or card reference - allow access (e.g., zones, other board objects)
                     authorizedBoardObjects.push(boardObject);
                   }
                 }
@@ -2852,6 +2863,24 @@ async function main() {
             ]
           : []),
       ],
+    },
+  });
+
+  app.service('card-types').hooks({
+    before: {
+      all: [...getReadAuthHooks()],
+      create: [requireMinimumRole('member', 'create card types')],
+      patch: [requireMinimumRole('member', 'update card types')],
+      remove: [requireMinimumRole('member', 'delete card types')],
+    },
+  });
+
+  app.service('cards').hooks({
+    before: {
+      all: [...getReadAuthHooks()],
+      create: [requireMinimumRole('member', 'create cards')],
+      patch: [requireMinimumRole('member', 'update cards')],
+      remove: [requireMinimumRole('member', 'delete cards')],
     },
   });
 
@@ -3962,14 +3991,23 @@ async function main() {
 
           if (_action === 'deleteZone' && objectId) {
             if (!context.id) throw new Error('Board ID required');
+            // Look up zone position for coordinate translation
+            const board = await boardsService.get(context.id as string);
+            const zoneObj = board?.objects?.[objectId as string];
+            const zonePosition =
+              zoneObj && 'x' in zoneObj && 'y' in zoneObj
+                ? { x: zoneObj.x, y: zoneObj.y }
+                : undefined;
+
             // Clear zone_id on board objects before deleting the zone
-            // This prevents stale parentId references in React Flow
+            // Converts relative positions to absolute so entities don't jump
             const boardObjectsService = app.service(
               'board-objects'
             ) as unknown as import('./services/board-objects').BoardObjectsService;
             await boardObjectsService.clearZoneReferences(
               context.id as import('@agor/core/types').BoardID,
-              objectId as string
+              objectId as string,
+              zonePosition
             );
             const result = await boardsService.deleteZone(
               context.id as string,
