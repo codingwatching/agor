@@ -1042,6 +1042,7 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
       if (values.github_installation_id) {
         config.installation_id = Number(values.github_installation_id);
       }
+      // Form has preserve={true}, so all values are available even from collapsed panels.
       config.watch_repos = values.github_watch_repos ?? [];
       config.require_mention = values.github_require_mention ?? true;
       config.mention_name = values.github_mention_name || 'agor';
@@ -1059,27 +1060,13 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
       if (values.app_token) config.app_token = values.app_token;
       if (values.connection_mode) config.connection_mode = values.connection_mode;
 
-      // Message source configuration
+      // Form has preserve={true}, so all values are available even from collapsed panels.
       config.enable_channels = values.enable_channels ?? false;
       config.enable_groups = values.enable_groups ?? false;
       config.enable_mpim = values.enable_mpim ?? false;
       config.require_mention = values.require_mention ?? true;
       config.align_slack_users = values.align_slack_users ?? false;
-
-      // Channel whitelist
-      // Note: In edit mode, if the form field is mounted and user clears all tags,
-      // it will be an empty array. If undefined, it means the field wasn't touched
-      // (e.g., in create mode or if form control wasn't rendered), so we preserve
-      // the existing config value to avoid accidentally clearing a whitelist.
-      if (values.allowed_channel_ids && Array.isArray(values.allowed_channel_ids)) {
-        config.allowed_channel_ids = values.allowed_channel_ids;
-      } else if (values.allowed_channel_ids === undefined) {
-        // Preserve existing value if not provided (field not touched)
-        config.allowed_channel_ids = existingConfig?.allowed_channel_ids || [];
-      } else {
-        // Empty array or other falsy value - clear the whitelist
-        config.allowed_channel_ids = [];
-      }
+      config.allowed_channel_ids = values.allowed_channel_ids ?? [];
     }
 
     // Build agentic config from form values
@@ -1104,6 +1091,8 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
         : {}),
     };
 
+    // Form has preserve={true}, so agor_user_id is retained even when the
+    // "Post messages as" dropdown is hidden (GitHub alignment ON).
     return {
       name: values.name as string,
       channel_type: values.channel_type as ChannelType,
@@ -1452,7 +1441,7 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
         okText="Save"
         width={600}
       >
-        <Form form={editForm} layout="vertical" style={{ marginTop: 16 }}>
+        <Form form={editForm} layout="vertical" preserve style={{ marginTop: 16 }}>
           <ChannelFormFields
             form={editForm}
             mode="edit"
