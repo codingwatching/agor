@@ -14,13 +14,16 @@ import {
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
+  GithubOutlined,
   KeyOutlined,
+  LoadingOutlined,
   MessageOutlined,
   PlusOutlined,
   SlackOutlined,
   TeamOutlined,
   ThunderboltOutlined,
   ToolOutlined,
+  UserOutlined,
 } from '@ant-design/icons';
 import {
   Alert,
@@ -30,24 +33,30 @@ import {
   Form,
   type FormInstance,
   Input,
+  InputNumber,
   Modal,
   Popconfirm,
   Result,
   Select,
   Space,
+  Spin,
+  Steps,
   Switch,
   Table,
   Tag,
   Typography,
   theme,
 } from 'antd';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { getDaemonUrl } from '@/config/daemon';
 import { copyToClipboard } from '@/utils/clipboard';
 import { mapToSortedArray } from '@/utils/mapHelpers';
 import { useThemedMessage } from '@/utils/message';
 import { AgenticToolConfigForm } from '../AgenticToolConfigForm';
 import { AgentSelectionGrid } from '../AgentSelectionGrid';
 import { AVAILABLE_AGENTS } from '../AgentSelectionGrid/availableAgents';
+import { JSONEditor, validateJSON } from '../JSONEditor';
 
 interface GatewayChannelsTableProps {
   client: AgorClient | null;
@@ -63,6 +72,7 @@ interface GatewayChannelsTableProps {
 
 const CHANNEL_TYPE_OPTIONS: { value: ChannelType; label: string; icon: React.ReactNode }[] = [
   { value: 'slack', label: 'Slack', icon: <SlackOutlined /> },
+  { value: 'github', label: 'GitHub', icon: <GithubOutlined /> },
   { value: 'discord', label: 'Discord', icon: <MessageOutlined /> },
   { value: 'whatsapp', label: 'WhatsApp', icon: <MessageOutlined /> },
   { value: 'telegram', label: 'Telegram', icon: <MessageOutlined /> },
@@ -72,6 +82,8 @@ function getChannelTypeIcon(type: ChannelType): React.ReactNode {
   switch (type) {
     case 'slack':
       return <SlackOutlined />;
+    case 'github':
+      return <GithubOutlined />;
     default:
       return <MessageOutlined />;
   }
@@ -81,6 +93,8 @@ function getChannelTypeColor(type: ChannelType): string {
   switch (type) {
     case 'slack':
       return 'purple';
+    case 'github':
+      return 'default';
     case 'discord':
       return 'blue';
     case 'whatsapp':
@@ -111,6 +125,23 @@ const SectionLabel: React.FC<{ icon: React.ReactNode; title: string; subtitle?: 
   </Space>
 );
 
+// ============================================================================
+// GitHub App Setup Types & Helpers
+// ============================================================================
+
+/** Credentials fetched from the daemon after GitHub App manifest creation */
+/** Parameters passed via URL from the GitHub App setup callback */
+interface GitHubSetupParams {
+  installation_id?: string;
+}
+
+/** GitHub setup wizard steps */
+const GITHUB_SETUP_STEPS = [
+  { title: 'Create App' },
+  { title: 'Credentials' },
+  { title: 'Configure' },
+];
+
 /** Shared form fields for create and edit modals */
 const ChannelFormFields: React.FC<{
   form: FormInstance;
@@ -124,6 +155,12 @@ const ChannelFormFields: React.FC<{
   onAgentChange: (agent: string) => void;
   editingChannel?: GatewayChannel | null;
   onCopyKey?: (key: string) => void;
+  /** GitHub setup wizard state (managed by parent) */
+  githubStep: number;
+  onGithubStepChange: (step: number) => void;
+  githubSetupParams: GitHubSetupParams | null;
+  githubLoading: boolean;
+  githubError: string | null;
 }> = ({
   form,
   mode,
@@ -136,6 +173,11 @@ const ChannelFormFields: React.FC<{
   onAgentChange,
   editingChannel,
   onCopyKey,
+  githubStep,
+  onGithubStepChange,
+  githubSetupParams,
+  githubLoading,
+  githubError,
 }) => {
   // Watch message source settings for showing warnings/scope requirements
   const enableChannels = Form.useWatch('enable_channels', form) ?? false;
@@ -143,6 +185,7 @@ const ChannelFormFields: React.FC<{
   const enableMpim = Form.useWatch('enable_mpim', form) ?? false;
   const requireMention = Form.useWatch('require_mention', form) ?? true;
   const alignSlackUsers = Form.useWatch('align_slack_users', form) ?? false;
+  const alignGithubUsers = Form.useWatch('github_align_users', form) ?? false;
 
   const sourcesEnabled = enableChannels || enableGroups || enableMpim;
 
@@ -194,20 +237,23 @@ const ChannelFormFields: React.FC<{
         </Select>
       </Form.Item>
 
-      <Form.Item
-        label="Post messages as"
-        name="agor_user_id"
-        rules={[{ required: true, message: 'Please select a user' }]}
-        tooltip="Messages from this channel will be attributed to this Agor user. When user alignment is enabled, this acts as the fallback user."
-      >
-        <Select placeholder="Select a user" showSearch optionFilterProp="children">
-          {Array.from(userById.values()).map((u) => (
-            <Select.Option key={u.user_id} value={u.user_id}>
-              {u.name || u.email || u.user_id}
-            </Select.Option>
-          ))}
-        </Select>
-      </Form.Item>
+      {/* For GitHub channels, "Post messages as" lives in the User Alignment section */}
+      {channelType !== 'github' && (
+        <Form.Item
+          label="Post messages as"
+          name="agor_user_id"
+          rules={[{ required: true, message: 'Please select a user' }]}
+          tooltip="Sessions from this channel will run as this Agor user"
+        >
+          <Select placeholder="Select a user" showSearch optionFilterProp="children">
+            {Array.from(userById.values()).map((u) => (
+              <Select.Option key={u.user_id} value={u.user_id}>
+                {u.name || u.email || u.user_id}
+              </Select.Option>
+            ))}
+          </Select>
+        </Form.Item>
+      )}
 
       <Form.Item
         label="Enabled"
@@ -218,14 +264,366 @@ const ChannelFormFields: React.FC<{
         <Switch />
       </Form.Item>
 
-      {channelType !== 'slack' && (
+      {channelType !== 'slack' && channelType !== 'github' && (
         <Alert
           message={`${channelType.charAt(0).toUpperCase() + channelType.slice(1)} support coming soon`}
-          description="This platform integration is not yet available. Slack is currently the only supported platform."
+          description="This platform integration is not yet available. Slack and GitHub are currently supported."
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
         />
+      )}
+
+      {/* ── GitHub App Setup Wizard ── */}
+      {channelType === 'github' && (
+        <>
+          <Steps
+            current={githubStep}
+            size="small"
+            items={GITHUB_SETUP_STEPS}
+            style={{ marginBottom: 24 }}
+          />
+
+          {githubLoading && (
+            <div style={{ textAlign: 'center', padding: '24px 0' }}>
+              <Spin indicator={<LoadingOutlined spin />} />
+              <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
+                Loading GitHub App data...
+              </Typography.Text>
+            </div>
+          )}
+
+          {githubError && (
+            <Alert
+              type="error"
+              showIcon
+              message="GitHub Setup Error"
+              description={githubError}
+              style={{ marginBottom: 16 }}
+            />
+          )}
+
+          {/* Step 0: Create GitHub App */}
+          {githubStep === 0 && !githubLoading && mode === 'create' && (
+            <div style={{ marginBottom: 16 }}>
+              <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
+                Create a GitHub App to connect Agor to your repositories. This uses GitHub&apos;s
+                App Manifest flow — you&apos;ll be redirected to GitHub to authorize the app, then
+                brought back here to complete setup.
+              </Typography.Paragraph>
+
+              <Form.Item label="App Name" name="github_app_name">
+                <Input placeholder="Agor (optional — defaults to 'Agor')" />
+              </Form.Item>
+
+              <Form.Item
+                label="Target Organization"
+                name="github_org"
+                tooltip="Leave empty to create the app under your personal GitHub account"
+              >
+                <Input placeholder="my-org (optional)" />
+              </Form.Item>
+
+              <Button
+                type="primary"
+                icon={<GithubOutlined />}
+                block
+                onClick={() => {
+                  const daemonUrl = getDaemonUrl();
+                  const params = new URLSearchParams();
+                  const appName = form.getFieldValue('github_app_name');
+                  const org = form.getFieldValue('github_org');
+                  if (appName) params.set('name', appName);
+                  if (org) params.set('org', org);
+                  const qs = params.toString();
+                  window.open(`${daemonUrl}/api/github/setup/new${qs ? `?${qs}` : ''}`, '_blank');
+                }}
+              >
+                Create GitHub App on GitHub
+              </Button>
+
+              <Button
+                type="default"
+                block
+                onClick={() => onGithubStepChange(1)}
+                style={{ marginTop: 12 }}
+              >
+                I&apos;ve created the app — enter credentials
+              </Button>
+            </div>
+          )}
+
+          {/* Step 1: Installation Picker */}
+          {githubStep >= 1 && !githubLoading && (
+            <div style={{ marginBottom: 16, display: githubStep === 1 ? undefined : 'none' }}>
+              <Alert
+                type="info"
+                showIcon
+                message="Enter your GitHub App credentials"
+                description={
+                  <span>
+                    On your GitHub App&apos;s settings page:
+                    <br />
+                    1. Copy the <strong>App ID</strong> (shown at the top under &quot;About&quot;)
+                    <br />
+                    2. Scroll to &quot;Private keys&quot; and click{' '}
+                    <strong>&quot;Generate a private key&quot;</strong>
+                    <br />
+                    3. Paste the downloaded .pem file contents below
+                  </span>
+                }
+                style={{ marginBottom: 16 }}
+              />
+
+              <Form.Item
+                label="App ID"
+                name="github_app_id"
+                tooltip="Found on your GitHub App's settings page (General → About)"
+              >
+                <Input placeholder="123456" />
+              </Form.Item>
+
+              <Form.Item
+                label="Private Key (PEM)"
+                name="github_private_key"
+                tooltip="Generate a private key on your GitHub App's settings page, then paste the .pem file contents"
+              >
+                <Input.TextArea
+                  rows={4}
+                  placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;..."
+                  style={{ fontFamily: 'monospace', fontSize: 11 }}
+                />
+              </Form.Item>
+
+              {githubError && (
+                <Alert type="error" showIcon message={githubError} style={{ marginBottom: 12 }} />
+              )}
+
+              <Button
+                type="primary"
+                onClick={() => {
+                  const appId = form.getFieldValue('github_app_id');
+                  const pem = form.getFieldValue('github_private_key');
+                  if (!appId || !pem) {
+                    const errors: { name: string; errors: string[] }[] = [];
+                    if (!appId)
+                      errors.push({ name: 'github_app_id', errors: ['Enter your GitHub App ID'] });
+                    if (!pem)
+                      errors.push({
+                        name: 'github_private_key',
+                        errors: ['Paste your GitHub App private key'],
+                      });
+                    form.setFields(errors);
+                    return;
+                  }
+                  onGithubStepChange(2);
+                }}
+                style={{ marginTop: 8 }}
+              >
+                Next: Configure Channel
+              </Button>
+            </div>
+          )}
+
+          {/* Step 2: Configuration */}
+          {githubStep === 2 && !githubLoading && (
+            <Collapse
+              ghost
+              defaultActiveKey={mode === 'create' ? ['github-config'] : []}
+              style={{ marginLeft: -16, marginRight: -16 }}
+              items={[
+                // ── Credentials (edit mode) ──
+                ...(mode === 'edit'
+                  ? [
+                      {
+                        key: 'github-credentials',
+                        label: (
+                          <SectionLabel
+                            icon={<GithubOutlined />}
+                            title="App Credentials"
+                            subtitle={
+                              editingChannel?.config &&
+                              (editingChannel.config as Record<string, unknown>).private_key
+                                ? 'configured'
+                                : 'not set'
+                            }
+                          />
+                        ),
+                        children: (
+                          <>
+                            <Form.Item
+                              label="App ID"
+                              name="github_app_id"
+                              tooltip="Found on your GitHub App's settings page (General → About)"
+                            >
+                              <Input placeholder="123456" />
+                            </Form.Item>
+                            <Form.Item
+                              label="Private Key (PEM)"
+                              name="github_private_key"
+                              tooltip="Leave empty to keep the existing key. Paste a new .pem to replace it."
+                            >
+                              <Input.TextArea
+                                rows={3}
+                                placeholder={
+                                  editingChannel?.config &&
+                                  (editingChannel.config as Record<string, unknown>).private_key
+                                    ? '(private key is set — paste new key to replace)'
+                                    : '-----BEGIN RSA PRIVATE KEY-----\n...'
+                                }
+                                style={{ fontFamily: 'monospace', fontSize: 11 }}
+                              />
+                            </Form.Item>
+                          </>
+                        ),
+                      },
+                    ]
+                  : []),
+                {
+                  key: 'github-config',
+                  label: (
+                    <SectionLabel
+                      icon={<GithubOutlined />}
+                      title="GitHub Settings"
+                      subtitle="polling & mentions"
+                    />
+                  ),
+                  children: (
+                    <>
+                      <Form.Item
+                        label="Watch Repos"
+                        name="github_watch_repos"
+                        tooltip="Repos to watch for @mentions. Leave empty to watch all repos accessible to the installation."
+                      >
+                        <Select
+                          mode="tags"
+                          placeholder="owner/repo (leave empty for all)"
+                          tokenSeparators={[',', ' ']}
+                        />
+                      </Form.Item>
+
+                      <Form.Item
+                        label="Require @mention"
+                        name="github_require_mention"
+                        valuePropName="checked"
+                        initialValue={true}
+                        tooltip="Only respond to PR/issue comments that @mention the bot"
+                      >
+                        <Switch />
+                      </Form.Item>
+
+                      <Form.Item
+                        label="Mention Name"
+                        name="github_mention_name"
+                        tooltip="The name users type to trigger the bot (e.g., 'agor' for @agor)"
+                        initialValue="agor"
+                      >
+                        <Input prefix="@" placeholder="agor" />
+                      </Form.Item>
+
+                      <Form.Item
+                        label="Poll Interval (seconds)"
+                        name="github_poll_interval_s"
+                        initialValue={30}
+                        tooltip="How frequently to poll the GitHub API for new mentions"
+                      >
+                        <InputNumber min={10} max={300} style={{ width: '100%' }} />
+                      </Form.Item>
+                    </>
+                  ),
+                },
+                // ── User Alignment ──
+                {
+                  key: 'user-alignment',
+                  label: (
+                    <SectionLabel
+                      icon={<UserOutlined />}
+                      title="User Alignment"
+                      subtitle="Map GitHub users to Agor accounts"
+                    />
+                  ),
+                  children: (
+                    <>
+                      <Form.Item
+                        label="Enable User Alignment"
+                        name="github_align_users"
+                        valuePropName="checked"
+                        initialValue={false}
+                        tooltip="When enabled, GitHub users are mapped to Agor users. Unmapped users are rejected."
+                      >
+                        <Switch />
+                      </Form.Item>
+                      {alignGithubUsers ? (
+                        <Form.Item
+                          label="User Map"
+                          name="github_user_map"
+                          tooltip="JSON object mapping GitHub logins to Agor email addresses"
+                          rules={[{ validator: validateJSON }]}
+                        >
+                          <JSONEditor
+                            rows={4}
+                            placeholder={'{\n  "octocat": "user@example.com"\n}'}
+                          />
+                        </Form.Item>
+                      ) : (
+                        <Form.Item
+                          label="Post messages as"
+                          name="agor_user_id"
+                          rules={[{ required: true, message: 'Please select a user' }]}
+                          tooltip="All sessions from this channel will run as this Agor user"
+                        >
+                          <Select
+                            placeholder="Select a user"
+                            showSearch
+                            optionFilterProp="children"
+                          >
+                            {Array.from(userById.values()).map((u) => (
+                              <Select.Option key={u.user_id} value={u.user_id}>
+                                {u.name || u.email || u.user_id}
+                              </Select.Option>
+                            ))}
+                          </Select>
+                        </Form.Item>
+                      )}
+                    </>
+                  ),
+                },
+                // ── Agentic Tool Configuration ──
+                {
+                  key: 'agentic-tool-config',
+                  label: (
+                    <SectionLabel
+                      icon={<ThunderboltOutlined />}
+                      title="Agent Configuration"
+                      subtitle={selectedAgent}
+                    />
+                  ),
+                  children: (
+                    <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        Configure which agent and settings to use for sessions created from this
+                        channel.
+                      </Typography.Text>
+                      <AgentSelectionGrid
+                        agents={AVAILABLE_AGENTS}
+                        selectedAgentId={selectedAgent}
+                        onSelect={onAgentChange}
+                        columns={2}
+                        showHelperText={false}
+                        showComparisonLink={false}
+                      />
+                      <AgenticToolConfigForm
+                        agenticTool={selectedAgent as AgenticToolName}
+                        mcpServerById={mcpServerById}
+                        showHelpText={false}
+                      />
+                    </Space>
+                  ),
+                },
+              ]}
+            />
+          )}
+        </>
       )}
 
       {/* ── Collapsible sections (Slack only) ── */}
@@ -553,6 +951,39 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
   const [createForm] = Form.useForm();
   const [editForm] = Form.useForm();
 
+  // ── GitHub App Setup State (lifted from ChannelFormFields) ──
+  const [githubStep, setGithubStep] = useState(0);
+  const [githubLoading, setGithubLoading] = useState(false);
+  const [githubError, setGithubError] = useState<string | null>(null);
+  const [githubSetupParams, setGithubSetupParams] = useState<GitHubSetupParams | null>(null);
+
+  // Detect GitHub setup callback params from URL
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const installationId = params.get('installation_id');
+
+    if (installationId) {
+      setGithubSetupParams({ installation_id: installationId });
+      setChannelType('github');
+      setGithubStep(1); // Skip to credentials step since app is already created
+      setCreateModalOpen(true);
+      // Clean up URL params
+      navigate('/', { replace: true });
+    }
+  }, [location.search, navigate]);
+
+  // No automatic credential fetch — user provides App ID and PEM manually
+
+  const resetGithubState = useCallback(() => {
+    setGithubStep(0);
+    setGithubLoading(false);
+    setGithubError(null);
+    setGithubSetupParams(null);
+  }, []);
+
   // Pre-populate agentic config form with user defaults when agent changes
   useEffect(() => {
     const agentDefaults = currentUser?.default_agentic_config?.[selectedAgent as AgenticToolName];
@@ -578,13 +1009,36 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
     // back to the server. The API redacts tokens to '••••••••' — if we spread
     // that into the config object, the backend would save the sentinel as the
     // actual token (wiping the real credentials).
-    const SENSITIVE_FIELDS = ['bot_token', 'app_token', 'signing_secret'];
+    const SENSITIVE_FIELDS = ['bot_token', 'app_token', 'signing_secret', 'private_key'];
     const sanitizedExisting = { ...(existingConfig || {}) };
     for (const field of SENSITIVE_FIELDS) {
       delete sanitizedExisting[field];
     }
     const config: Record<string, unknown> = { ...sanitizedExisting };
-    if (values.channel_type === 'slack') {
+    if (values.channel_type === 'github') {
+      // GitHub App credentials from form input
+      if (values.github_app_id) {
+        config.app_id = Number(values.github_app_id);
+      }
+      if (values.github_private_key) {
+        config.private_key = values.github_private_key;
+      }
+      if (values.github_installation_id) {
+        config.installation_id = Number(values.github_installation_id);
+      }
+      config.watch_repos = values.github_watch_repos ?? [];
+      config.require_mention = values.github_require_mention ?? true;
+      config.mention_name = values.github_mention_name || 'agor';
+      config.poll_interval_ms = ((values.github_poll_interval_s as number) ?? 30) * 1000;
+      config.align_github_users = values.github_align_users ?? false;
+      if (values.github_user_map) {
+        try {
+          config.user_map = JSON.parse(values.github_user_map as string);
+        } catch {
+          // validateJSON rule handles the error display
+        }
+      }
+    } else if (values.channel_type === 'slack') {
       if (values.bot_token) config.bot_token = values.bot_token;
       if (values.app_token) config.app_token = values.app_token;
       if (values.connection_mode) config.connection_mode = values.connection_mode;
@@ -662,6 +1116,7 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
       createForm.resetFields();
       setCreateModalOpen(false);
       setChannelType('slack');
+      resetGithubState();
     } catch (error: unknown) {
       const err = error as { errorFields?: { errors: string[] }[]; message?: string };
       if (err.errorFields?.length) {
@@ -681,20 +1136,12 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
 
     const config = channel.config as Record<string, unknown>;
 
-    editForm.setFieldsValue({
+    const formValues: Record<string, unknown> = {
       name: channel.name,
       channel_type: channel.channel_type,
       target_worktree_id: channel.target_worktree_id,
       agor_user_id: channel.agor_user_id,
       enabled: channel.enabled,
-      connection_mode: config?.connection_mode || 'socket',
-      // Message source configuration
-      enable_channels: config?.enable_channels ?? false,
-      enable_groups: config?.enable_groups ?? false,
-      enable_mpim: config?.enable_mpim ?? false,
-      require_mention: config?.require_mention ?? true,
-      align_slack_users: config?.align_slack_users ?? false,
-      allowed_channel_ids: (config?.allowed_channel_ids as string[]) ?? [],
       // Agentic config fields
       permissionMode: channel.agentic_config?.permissionMode,
       modelConfig: channel.agentic_config?.modelConfig,
@@ -702,7 +1149,31 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
       codexSandboxMode: channel.agentic_config?.codexSandboxMode,
       codexApprovalPolicy: channel.agentic_config?.codexApprovalPolicy,
       codexNetworkAccess: channel.agentic_config?.codexNetworkAccess,
-    });
+    };
+
+    if (channel.channel_type === 'slack') {
+      formValues.connection_mode = config?.connection_mode || 'socket';
+      formValues.enable_channels = config?.enable_channels ?? false;
+      formValues.enable_groups = config?.enable_groups ?? false;
+      formValues.enable_mpim = config?.enable_mpim ?? false;
+      formValues.require_mention = config?.require_mention ?? true;
+      formValues.align_slack_users = config?.align_slack_users ?? false;
+      formValues.allowed_channel_ids = (config?.allowed_channel_ids as string[]) ?? [];
+    } else if (channel.channel_type === 'github') {
+      formValues.github_app_id = config?.app_id;
+      formValues.github_installation_id = config?.installation_id;
+      formValues.github_watch_repos = (config?.watch_repos as string[]) ?? [];
+      formValues.github_require_mention = config?.require_mention ?? true;
+      formValues.github_mention_name = (config?.mention_name as string) || 'agor';
+      formValues.github_poll_interval_s = ((config?.poll_interval_ms as number) ?? 30000) / 1000;
+      formValues.github_align_users = config?.align_github_users ?? false;
+      const userMap = config?.user_map as Record<string, string> | undefined;
+      if (userMap && typeof userMap === 'object' && Object.keys(userMap).length > 0) {
+        formValues.github_user_map = JSON.stringify(userMap, null, 2);
+      }
+    }
+
+    editForm.setFieldsValue(formValues);
     setEditModalOpen(true);
   };
 
@@ -855,7 +1326,7 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
         }}
       >
         <Typography.Text type="secondary">
-          Route messages from Slack, Discord, and other platforms to Agor sessions.
+          Route messages from Slack, GitHub, and other platforms to Agor sessions.
         </Typography.Text>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)}>
           Add Channel
@@ -921,11 +1392,16 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
           setCreateModalOpen(false);
           setChannelType('slack');
           setSelectedAgent('claude-code');
+          resetGithubState();
         }}
         okText="Create"
+        okButtonProps={{
+          // Hide the Create button when GitHub setup hasn't reached the config step
+          style: channelType === 'github' && githubStep < 2 ? { display: 'none' } : undefined,
+        }}
         width={600}
       >
-        <Form form={createForm} layout="vertical" style={{ marginTop: 16 }}>
+        <Form form={createForm} layout="vertical" preserve style={{ marginTop: 16 }}>
           <ChannelFormFields
             form={createForm}
             mode="create"
@@ -936,6 +1412,11 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
             mcpServerById={mcpServerById}
             selectedAgent={selectedAgent}
             onAgentChange={setSelectedAgent}
+            githubStep={githubStep}
+            onGithubStepChange={setGithubStep}
+            githubSetupParams={githubSetupParams}
+            githubLoading={githubLoading}
+            githubError={githubError}
           />
         </Form>
       </Modal>
@@ -968,6 +1449,11 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
             onAgentChange={setSelectedAgent}
             editingChannel={editingChannel}
             onCopyKey={handleCopyKey}
+            githubStep={2}
+            onGithubStepChange={() => {}}
+            githubSetupParams={null}
+            githubLoading={false}
+            githubError={null}
           />
         </Form>
       </Modal>
@@ -1037,6 +1523,28 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
                       message sources)
                     </li>
                     <li>The gateway will automatically connect when the channel is enabled</li>
+                  </ol>
+                }
+                type="info"
+                showIcon
+              />
+            )}
+            {createdChannelType === 'github' && (
+              <Alert
+                message="GitHub Channel Ready"
+                description={
+                  <ol style={{ margin: 0, paddingLeft: 20, fontSize: 12 }}>
+                    <li>The GitHub App is connected and polling will begin automatically</li>
+                    <li>
+                      Use <code>@agor</code> (or your configured mention name) in PR or issue
+                      comments to trigger the bot
+                    </li>
+                    <li>
+                      Agor will create a session for each conversation and respond in-line on GitHub
+                    </li>
+                    <li>
+                      No webhooks needed — Agor polls the GitHub API on the configured interval
+                    </li>
                   </ol>
                 }
                 type="info"
