@@ -506,7 +506,18 @@ export class GatewayService {
       return;
     }
 
-    // Start or restart the listener
+    // Stop existing listener first so config changes are picked up.
+    // startChannelListener() is a no-op if a listener already exists,
+    // so we must tear down the old one before creating a new connector
+    // with the updated config (e.g. enable_channels toggled).
+    if (this.activeListeners.has(channelId)) {
+      console.log(
+        `[gateway] Restarting listener for channel "${channel.name}" to pick up config changes`
+      );
+      await this.stopChannelListener(channelId);
+    }
+
+    // Start with fresh config
     await this.startChannelListener(channel);
   }
 
@@ -519,14 +530,22 @@ export class GatewayService {
       return; // Not listening
     }
 
+    // Always remove from activeListeners so a fresh start can proceed,
+    // even if stopListening() throws (e.g. socket already closed).
+    this.activeListeners.delete(channelId);
+
     try {
       if (connector.stopListening) {
         await connector.stopListening();
       }
-      this.activeListeners.delete(channelId);
       console.log(`[gateway] Listener stopped for channel ${channelId.substring(0, 8)}`);
     } catch (error) {
-      console.error(`[gateway] Error stopping listener for ${channelId}:`, error);
+      // Old socket may still be alive — duplicate inbound messages are possible
+      // until the next daemon restart. See: listener lifecycle serialization (tech debt).
+      console.error(
+        `[gateway] Error stopping listener for ${channelId} (old socket may still be alive):`,
+        error
+      );
     }
   }
 
