@@ -66,6 +66,9 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
   const isFormValid = !!selectedAgent;
 
   // Reset form when modal opens, using user defaults if available
+  // Only depends on `open` — worktree/user refs may change while modal is open
+  // and we must not wipe user edits on live WebSocket refreshes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally only reset on modal open
   useEffect(() => {
     if (!open) return;
 
@@ -75,28 +78,41 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
     // Get default config for the selected agent
     const agentDefaults = currentUser?.default_agentic_config?.['claude-code'];
 
+    // MCP inheritance: worktree config > user defaults
+    const worktreeMcpIds = worktree?.mcp_server_ids;
+    const effectiveMcpServerIds =
+      worktreeMcpIds && worktreeMcpIds.length > 0
+        ? worktreeMcpIds
+        : agentDefaults?.mcpServerIds || [];
+
     form.setFieldsValue({
       title: '',
       initialPrompt: '',
       permissionMode: agentDefaults?.permissionMode || getDefaultPermissionMode('claude-code'),
-      mcpServerIds: agentDefaults?.mcpServerIds || [],
+      mcpServerIds: effectiveMcpServerIds,
       modelConfig: agentDefaults?.modelConfig,
       codexSandboxMode: agentDefaults?.codexSandboxMode || 'workspace-write',
       codexApprovalPolicy: agentDefaults?.codexApprovalPolicy || 'on-request',
       codexNetworkAccess: agentDefaults?.codexNetworkAccess ?? false,
     });
-  }, [open, form, currentUser]);
+  }, [open, form]);
 
   // Update permission mode and other defaults when agent changes
   useEffect(() => {
     if (selectedAgent) {
       const agentDefaults = currentUser?.default_agentic_config?.[selectedAgent as AgenticToolName];
 
+      // MCP inheritance: worktree config > user defaults
+      const effectiveMcpServerIds =
+        worktree?.mcp_server_ids && worktree.mcp_server_ids.length > 0
+          ? worktree.mcp_server_ids
+          : agentDefaults?.mcpServerIds || [];
+
       form.setFieldsValue({
         permissionMode:
           agentDefaults?.permissionMode ||
           getDefaultPermissionMode((selectedAgent as AgenticToolName) || 'claude-code'),
-        mcpServerIds: agentDefaults?.mcpServerIds || [],
+        mcpServerIds: effectiveMcpServerIds,
         modelConfig: agentDefaults?.modelConfig,
         ...(selectedAgent === 'codex'
           ? {
@@ -111,7 +127,7 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
             }),
       });
     }
-  }, [selectedAgent, form, currentUser]);
+  }, [selectedAgent, form, currentUser, worktree?.mcp_server_ids]);
 
   const handleCreate = () => {
     form.validateFields().then((values) => {
@@ -121,6 +137,11 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
       // Get user defaults for the selected agent (fallback if form fields weren't mounted)
       const agentDefaults = currentUser?.default_agentic_config?.[selectedAgent as AgenticToolName];
 
+      // MCP fallback must respect worktree > user defaults (same as open-reset effect)
+      const worktreeMcpIds = worktree?.mcp_server_ids;
+      const fallbackMcpServerIds =
+        worktreeMcpIds && worktreeMcpIds.length > 0 ? worktreeMcpIds : agentDefaults?.mcpServerIds;
+
       const config: NewSessionConfig = {
         worktree_id: worktreeId,
         agent: selectedAgent,
@@ -128,7 +149,7 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
         initialPrompt: values.initialPrompt,
         // Use form values if present (user expanded advanced), otherwise use defaults
         modelConfig: values.modelConfig ?? agentDefaults?.modelConfig,
-        mcpServerIds: values.mcpServerIds ?? agentDefaults?.mcpServerIds,
+        mcpServerIds: values.mcpServerIds ?? fallbackMcpServerIds,
         permissionMode:
           (values.permissionMode as PermissionMode | undefined) ??
           agentDefaults?.permissionMode ??

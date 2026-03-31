@@ -24,8 +24,20 @@
  */
 
 import type { Database } from '@agor/core/db';
-import { SessionRepository, UsersRepository, WorktreeRepository } from '@agor/core/db';
-import type { PermissionMode, Session, User, Worktree } from '@agor/core/types';
+import {
+  SessionMCPServerRepository,
+  SessionRepository,
+  UsersRepository,
+  WorktreeRepository,
+} from '@agor/core/db';
+import type {
+  MCPServerID,
+  PermissionMode,
+  Session,
+  SessionID,
+  User,
+  Worktree,
+} from '@agor/core/types';
 import { SessionStatus } from '@agor/core/types';
 import type { UnixUserMode } from '@agor/core/unix';
 import { getNextRunTime, getPrevRunTime } from '@agor/core/utils/cron';
@@ -51,6 +63,7 @@ export class SchedulerService {
   private worktreeRepo: WorktreeRepository;
   private sessionRepo: SessionRepository;
   private userRepo: UsersRepository;
+  private sessionMCPRepo: SessionMCPServerRepository;
 
   constructor(db: Database, app: Application, config: SchedulerConfig = {}) {
     this.app = app;
@@ -63,6 +76,7 @@ export class SchedulerService {
     this.worktreeRepo = new WorktreeRepository(db);
     this.sessionRepo = new SessionRepository(db);
     this.userRepo = new UsersRepository(db);
+    this.sessionMCPRepo = new SessionMCPServerRepository(db);
   }
 
   /**
@@ -358,7 +372,37 @@ export class SchedulerService {
       const createdSession = await sessionsService.create(session);
       console.log(`      ✅ Spawned scheduled session for ${worktree.name} (run #${runIndex})`);
 
-      // 6. Trigger prompt execution (creates task and starts agent)
+      // 6. Attach MCP servers BEFORE triggering prompt (so agent has tools from the start)
+      // Precedence: schedule config (if defined) > worktree defaults
+      // An explicit empty array in schedule means "no MCPs" — does NOT fall through to worktree.
+      const effectiveMcpIds =
+        schedule.mcp_server_ids !== undefined
+          ? schedule.mcp_server_ids
+          : worktree.mcp_server_ids && worktree.mcp_server_ids.length > 0
+            ? worktree.mcp_server_ids
+            : [];
+
+      if (effectiveMcpIds.length > 0) {
+        for (const serverId of effectiveMcpIds) {
+          try {
+            await this.sessionMCPRepo.addServer(
+              createdSession.session_id as SessionID,
+              serverId as MCPServerID
+            );
+            // Emit WebSocket event for real-time UI updates
+            this.app.service('session-mcp-servers')?.emit?.('created', {
+              session_id: createdSession.session_id,
+              mcp_server_id: serverId,
+              enabled: true,
+              added_at: new Date(),
+            });
+          } catch {
+            // Silently skip deleted/invalid MCP servers
+          }
+        }
+      }
+
+      // 7. Trigger prompt execution (creates task and starts agent)
       // IMPORTANT: Must pass provider: undefined to bypass auth (internal call)
       // AND pass user: creator so the executor's session token is generated for the correct user.
       // Without the user, the token defaults to 'anonymous' which doesn't exist in the database,
@@ -376,8 +420,6 @@ export class SchedulerService {
           user: creator, // Pass creator user for session token generation
         } as import('@agor/core/types').AuthenticatedParams & { route: { id: string } }
       );
-
-      // TODO: Attach MCP servers if specified in schedule.mcp_server_ids
 
       // 7. Update schedule metadata
       await this.updateScheduleMetadata(worktree, scheduledRunAt, now);

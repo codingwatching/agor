@@ -280,6 +280,13 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
           .describe(
             'Custom context object for templates and automations. Pass null to clear existing context.'
           ),
+        mcpServerIds: z
+          .array(z.string())
+          .nullable()
+          .optional()
+          .describe(
+            'Default MCP server IDs for new sessions in this worktree. Sessions inherit these unless they explicitly specify their own. Pass null to clear.'
+          ),
       }),
     },
     async (args) => {
@@ -325,6 +332,10 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
       if (args.customContext !== undefined) {
         fieldsProvided++;
         updates.custom_context = args.customContext === null ? null : args.customContext;
+      }
+      if (args.mcpServerIds !== undefined) {
+        fieldsProvided++;
+        updates.mcp_server_ids = args.mcpServerIds === null ? [] : args.mcpServerIds;
       }
 
       if (fieldsProvided === 0) throw new Error('provide at least one field to update');
@@ -612,8 +623,11 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
             };
           }
 
-          // Resolve MCP server IDs from user defaults
-          const mcpServerIds = userToolDefaults?.mcpServerIds || [];
+          // MCP server inheritance: worktree config > user defaults
+          const mcpServerIds =
+            worktree.mcp_server_ids && worktree.mcp_server_ids.length > 0
+              ? worktree.mcp_server_ids
+              : userToolDefaults?.mcpServerIds || [];
 
           // Create new session
           const sessionData: Record<string, unknown> = {
@@ -642,16 +656,22 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
             `✅ Auto-created session ${newSession.session_id.substring(0, 8)} (${agenticTool})`
           );
 
-          // Attach MCP servers from user defaults
+          // Attach MCP servers (inherited from worktree or user defaults)
           if (mcpServerIds.length > 0) {
             for (const mcpServerId of mcpServerIds) {
-              await ctx.app.service('session-mcp-servers').create(
-                {
-                  session_id: newSession.session_id,
-                  mcp_server_id: mcpServerId,
-                },
-                ctx.baseServiceParams
-              );
+              try {
+                await ctx.app.service('session-mcp-servers').create(
+                  {
+                    session_id: newSession.session_id,
+                    mcp_server_id: mcpServerId,
+                  },
+                  ctx.baseServiceParams
+                );
+              } catch (error) {
+                console.warn(
+                  `Skipped MCP server ${mcpServerId} for session ${newSession.session_id}: ${error instanceof Error ? error.message : String(error)}`
+                );
+              }
             }
             console.log(`✅ Attached ${mcpServerIds.length} MCP servers`);
           }
