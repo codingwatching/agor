@@ -24,6 +24,7 @@ import type {
 } from '@agor/core/types';
 import { spawnEnvironmentCommand } from '@agor/core/unix';
 import { getNextRunTime, validateCron } from '@agor/core/utils/cron';
+import { isAllowedHealthCheckUrl } from '@agor/core/utils/url';
 import { DrizzleService } from '../adapters/drizzle';
 import { resolveGitImpersonationForWorktree } from '../utils/git-impersonation.js';
 import { getDaemonUrl, spawnExecutor } from '../utils/spawn-executor.js';
@@ -1081,6 +1082,22 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
 
     // Use static health_check_url (initialized from template at worktree creation)
     const healthUrl = worktree.health_check_url;
+
+    // Validate URL to prevent SSRF against cloud metadata or internal services
+    if (!isAllowedHealthCheckUrl(healthUrl)) {
+      console.warn(`⚠️ Blocked health check to disallowed URL: ${healthUrl}`);
+      return await this.updateEnvironment(
+        id,
+        {
+          last_health_check: {
+            timestamp: new Date().toISOString(),
+            status: 'unhealthy',
+            message: 'Health check URL blocked by security policy',
+          },
+        },
+        params
+      );
+    }
 
     // Track previous health status to detect changes
     const previousHealthStatus = worktree.environment_instance?.last_health_check?.status;
