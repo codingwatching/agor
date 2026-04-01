@@ -49,6 +49,54 @@ import type { ProcessedEvent } from './message-processor.js';
 import { ClaudePromptService } from './prompt-service.js';
 
 /**
+ * Format a human-readable rate limit message for the conversation UI.
+ *
+ * SDK statuses:
+ * - 'rejected': Hard blocked — show urgently
+ * - 'allowed_warning': Approaching limit — show as warning
+ * - 'allowed' + overage issue: Informational but important
+ */
+function formatRateLimitText(event: Extract<ProcessedEvent, { type: 'rate_limit' }>): string {
+  const type = event.rateLimitType || 'unknown';
+  const resetsAtStr = event.resetsAt ? new Date(event.resetsAt * 1000).toLocaleString() : undefined;
+
+  if (event.status === 'rejected') {
+    return `Rate limited (${type}). ${resetsAtStr ? `Resets at ${resetsAtStr}.` : ''} Waiting for limit to reset...`;
+  }
+  if (event.status === 'allowed_warning') {
+    return `Approaching rate limit (${type}). ${resetsAtStr ? `Resets at ${resetsAtStr}.` : ''} Requests may be delayed.`;
+  }
+  // 'allowed' with concerning overage
+  if (event.overageStatus === 'rejected') {
+    return `Rate limit overage rejected (${type}). API calls may be delayed.`;
+  }
+  if (event.overageStatus === 'allowed_warning') {
+    return `Approaching rate limit overage (${type}). API calls may be delayed.`;
+  }
+  return `Rate limit: ${event.status} (${type})`;
+}
+
+/**
+ * Build a rate_limit content block for system messages.
+ * Shared between streaming and non-streaming paths.
+ */
+function buildRateLimitContentBlock(
+  event: Extract<ProcessedEvent, { type: 'rate_limit' }>
+): Array<{ type: string; [key: string]: unknown }> {
+  return [
+    {
+      type: 'rate_limit',
+      text: formatRateLimitText(event),
+      status: event.status,
+      rateLimitType: event.rateLimitType,
+      resetsAt: event.resetsAt,
+      overageStatus: event.overageStatus,
+      isUsingOverage: event.isUsingOverage,
+    },
+  ];
+}
+
+/**
  * Wrapper for withSessionGuard that accepts Feathers repositories
  * The Feathers repositories have the same interface but different type signatures
  */
@@ -290,6 +338,9 @@ export class ClaudeTool implements ITool {
 
     let streamStartTime = Date.now();
     let firstTokenTime: number | null = null;
+    let firstActivityTime: number | null = null; // Any SDK activity (thinking, tools, text)
+    let apiWaitMessageSent = false; // Track whether we've sent an "API waiting" message
+    const API_WAIT_THRESHOLD_MS = 30_000; // 30 seconds before warning user
     let tokenUsage: TokenUsage | undefined;
     let durationMs: number | undefined;
     let contextWindow: number | undefined;
@@ -374,6 +425,67 @@ export class ClaudeTool implements ITool {
             tool_use_id: event.toolUseId,
           });
         }
+      }
+
+      // Check for slow API response BEFORE marking first activity.
+      // This ensures the warning fires when the first event arrives after the threshold.
+      const isActivityEvent =
+        event.type === 'partial' ||
+        event.type === 'thinking_partial' ||
+        event.type === 'tool_start' ||
+        event.type === 'message_start' ||
+        event.type === 'rate_limit' ||
+        event.type === 'sdk_event' ||
+        event.type === 'complete';
+
+      if (
+        !apiWaitMessageSent &&
+        !firstActivityTime &&
+        isActivityEvent &&
+        Date.now() - streamStartTime > API_WAIT_THRESHOLD_MS
+      ) {
+        apiWaitMessageSent = true;
+        const waitSeconds = Math.round((Date.now() - streamStartTime) / 1000);
+        const waitText = `API response delayed (waiting ${waitSeconds}s+). The API may be experiencing high load.`;
+        console.warn(`⏳ ${waitText}`);
+
+        await withFeathersSessionGuard(sessionId, this.sessionsRepo, async () => {
+          const waitMessageId = generateId() as MessageID;
+
+          if (streamingCallbacks) {
+            await streamingCallbacks.onStreamStart(waitMessageId, {
+              session_id: sessionId,
+              task_id: taskId,
+              role: MessageRole.SYSTEM,
+              timestamp: new Date().toISOString(),
+            });
+          }
+
+          await createSystemMessage(
+            sessionId,
+            waitMessageId,
+            [
+              {
+                type: 'api_wait',
+                text: waitText,
+                waitMs: Date.now() - streamStartTime,
+              },
+            ],
+            taskId,
+            nextIndex++,
+            resolvedModel,
+            this.messagesService!
+          );
+
+          if (streamingCallbacks) {
+            await streamingCallbacks.onStreamEnd(waitMessageId);
+          }
+        });
+      }
+
+      // Track first SDK activity AFTER the api_wait check so the warning can fire
+      if (!firstActivityTime && isActivityEvent) {
+        firstActivityTime = Date.now();
       }
 
       // Handle thinking partial (streaming)
@@ -471,6 +583,89 @@ export class ClaudeTool implements ITool {
             }
           });
         }
+      }
+
+      // Handle rate_limit events — surface as system messages
+      if (event.type === 'rate_limit') {
+        const rateLimitEvent = event as Extract<ProcessedEvent, { type: 'rate_limit' }>;
+        const content = buildRateLimitContentBlock(rateLimitEvent);
+        console.log(`⏳ Rate limit → system message: ${content[0].text}`);
+
+        await withFeathersSessionGuard(sessionId, this.sessionsRepo, async () => {
+          const rateLimitMessageId = generateId() as MessageID;
+
+          if (streamingCallbacks) {
+            await streamingCallbacks.onStreamStart(rateLimitMessageId, {
+              session_id: sessionId,
+              task_id: taskId,
+              role: MessageRole.SYSTEM,
+              timestamp: new Date().toISOString(),
+            });
+          }
+
+          await createSystemMessage(
+            sessionId,
+            rateLimitMessageId,
+            content,
+            taskId,
+            nextIndex++,
+            resolvedModel,
+            this.messagesService!
+          );
+
+          if (streamingCallbacks) {
+            await streamingCallbacks.onStreamEnd(rateLimitMessageId);
+          }
+        });
+      }
+
+      // Handle sdk_event — surface unhandled SDK messages as system messages
+      if (event.type === 'sdk_event') {
+        const sdkEvent = event as Extract<ProcessedEvent, { type: 'sdk_event' }>;
+        const content: Array<{
+          type: string;
+          text?: string;
+          sdkType?: string;
+          sdkSubtype?: string;
+          metadata?: Record<string, unknown>;
+          [key: string]: unknown;
+        }> = [
+          {
+            type: 'sdk_event',
+            text: sdkEvent.summary,
+            sdkType: sdkEvent.sdkType,
+            sdkSubtype: sdkEvent.sdkSubtype,
+            metadata: sdkEvent.rawMessage,
+          },
+        ];
+        console.log(`📡 SDK event → system message: ${sdkEvent.summary}`);
+
+        await withFeathersSessionGuard(sessionId, this.sessionsRepo, async () => {
+          const sdkEventMessageId = generateId() as MessageID;
+
+          if (streamingCallbacks) {
+            await streamingCallbacks.onStreamStart(sdkEventMessageId, {
+              session_id: sessionId,
+              task_id: taskId,
+              role: MessageRole.SYSTEM,
+              timestamp: new Date().toISOString(),
+            });
+          }
+
+          await createSystemMessage(
+            sessionId,
+            sdkEventMessageId,
+            content,
+            taskId,
+            nextIndex++,
+            resolvedModel,
+            this.messagesService!
+          );
+
+          if (streamingCallbacks) {
+            await streamingCallbacks.onStreamEnd(sdkEventMessageId);
+          }
+        });
       }
 
       // Capture raw SDK response for token accounting
@@ -617,6 +812,8 @@ export class ClaudeTool implements ITool {
           currentThinkingMessageId = null;
           streamStartTime = Date.now();
           firstTokenTime = null;
+          firstActivityTime = null;
+          apiWaitMessageSent = false; // Reset for next message cycle
         } else if (event.type === 'complete' && event.role === MessageRole.USER) {
           // Type assertion for user message
           const completeEvent = event as Extract<ProcessedEvent, { type: 'complete' }>;
@@ -820,6 +1017,53 @@ export class ClaudeTool implements ITool {
       if (!capturedAgentSessionId && 'agentSessionId' in event && event.agentSessionId) {
         capturedAgentSessionId = event.agentSessionId;
         await this.captureAgentSessionId(sessionId, capturedAgentSessionId);
+      }
+
+      // Handle rate_limit events in non-streaming path
+      if (event.type === 'rate_limit') {
+        const rateLimitEvent = event as Extract<ProcessedEvent, { type: 'rate_limit' }>;
+        const content = buildRateLimitContentBlock(rateLimitEvent);
+        console.log(`⏳ Rate limit → system message: ${content[0].text}`);
+
+        await withFeathersSessionGuard(sessionId, this.sessionsRepo, async () => {
+          const rateLimitMessageId = generateId() as MessageID;
+          await createSystemMessage(
+            sessionId,
+            rateLimitMessageId,
+            content,
+            taskId,
+            nextIndex++,
+            resolvedModel,
+            this.messagesService!
+          );
+        });
+      }
+
+      // Handle sdk_event in non-streaming path
+      if (event.type === 'sdk_event') {
+        const sdkEvent = event as Extract<ProcessedEvent, { type: 'sdk_event' }>;
+        console.log(`📡 SDK event → system message: ${sdkEvent.summary}`);
+
+        await withFeathersSessionGuard(sessionId, this.sessionsRepo, async () => {
+          const sdkEventMessageId = generateId() as MessageID;
+          await createSystemMessage(
+            sessionId,
+            sdkEventMessageId,
+            [
+              {
+                type: 'sdk_event',
+                text: sdkEvent.summary,
+                sdkType: sdkEvent.sdkType,
+                sdkSubtype: sdkEvent.sdkSubtype,
+                metadata: sdkEvent.rawMessage,
+              },
+            ],
+            taskId,
+            nextIndex++,
+            resolvedModel,
+            this.messagesService!
+          );
+        });
       }
 
       // Capture raw SDK response for token accounting

@@ -55,6 +55,7 @@ import {
   TokenCountPill,
   ToolCountPill,
 } from '../Pill';
+import { RateLimitBlock } from '../RateLimitBlock';
 import { StickyTodoRenderer } from '../StickyTodoRenderer';
 import { Tag } from '../Tag';
 import { TaskStatusIcon } from '../TaskStatusIcon';
@@ -103,9 +104,16 @@ interface TaskBlockProps {
 }
 
 /**
- * Check if message contains ONLY tools/thinking/tool-results (no user-facing text)
- * Returns true if message should be in AgentChain, false if it should be a regular message bubble
+ * Check if a system message is an SDK status event (rate limit, API wait, or other SDK event).
+ * These render via RateLimitBlock instead of the regular MessageBlock.
  */
+function isSdkStatusMessage(message: Message): boolean {
+  if (message.role !== MessageRole.SYSTEM || !Array.isArray(message.content)) return false;
+  return message.content.some(
+    (b) => b.type === 'rate_limit' || b.type === 'api_wait' || b.type === 'sdk_event'
+  );
+}
+
 function isAgentChainMessage(message: Message): boolean {
   // EXCEPTION: User messages with ONLY tool_result blocks are part of agent execution
   // (tool results are technically "user" role per Anthropic API, but they're automated responses)
@@ -596,6 +604,17 @@ export const TaskBlock = React.memo<TaskBlockProps>(
                             return false;
                           });
                         }
+                      }
+
+                      // Render SDK status messages (rate limit, API wait, etc.) with dedicated component
+                      if (isSdkStatusMessage(block.message)) {
+                        return (
+                          <RateLimitBlock
+                            key={block.message.message_id}
+                            message={block.message}
+                            agentic_tool={agentic_tool}
+                          />
+                        );
                       }
 
                       // Check if this is the latest agent message (last message block)
