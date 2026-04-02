@@ -8,6 +8,7 @@
 
 import type { Message, MessageID, SessionID } from '@agor/core/types';
 import { useEffect, useState } from 'react';
+import type { FeathersEventHandler } from './index';
 import type { useAgorClient } from './useAgorClient';
 
 export interface StreamingMessage {
@@ -273,41 +274,36 @@ export function useStreamingMessages(
     };
 
     // Register event listeners
-    // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-    messagesService.on('streaming:start', handleStreamingStart as any);
-    // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-    messagesService.on('streaming:chunk', handleStreamingChunk as any);
-    // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-    messagesService.on('streaming:end', handleStreamingEnd as any);
-    // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-    messagesService.on('streaming:error', handleStreamingError as any);
-    // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-    messagesService.on('thinking:start', handleThinkingStart as any);
-    // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-    messagesService.on('thinking:chunk', handleThinkingChunk as any);
-    // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-    messagesService.on('thinking:end', handleThinkingEnd as any);
-    // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-    messagesService.on('created', handleMessageCreated as any);
+    // FeathersJS .on() expects (event: string, handler: (data: T) => void) but these
+    // handlers receive custom streaming event payloads, not Message objects.
+    messagesService.on('streaming:start', handleStreamingStart as FeathersEventHandler);
+    messagesService.on('streaming:chunk', handleStreamingChunk as FeathersEventHandler);
+    messagesService.on('streaming:end', handleStreamingEnd as FeathersEventHandler);
+    messagesService.on('streaming:error', handleStreamingError as FeathersEventHandler);
+    messagesService.on('thinking:start', handleThinkingStart as FeathersEventHandler);
+    messagesService.on('thinking:chunk', handleThinkingChunk as FeathersEventHandler);
+    messagesService.on('thinking:end', handleThinkingEnd as FeathersEventHandler);
+    messagesService.on('created', handleMessageCreated as FeathersEventHandler);
 
     // Cleanup on unmount or client change
     return () => {
-      // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-      messagesService.removeListener('streaming:start', handleStreamingStart as any);
-      // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-      messagesService.removeListener('streaming:chunk', handleStreamingChunk as any);
-      // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-      messagesService.removeListener('streaming:end', handleStreamingEnd as any);
-      // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-      messagesService.removeListener('streaming:error', handleStreamingError as any);
-      // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-      messagesService.removeListener('thinking:start', handleThinkingStart as any);
-      // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-      messagesService.removeListener('thinking:chunk', handleThinkingChunk as any);
-      // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-      messagesService.removeListener('thinking:end', handleThinkingEnd as any);
-      // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-      messagesService.removeListener('created', handleMessageCreated as any);
+      messagesService.removeListener(
+        'streaming:start',
+        handleStreamingStart as FeathersEventHandler
+      );
+      messagesService.removeListener(
+        'streaming:chunk',
+        handleStreamingChunk as FeathersEventHandler
+      );
+      messagesService.removeListener('streaming:end', handleStreamingEnd as FeathersEventHandler);
+      messagesService.removeListener(
+        'streaming:error',
+        handleStreamingError as FeathersEventHandler
+      );
+      messagesService.removeListener('thinking:start', handleThinkingStart as FeathersEventHandler);
+      messagesService.removeListener('thinking:chunk', handleThinkingChunk as FeathersEventHandler);
+      messagesService.removeListener('thinking:end', handleThinkingEnd as FeathersEventHandler);
+      messagesService.removeListener('created', handleMessageCreated as FeathersEventHandler);
     };
   }, [client, sessionId, enabled]);
 

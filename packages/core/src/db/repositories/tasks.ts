@@ -9,7 +9,7 @@ import { TaskStatus } from '@agor/core/types';
 import { eq, like, sql } from 'drizzle-orm';
 import { formatShortId, generateId } from '../../lib/ids';
 import type { Database } from '../client';
-import { deleteFrom, insert, lockRowForUpdate, select, update } from '../database-wrapper';
+import { deleteFrom, insert, lockRowForUpdate, select, txAsDb, update } from '../database-wrapper';
 import { type TaskInsert, type TaskRow, tasks } from '../schema';
 import {
   AmbiguousIdError,
@@ -302,12 +302,11 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
       // Use transaction to make read-merge-write atomic
       const result = await this.db.transaction(async (tx) => {
         // Acquire row-level lock on PostgreSQL to prevent lost updates
-        // biome-ignore lint/suspicious/noExplicitAny: Transaction context requires type assertion for database wrapper functions
-        await lockRowForUpdate(tx as any, this.db, tasks, eq(tasks.task_id, fullId));
+
+        await lockRowForUpdate(txAsDb(tx), this.db, tasks, eq(tasks.task_id, fullId));
 
         // STEP 1: Read current task (within transaction)
-        // biome-ignore lint/suspicious/noExplicitAny: Transaction context requires type assertion for database wrapper functions
-        const currentRow = await select(tx as any)
+        const currentRow = await select(txAsDb(tx))
           .from(tasks)
           .where(eq(tasks.task_id, fullId))
           .one();
@@ -324,8 +323,7 @@ export class TaskRepository implements BaseRepository<Task, Partial<Task>> {
         const insertData = this.taskToInsert(merged);
 
         // STEP 3: Write merged task (within same transaction)
-        // biome-ignore lint/suspicious/noExplicitAny: Transaction context requires type assertion for database wrapper functions
-        await update(tx as any, tasks)
+        await update(txAsDb(tx), tasks)
           .set({
             status: insertData.status,
             completed_at: insertData.completed_at,

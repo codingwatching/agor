@@ -8,7 +8,7 @@ import type { AgenticToolName, SessionStatus, UUID, Worktree, WorktreeID } from 
 import { and, desc, eq, getTableColumns, inArray, isNotNull, isNull, like, or } from 'drizzle-orm';
 import { formatShortId, generateId } from '../../lib/ids';
 import type { Database } from '../client';
-import { deleteFrom, insert, lockRowForUpdate, select, update } from '../database-wrapper';
+import { deleteFrom, insert, lockRowForUpdate, select, txAsDb, update } from '../database-wrapper';
 import { type WorktreeInsert, type WorktreeRow, worktreeOwners, worktrees } from '../schema';
 import {
   AmbiguousIdError,
@@ -257,16 +257,14 @@ export class WorktreeRepository implements BaseRepository<Worktree, Partial<Work
     return await this.db.transaction(async (tx) => {
       // Acquire row-level lock on PostgreSQL to prevent lost updates
       await lockRowForUpdate(
-        // biome-ignore lint/suspicious/noExplicitAny: Transaction context requires type assertion for database wrapper functions
-        tx as any,
+        txAsDb(tx),
         this.db,
         worktrees,
         eq(worktrees.worktree_id, existing.worktree_id)
       );
 
       // STEP 2: Re-read within transaction to ensure we have latest data
-      // biome-ignore lint/suspicious/noExplicitAny: Transaction context requires type assertion for database wrapper functions
-      const currentRow = await select(tx as any)
+      const currentRow = await select(txAsDb(tx))
         .from(worktrees)
         .where(eq(worktrees.worktree_id, existing.worktree_id))
         .one();
@@ -290,8 +288,7 @@ export class WorktreeRepository implements BaseRepository<Worktree, Partial<Work
       const insertData = this.worktreeToInsert(merged);
 
       // STEP 4: Write merged worktree (within same transaction)
-      // biome-ignore lint/suspicious/noExplicitAny: Transaction context requires type assertion for database wrapper functions
-      const row = await update(tx as any, worktrees)
+      const row = await update(txAsDb(tx), worktrees)
         .set(insertData)
         .where(eq(worktrees.worktree_id, current.worktree_id))
         .returning()
@@ -737,8 +734,7 @@ export class WorktreeRepository implements BaseRepository<Worktree, Partial<Work
 
         // Chain orderBy and limit, then execute with one()
         // The spread operator in the wrapper passes through these methods
-        // biome-ignore lint/suspicious/noExplicitAny: Wrapper spreads query builder methods
-        const lastMessage = await (query as any).orderBy(desc(messagesTable.index)).limit(1).one();
+        const lastMessage = await query.orderBy(desc(messagesTable.index)).limit(1).one();
 
         if (lastMessage) {
           // Extract text content from message data and truncate to requested length

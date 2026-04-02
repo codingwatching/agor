@@ -7,6 +7,7 @@
 
 import type { TaskID } from '@agor/core/types';
 import { useEffect, useState } from 'react';
+import type { FeathersEventHandler } from './index';
 import type { useAgorClient } from './useAgorClient';
 
 export interface ToolExecution {
@@ -95,17 +96,15 @@ export function useTaskEvents(
     };
 
     // Register event listeners
-    // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-    tasksService.on('tool:start', handleToolStart as any);
-    // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-    tasksService.on('tool:complete', handleToolComplete as any);
+    // FeathersJS .on() expects (event: string, handler: (data: T) => void) but these
+    // handlers receive custom tool event payloads, not Task objects.
+    tasksService.on('tool:start', handleToolStart as FeathersEventHandler);
+    tasksService.on('tool:complete', handleToolComplete as FeathersEventHandler);
 
     // Cleanup on unmount or client/taskId change
     return () => {
-      // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-      tasksService.removeListener('tool:start', handleToolStart as any);
-      // biome-ignore lint/suspicious/noExplicitAny: FeathersJS emit types are not strict
-      tasksService.removeListener('tool:complete', handleToolComplete as any);
+      tasksService.removeListener('tool:start', handleToolStart as FeathersEventHandler);
+      tasksService.removeListener('tool:complete', handleToolComplete as FeathersEventHandler);
     };
   }, [client, taskId]);
 
