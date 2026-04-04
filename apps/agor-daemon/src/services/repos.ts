@@ -342,6 +342,7 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
       pull_request_url?: string;
       boardId?: string;
       position?: { x: number; y: number };
+      zoneId?: string;
     },
     params?: RepoParams
   ): Promise<Worktree> {
@@ -444,13 +445,25 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
 
     // Validate boardId exists before creating DB record (FK constraint would reject it)
     if (data.boardId) {
+      let board: { objects?: Record<string, { type?: string }> } | undefined;
       try {
-        await this.app.service('boards').get(data.boardId, params);
+        board = await this.app.service('boards').get(data.boardId, params);
       } catch {
         throw new Error(
           `Board '${data.boardId}' not found. Provide a valid boardId ` +
             `(use agor_boards_list to see available boards).`
         );
+      }
+
+      // Validate zoneId exists on the board
+      if (data.zoneId && board) {
+        const zone = board.objects?.[data.zoneId];
+        if (!zone || zone.type !== 'zone') {
+          throw new Error(
+            `Zone '${data.zoneId}' not found on board '${data.boardId}'. ` +
+              `Provide a valid zoneId from the board's zone objects.`
+          );
+        }
       }
     }
 
@@ -546,6 +559,7 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
           board_id: data.boardId,
           worktree_id: worktree.worktree_id,
           position: finalPosition,
+          ...(data.zoneId ? { zone_id: data.zoneId } : {}),
         },
         params
       );
