@@ -37,14 +37,7 @@ import { FileUpload, FileUploadButton } from '../FileUpload';
 import { MCPServerPill } from '../MCPServerPill';
 import { CreatedByTag } from '../metadata';
 import { PermissionModeSelector } from '../PermissionModeSelector';
-import {
-  ContextWindowPill,
-  MessageCountPill,
-  ModelPill,
-  SessionIdPill,
-  TimerPill,
-  TokenCountPill,
-} from '../Pill';
+import { ContextWindowPill, ModelPill, SessionIdPill, TimerPill, TokenCountPill } from '../Pill';
 import { ThinkingModeSelector } from '../ThinkingModeSelector';
 import { ToolIcon } from '../ToolIcon';
 import { SessionPanelContent } from './SessionPanelContent';
@@ -681,7 +674,6 @@ const SessionPanel: React.FC<SessionPanelProps> = ({
                 }
               />
             )}
-            <MessageCountPill count={session.message_count} />
             {tokenBreakdown.total > 0 && (
               <TokenCountPill
                 count={tokenBreakdown.total}
