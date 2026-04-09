@@ -1521,25 +1521,21 @@ async function main() {
           headers: allHeaders,
         });
 
-        // Check for OAuth 2.1 auto-discovery (RFC 9728)
-        // The WWW-Authenticate header should contain: Bearer resource_metadata="<url>"
-        const hasResourceMetadata = wwwAuthenticate?.includes('resource_metadata=');
-
-        if (probeResponse.status === 401 && hasResourceMetadata) {
-          console.log('[OAuth Test] OAuth 2.1 auto-discovery detected');
-
-          // Extract resource metadata URL from WWW-Authenticate header
-          const metadataMatch = wwwAuthenticate!.match(/resource_metadata="([^"]+)"/);
-          const metadataUrl = metadataMatch ? metadataMatch[1] : null;
-
-          if (!metadataUrl) {
-            return {
-              success: false,
-              error: 'OAuth 2.1 detected but resource_metadata URL could not be parsed',
-              oauthType: 'oauth2.1',
-              wwwAuthenticate,
-            };
+        // Resolve resource metadata URL: try header first, then .well-known discovery
+        let metadataUrl: string | null = null;
+        if (probeResponse.status === 401) {
+          const { resolveResourceMetadataUrl } = await import(
+            '@agor/core/tools/mcp/oauth-mcp-transport'
+          );
+          const resolved = await resolveResourceMetadataUrl(wwwAuthenticate, data.mcp_url);
+          if (resolved) {
+            metadataUrl = resolved.metadataUrl;
+            console.log(`[OAuth Test] Resolved metadata URL (${resolved.source}):`, metadataUrl);
           }
+        }
+
+        if (probeResponse.status === 401 && metadataUrl) {
+          console.log('[OAuth Test] OAuth 2.1 auto-discovery detected');
 
           // If start_browser_flow is true, perform the full OAuth flow with browser
           if (data.start_browser_flow) {
@@ -1601,9 +1597,10 @@ async function main() {
               };
 
               const token = await performMCPOAuthFlow(
-                wwwAuthenticate!,
+                wwwAuthenticate || '',
                 data.client_id, // Optional client_id
-                browserOpener // Custom opener emits event to client
+                browserOpener, // Custom opener emits event to client
+                metadataUrl // Pre-discovered metadata URL (fallback for servers lacking resource_metadata)
               );
               console.log('[OAuth Test] OAuth flow completed, token obtained');
 
@@ -1972,16 +1969,33 @@ async function main() {
           signal: AbortSignal.timeout(15_000),
         });
 
-        const wwwAuthenticate = probeResponse.headers.get('www-authenticate');
-        if (probeResponse.status !== 401 || !wwwAuthenticate?.includes('resource_metadata=')) {
+        if (probeResponse.status !== 401) {
           return {
             success: false,
-            error: 'Server does not require OAuth 2.1 authentication',
+            error: 'Server did not return 401 — OAuth 2.1 authentication may not be required',
           };
         }
 
-        // Import the two-phase OAuth flow functions
-        const { startMCPOAuthFlow } = await import('@agor/core/tools/mcp/oauth-mcp-transport');
+        const wwwAuthenticate = probeResponse.headers.get('www-authenticate') || '';
+
+        // Resolve resource metadata URL: try header first, then .well-known discovery
+        const { resolveResourceMetadataUrl, startMCPOAuthFlow } = await import(
+          '@agor/core/tools/mcp/oauth-mcp-transport'
+        );
+        const resolved = await resolveResourceMetadataUrl(wwwAuthenticate, data.mcp_url);
+        if (!resolved) {
+          return {
+            success: false,
+            error:
+              'Server returned 401 but does not advertise OAuth metadata. ' +
+              'No resource_metadata in WWW-Authenticate header and no ' +
+              '.well-known/oauth-protected-resource endpoint found.',
+          };
+        }
+        console.log(
+          `[OAuth Start] Resolved metadata URL (${resolved.source}):`,
+          resolved.metadataUrl
+        );
 
         // Start the flow - use browser-facing base URL for the OAuth redirect URI
         // getBaseUrl() resolves: AGOR_BASE_URL env → daemon.base_url config → localhost fallback
@@ -1994,6 +2008,7 @@ async function main() {
           tokenUrlOverride,
           clientSecret: clientSecretOverride,
           scope: scopeOverride,
+          resourceMetadataUrl: resolved.metadataUrl,
         });
 
         // Capture initiating socket ID for scoped notifications
@@ -2436,21 +2451,31 @@ async function main() {
 
             const wwwAuthenticate = probeResponse.headers.get('www-authenticate');
 
-            if (probeResponse.status === 401 && wwwAuthenticate?.includes('resource_metadata=')) {
-              console.log('[MCP Discovery] OAuth 2.1 detected, starting browser flow...');
-
-              const { performMCPOAuthFlow } = await import(
+            if (probeResponse.status === 401) {
+              const { resolveResourceMetadataUrl, performMCPOAuthFlow } = await import(
                 '@agor/core/tools/mcp/oauth-mcp-transport'
               );
+              const resolved = await resolveResourceMetadataUrl(wwwAuthenticate, mcpUrl);
 
-              const token = await performMCPOAuthFlow(wwwAuthenticate, undefined, openOAuthBrowser);
+              if (resolved) {
+                console.log(
+                  `[MCP Discovery] OAuth 2.1 detected (${resolved.source}), starting browser flow...`
+                );
 
-              cacheOAuth21Token(mcpUrl, token, 3600);
-              if (serverId) {
-                await saveOAuth21TokenToDB(mcpServerRepo, serverId, token, 3600);
+                const token = await performMCPOAuthFlow(
+                  wwwAuthenticate || '',
+                  undefined,
+                  openOAuthBrowser,
+                  resolved.metadataUrl
+                );
+
+                cacheOAuth21Token(mcpUrl, token, 3600);
+                if (serverId) {
+                  await saveOAuth21TokenToDB(mcpServerRepo, serverId, token, 3600);
+                }
+
+                return token;
               }
-
-              return token;
             }
 
             return undefined;
