@@ -26,7 +26,7 @@ import {
   getDaemonUrl,
   spawnExecutorFireAndForget,
 } from '../utils/spawn-executor.js';
-import { isSuperAdmin } from '../utils/worktree-authorization.js';
+import { isSuperAdmin, PERMISSION_RANK } from '../utils/worktree-authorization.js';
 
 interface WorktreeOwnerCreateData {
   user_id: string;
@@ -80,10 +80,9 @@ function requireViewPermission(worktreeRepo: WorktreeRepository, allowSuperadmin
     const isOwner = await worktreeRepo.isOwner(worktree.worktree_id, userId as UUID);
 
     // Check if user has at least 'view' permission
-    const effectivePermission = isOwner ? 'all' : worktree.others_can || 'view';
-    const permissionRank = { none: -1, view: 0, prompt: 1, all: 2 };
+    const effectivePermission = isOwner ? 'all' : worktree.others_can || 'session';
 
-    if (permissionRank[effectivePermission] < permissionRank.view) {
+    if (PERMISSION_RANK[effectivePermission] < PERMISSION_RANK.view) {
       throw new Forbidden('You do not have permission to view this worktree');
     }
 

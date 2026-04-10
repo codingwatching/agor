@@ -5,10 +5,11 @@
  * Covers the security invariants introduced by the superadmin role feature.
  */
 
-import type { Worktree, WorktreePermissionLevel } from '@agor/core/types';
+import type { HookContext, Session, Worktree, WorktreePermissionLevel } from '@agor/core/types';
 import { ROLES } from '@agor/core/types';
 import { describe, expect, it } from 'vitest';
 import {
+  ensureCanPromptInSession,
   hasWorktreePermission,
   isSuperAdmin,
   resolveWorktreePermission,
@@ -125,14 +126,22 @@ describe('hasWorktreePermission', () => {
     it.each<[WorktreePermissionLevel, WorktreePermissionLevel, boolean]>([
       ['all', 'all', true],
       ['all', 'prompt', true],
+      ['all', 'session', true],
       ['all', 'view', true],
       ['prompt', 'prompt', true],
+      ['prompt', 'session', true],
       ['prompt', 'view', true],
       ['prompt', 'all', false],
+      ['session', 'session', true],
+      ['session', 'view', true],
+      ['session', 'prompt', false],
+      ['session', 'all', false],
       ['view', 'view', true],
+      ['view', 'session', false],
       ['view', 'prompt', false],
       ['view', 'all', false],
       ['none', 'view', false],
+      ['none', 'session', false],
       ['none', 'prompt', false],
       ['none', 'all', false],
     ])('others_can=%s, required=%s → %s', (othersCan, required, expected) => {
@@ -166,5 +175,116 @@ describe('resolveWorktreePermission', () => {
   it('member gets none when others_can=none', () => {
     const wt = makeWorktree({ others_can: 'none' });
     expect(resolveWorktreePermission(wt, USER_ID, false, ROLES.MEMBER)).toBe('none');
+  });
+
+  it('member gets session when others_can=session', () => {
+    const wt = makeWorktree({ others_can: 'session' });
+    expect(resolveWorktreePermission(wt, USER_ID, false, ROLES.MEMBER)).toBe('session');
+  });
+
+  it('superadmin inherits session permission from others_can', () => {
+    const wt = makeWorktree({ others_can: 'session' });
+    expect(resolveWorktreePermission(wt, USER_ID, false, ROLES.SUPERADMIN)).toBe('session');
+  });
+});
+
+const OTHER_USER_ID = 'user-other-0002' as import('@agor/core/types').UUID;
+
+/** Minimal HookContext mock for ensureCanPromptInSession tests */
+function makeHookContext(overrides: {
+  worktree: Worktree;
+  session: Partial<Session>;
+  userId: string;
+  isOwner?: boolean;
+  userRole?: string;
+}): HookContext {
+  return {
+    params: {
+      provider: 'rest',
+      user: {
+        user_id: overrides.userId,
+        role: overrides.userRole ?? ROLES.MEMBER,
+      },
+      worktree: overrides.worktree,
+      session: overrides.session,
+      isWorktreeOwner: overrides.isOwner ?? false,
+    },
+  } as unknown as HookContext;
+}
+
+describe('ensureCanPromptInSession', () => {
+  const hook = ensureCanPromptInSession();
+
+  describe('session tier — own sessions', () => {
+    it('allows prompting own session with session permission', () => {
+      const wt = makeWorktree({ others_can: 'session' });
+      const ctx = makeHookContext({
+        worktree: wt,
+        session: { created_by: USER_ID },
+        userId: USER_ID,
+      });
+      expect(() => hook(ctx)).not.toThrow();
+    });
+
+    it('denies prompting another users session with session permission', () => {
+      const wt = makeWorktree({ others_can: 'session' });
+      const ctx = makeHookContext({
+        worktree: wt,
+        session: { created_by: OTHER_USER_ID },
+        userId: USER_ID,
+      });
+      expect(() => hook(ctx)).toThrow(/you can only prompt sessions you created/i);
+    });
+  });
+
+  describe('prompt tier — any session', () => {
+    it('allows prompting another users session with prompt permission', () => {
+      const wt = makeWorktree({ others_can: 'prompt' });
+      const ctx = makeHookContext({
+        worktree: wt,
+        session: { created_by: OTHER_USER_ID },
+        userId: USER_ID,
+      });
+      expect(() => hook(ctx)).not.toThrow();
+    });
+  });
+
+  describe('view tier — denied', () => {
+    it('denies prompting own session with view permission', () => {
+      const wt = makeWorktree({ others_can: 'view' });
+      const ctx = makeHookContext({
+        worktree: wt,
+        session: { created_by: USER_ID },
+        userId: USER_ID,
+      });
+      expect(() => hook(ctx)).toThrow(/need 'prompt' permission/i);
+    });
+  });
+
+  describe('owner bypass', () => {
+    it('owner can prompt any session regardless of others_can', () => {
+      const wt = makeWorktree({ others_can: 'none' });
+      const ctx = makeHookContext({
+        worktree: wt,
+        session: { created_by: OTHER_USER_ID },
+        userId: USER_ID,
+        isOwner: true,
+      });
+      expect(() => hook(ctx)).not.toThrow();
+    });
+  });
+
+  describe('internal calls bypass', () => {
+    it('skips check for internal calls (no provider)', () => {
+      const wt = makeWorktree({ others_can: 'none' });
+      const ctx = makeHookContext({
+        worktree: wt,
+        session: { created_by: OTHER_USER_ID },
+        userId: USER_ID,
+      });
+      // Remove provider to simulate internal call
+      ctx.params.provider = undefined;
+      expect(() => hook(ctx)).not.toThrow();
+    });
   });
 });

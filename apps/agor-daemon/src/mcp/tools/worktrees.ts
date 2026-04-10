@@ -6,9 +6,10 @@ import type {
   UUID,
   Worktree,
   WorktreeID,
+  WorktreePermissionLevel,
   ZoneBoardObject,
 } from '@agor/core/types';
-import { getAssistantConfig, isAssistant } from '@agor/core/types';
+import { getAssistantConfig, isAssistant, WORKTREE_PERMISSION_LEVELS } from '@agor/core/types';
 import { computeZoneRelativePosition } from '@agor/core/utils/board-placement';
 import { normalizeOptionalHttpUrl } from '@agor/core/utils/url';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -171,12 +172,13 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
           .describe('Pull request URL to associate with the worktree.'),
         // RBAC fields (optional, sensible defaults, safe to ignore for single-user setups)
         othersCan: z
-          .enum(['none', 'view', 'prompt', 'all'])
+          .enum(WORKTREE_PERMISSION_LEVELS)
           .optional()
           .describe(
             'App-layer permission for non-owner users. ' +
-              '"none" = no access, "view" = read-only, "prompt" = can send prompts to sessions, "all" = full access. ' +
-              'Default: "view". Always effective regardless of Unix isolation mode. Single-user setups can ignore this.'
+              '"none" = no access, "view" = read-only, "session" = can create & prompt own sessions, ' +
+              '"prompt" = can prompt ANY session (including other users\'), "all" = full access. ' +
+              'Default: "session". Always effective regardless of Unix isolation mode. Single-user setups can ignore this.'
           ),
         othersFsAccess: z
           .enum(['none', 'read', 'write'])
@@ -268,7 +270,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
       // Positioning is handled automatically by the repos service —
       // agents don't need to think about x/y coordinates.
 
-      const othersCan = args.othersCan as 'none' | 'view' | 'prompt' | 'all' | undefined;
+      const othersCan = args.othersCan as WorktreePermissionLevel | undefined;
       const othersFsAccess = args.othersFsAccess as 'none' | 'read' | 'write' | undefined;
 
       const worktree = await reposService.createWorktree(
@@ -390,11 +392,12 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
           ),
         // RBAC fields (optional, safe to ignore for single-user setups)
         othersCan: z
-          .enum(['none', 'view', 'prompt', 'all'])
+          .enum(WORKTREE_PERMISSION_LEVELS)
           .optional()
           .describe(
             'App-layer permission for non-owner users. ' +
-              '"none" = no access, "view" = read-only, "prompt" = can send prompts to sessions, "all" = full access. ' +
+              '"none" = no access, "view" = read-only, "session" = can create & prompt own sessions, ' +
+              '"prompt" = can prompt ANY session (including other users\'), "all" = full access. ' +
               'Always effective regardless of Unix isolation mode. Single-user setups can ignore this.'
           ),
         othersFsAccess: z
