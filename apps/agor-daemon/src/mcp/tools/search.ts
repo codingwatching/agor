@@ -1,6 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { textResult } from '../server.js';
+import { coerceJsonRecord, textResult } from '../server.js';
 import { ToolRegistry } from '../tool-registry.js';
 
 /**
@@ -34,7 +34,10 @@ function resolveToolArgs(
   tool: RegisteredTool,
   toolName: string
 ): Record<string, unknown> {
-  let toolArgs: Record<string, unknown> = (proxyArgs.arguments as Record<string, unknown>) ?? {};
+  // Defense-in-depth: coerce stringified arguments even if Zod preprocess
+  // already handled it (e.g. if the SDK bypasses schema validation).
+  let toolArgs: Record<string, unknown> =
+    (coerceJsonRecord(proxyArgs.arguments) as Record<string, unknown>) ?? {};
 
   if (Object.keys(toolArgs).length === 0) {
     // No nested arguments — check for flattened params at top level
@@ -145,7 +148,12 @@ export function registerSearchTools(server: McpServer, registry: ToolRegistry): 
         .object({
           tool_name: z.string().describe('The tool name to execute (e.g. "agor_worktrees_list")'),
           arguments: z
-            .record(z.string(), z.unknown())
+            .preprocess(
+              // Some MCP clients double-serialize nested objects as JSON strings.
+              // Coerce back to an object before Zod validates against z.record().
+              coerceJsonRecord,
+              z.record(z.string(), z.unknown())
+            )
             .optional()
             .describe('Arguments to pass to the tool, matching its input schema'),
         })
