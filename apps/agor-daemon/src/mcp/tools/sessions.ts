@@ -1,5 +1,6 @@
 import { WorktreeRepository, type WorktreeWithZoneAndSessions } from '@agor/core/db';
 import {
+  AGENTIC_TOOL_CAPABILITIES,
   type AgenticToolName,
   type Board,
   getSessionType,
@@ -455,14 +456,14 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
     'agor_sessions_prompt',
     {
       description:
-        'Prompt an existing session to continue work. Supports three modes: continue (append to conversation), fork (branch at decision point), or subsession (delegate to child agent). Configuration is inherited from parent session or user defaults.',
+        'Prompt an existing session to continue work. Supports four modes: continue (append to conversation), fork (branch at decision point), subsession (delegate to child agent), or btw (ephemeral fork — ask a side question without disrupting the target session, even if running). Configuration is inherited from parent session or user defaults.',
       inputSchema: z.object({
         sessionId: z.string().describe('Session ID to prompt (UUIDv7 or short ID)'),
         prompt: z.string().describe('The prompt/task to execute'),
         mode: z
-          .enum(['continue', 'fork', 'subsession'])
+          .enum(['continue', 'fork', 'subsession', 'btw'])
           .describe(
-            'How to route the work: continue (add to existing session), fork (create sibling session), subsession (create child session)'
+            'How to route the work: continue (add to existing session), fork (create sibling session), subsession (create child session), btw (ephemeral fork — works even on running sessions, auto-callbacks result to caller, auto-archives when done)'
           ),
         agenticTool: z
           .enum(['claude-code', 'codex', 'gemini'])
@@ -506,7 +507,19 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
           status: promptResponse.status,
           note: 'Prompt added to existing session and execution started.',
         });
-      } else if (mode === 'fork') {
+      } else if (mode === 'fork' || mode === 'btw') {
+        // Check if the target session's tool supports forking
+        const targetSession = await ctx.app
+          .service('sessions')
+          .get(sessionId, ctx.baseServiceParams);
+        const caps = AGENTIC_TOOL_CAPABILITIES[targetSession.agentic_tool as AgenticToolName];
+        if (caps && !caps.supportsSessionFork) {
+          return textResult({
+            error: `${targetSession.agentic_tool} does not support session forking. Use mode "subsession" instead to delegate work to a fresh session.`,
+          });
+        }
+
+        // Shared fork+prompt flow for both "fork" and "btw" modes
         const forkData: { prompt: string; task_id?: string } = { prompt: args.prompt };
         if (args.taskId) forkData.task_id = args.taskId;
 
@@ -514,10 +527,24 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
           ctx.app.service('sessions') as unknown as SessionsServiceImpl
         ).fork(sessionId, forkData, ctx.baseServiceParams);
 
-        if (args.title) {
+        // Build patch for the fork — title for both modes, btw-specific metadata for btw
+        const forkPatch: Record<string, unknown> = {};
+        if (args.title) forkPatch.title = args.title;
+
+        if (mode === 'btw') {
+          forkPatch.fork_origin = 'btw';
+          forkPatch.callback_config = {
+            enabled: true,
+            callback_session_id: ctx.sessionId,
+            callback_created_by: ctx.userId,
+            callback_mode: 'once',
+          };
+        }
+
+        if (Object.keys(forkPatch).length > 0) {
           await ctx.app
             .service('sessions')
-            .patch(forkedSession.session_id, { title: args.title }, ctx.baseServiceParams);
+            .patch(forkedSession.session_id, forkPatch, ctx.baseServiceParams);
         }
 
         const updatedSession = await ctx.app
@@ -533,11 +560,16 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
           { ...ctx.baseServiceParams, route: { id: forkedSession.session_id } }
         );
 
+        const note =
+          mode === 'btw'
+            ? 'Ephemeral "btw" fork created. Result will be sent back via callback when done, then the fork will auto-archive.'
+            : 'Forked session created and prompt execution started.';
+
         return textResult({
           session: updatedSession,
           taskId: promptResponse.taskId,
           status: promptResponse.status,
-          note: 'Forked session created and prompt execution started.',
+          note,
         });
       } else if (mode === 'subsession') {
         const spawnData: Partial<import('@agor/core/types').SpawnConfig> = {
@@ -616,6 +648,12 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
           .boolean()
           .optional()
           .describe('Include the original prompt in the callback message (default: false)'),
+        callbackMode: z
+          .enum(['once', 'persistent'])
+          .optional()
+          .describe(
+            'Callback firing mode: "once" (default) fires on first completion then auto-disables, "persistent" fires on every completion'
+          ),
         mcpServerIds: z
           .array(z.string())
           .optional()
@@ -719,6 +757,9 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
       if (args.includeOriginalPrompt !== undefined) {
         callbackConfig.include_original_prompt = args.includeOriginalPrompt;
       }
+      if (wantsCallback) {
+        callbackConfig.callback_mode = args.callbackMode ?? 'once';
+      }
 
       const sessionData: Record<string, unknown> = {
         worktree_id: worktree.worktree_id,
@@ -792,7 +833,7 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
     'agor_sessions_update',
     {
       description:
-        'Update session metadata (title, description, status, archived). Useful for agents to self-document their work.',
+        'Update session metadata (title, description, status, archived, callback config). Useful for agents to self-document their work or manage callback settings.',
       annotations: { idempotentHint: true },
       inputSchema: z.object({
         sessionId: z.string().describe('Session ID to update (UUIDv7 or short ID)'),
@@ -806,6 +847,16 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
           .boolean()
           .optional()
           .describe('Set archive state. true to archive, false to unarchive (optional)'),
+        enableCallback: z
+          .boolean()
+          .optional()
+          .describe('Enable or disable callbacks on this session (optional)'),
+        callbackMode: z
+          .enum(['once', 'persistent'])
+          .optional()
+          .describe(
+            'Callback mode: "once" fires once then auto-disables, "persistent" fires every time (optional)'
+          ),
       }),
     },
     async (args) => {
@@ -818,9 +869,23 @@ export function registerSessionTools(server: McpServer, ctx: McpContext): void {
         updates.archived_reason = args.archived ? 'manual' : undefined;
       }
 
+      // Handle callback config updates
+      if (args.enableCallback !== undefined || args.callbackMode !== undefined) {
+        const sessionId = await resolveSessionId(ctx, args.sessionId);
+        const existingSession = await ctx.app
+          .service('sessions')
+          .get(sessionId, ctx.baseServiceParams);
+        const existingCallback = existingSession.callback_config || {};
+        updates.callback_config = {
+          ...existingCallback,
+          ...(args.enableCallback !== undefined ? { enabled: args.enableCallback } : {}),
+          ...(args.callbackMode !== undefined ? { callback_mode: args.callbackMode } : {}),
+        };
+      }
+
       if (Object.keys(updates).length === 0) {
         throw new Error(
-          'At least one field (title, description, status, archived) must be provided'
+          'At least one field (title, description, status, archived, enableCallback, callbackMode) must be provided'
         );
       }
 

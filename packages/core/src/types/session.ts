@@ -353,7 +353,24 @@ export interface Session {
      * session owner. Execution still runs as the target session's Unix user.
      */
     callback_created_by?: string;
+    /**
+     * Callback firing mode:
+     * - "once": Fire callback on first completion, then auto-disable (default)
+     * - "persistent": Fire on every completion (legacy behavior)
+     */
+    callback_mode?: 'once' | 'persistent';
   };
+
+  // ===== Fork Origin =====
+
+  /**
+   * Tracks how this session was created via fork:
+   * - "btw": Ephemeral fork created via sessions.prompt mode:"btw" or UI btw button
+   *
+   * Undefined for regular forks, spawned sessions, or directly created sessions.
+   * Sessions with fork_origin:"btw" are auto-archived after task completion.
+   */
+  fork_origin?: 'btw';
 
   // ===== Archive State =====
 
@@ -370,8 +387,9 @@ export interface Session {
    *
    * - 'worktree_archived': Cascaded from parent worktree being archived
    * - 'manual': User manually archived this session
+   * - 'btw_completed': Ephemeral btw fork auto-archived after task completion
    */
-  archived_reason?: 'worktree_archived' | 'manual';
+  archived_reason?: 'worktree_archived' | 'manual' | 'btw_completed';
 }
 
 /**
@@ -510,6 +528,9 @@ export interface SpawnConfig {
 
   /** Enable callback to parent on completion (default: true) */
   enableCallback?: boolean;
+
+  /** Callback mode: "once" (default) fires once then auto-disables, "persistent" fires every time */
+  callbackMode?: 'once' | 'persistent';
 
   /** Include child's final result in callback (default: true) */
   includeLastMessage?: boolean;

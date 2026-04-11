@@ -99,7 +99,7 @@ export const sessions = pgTable(
     // Archive state (cascaded from worktree archive)
     archived: t.bool('archived').notNull().default(false),
     archived_reason: text('archived_reason', {
-      enum: ['worktree_archived', 'manual'],
+      enum: ['worktree_archived', 'manual', 'btw_completed'],
     }),
 
     // JSON blob for everything else (cross-DB via json() type)
@@ -144,6 +144,9 @@ export const sessions = pgTable(
 
         // Callback config (child/remote session completion notifications)
         callback_config?: Session['callback_config'];
+
+        // Fork origin tracking (set to 'btw' for ephemeral btw forks)
+        fork_origin?: 'btw';
 
         // Context window tracking (cumulative usage from latest task)
         current_context_usage?: number; // Tokens currently in context

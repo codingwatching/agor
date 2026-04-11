@@ -8,13 +8,14 @@ import type {
   SpawnConfig,
   Worktree,
 } from '@agor/core/types';
-import { SessionStatus, TaskStatus } from '@agor/core/types';
+import { AGENTIC_TOOL_CAPABILITIES, SessionStatus, TaskStatus } from '@agor/core/types';
 import {
   BranchesOutlined,
   CloseOutlined,
   CodeOutlined,
   DeleteOutlined,
   ForkOutlined,
+  QuestionCircleOutlined,
   SendOutlined,
   SettingOutlined,
   StopOutlined,
@@ -103,11 +104,17 @@ const SessionPanel: React.FC<SessionPanelProps> = ({
   const {
     onSendPrompt,
     onFork,
+    onBtwFork,
     onOpenSettings,
     onUpdateSession,
     onDeleteSession: onDelete,
     onOpenTerminal,
   } = useAppActions();
+
+  // Tool capabilities — drives which buttons are shown
+  const toolCaps = session?.agentic_tool
+    ? AGENTIC_TOOL_CAPABILITIES[session.agentic_tool]
+    : undefined;
 
   // Compute which session MCP servers need authentication
   const unauthedMcpServers = React.useMemo(() => {
@@ -437,6 +444,14 @@ const SessionPanel: React.FC<SessionPanelProps> = ({
     deleteDraft(session.session_id);
   };
 
+  const handleBtwSend = async () => {
+    if (!inputValue.trim() || connectionDisabled) return;
+    const promptToSend = inputValue.trim();
+    setInputValue('');
+    deleteDraft(session.session_id);
+    await onBtwFork?.(session.session_id, promptToSend);
+  };
+
   const handleSpawnModalConfirm = async (config: string | Partial<SpawnConfig>) => {
     if (!session) return;
 
@@ -608,7 +623,11 @@ const SessionPanel: React.FC<SessionPanelProps> = ({
         <AutocompleteTextarea
           value={inputValue}
           onChange={setInputValue}
-          placeholder="Send a prompt, fork, or create a subsession... (type @ for autocomplete)"
+          placeholder={
+            isRunning
+              ? 'Session is working... Type here to queue, or use "btw" for a side question'
+              : 'Send a prompt, fork, or use "btw" for a side question... (type @ for autocomplete)'
+          }
           autoSize={{ minRows: 1, maxRows: 10 }}
           onKeyPress={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -732,36 +751,41 @@ const SessionPanel: React.FC<SessionPanelProps> = ({
                   loading={isStopping && !stopRequestInFlight}
                 />
               </Tooltip>
-              <Tooltip
-                title={
-                  connectionDisabled
-                    ? 'Disconnected from daemon'
-                    : isRunning
-                      ? 'Session is running...'
-                      : 'Fork Session'
-                }
-              >
-                <Button
-                  icon={<ForkOutlined />}
-                  onClick={handleFork}
-                  disabled={connectionDisabled || isRunning}
-                />
-              </Tooltip>
-              <Tooltip
-                title={
-                  connectionDisabled
-                    ? 'Disconnected from daemon'
-                    : isRunning
-                      ? 'Session is running...'
-                      : 'Spawn Subsession'
-                }
-              >
-                <Button
-                  icon={<BranchesOutlined />}
-                  onClick={() => setSpawnModalOpen(true)}
-                  disabled={connectionDisabled || isRunning}
-                />
-              </Tooltip>
+              {toolCaps?.supportsSessionFork !== false && (
+                <Tooltip title={connectionDisabled ? 'Disconnected from daemon' : 'Fork Session'}>
+                  <Button
+                    icon={<ForkOutlined />}
+                    onClick={handleFork}
+                    disabled={connectionDisabled}
+                  />
+                </Tooltip>
+              )}
+              {toolCaps?.supportsChildSpawn !== false && (
+                <Tooltip
+                  title={
+                    connectionDisabled
+                      ? 'Disconnected from daemon'
+                      : isRunning
+                        ? 'Session is running...'
+                        : 'Spawn Subsession'
+                  }
+                >
+                  <Button
+                    icon={<BranchesOutlined />}
+                    onClick={() => setSpawnModalOpen(true)}
+                    disabled={connectionDisabled || isRunning}
+                  />
+                </Tooltip>
+              )}
+              {toolCaps?.supportsSessionFork !== false && (
+                <Tooltip title="Ask a side question via ephemeral fork (btw)">
+                  <Button
+                    icon={<QuestionCircleOutlined />}
+                    onClick={handleBtwSend}
+                    disabled={connectionDisabled}
+                  />
+                </Tooltip>
+              )}
               <Tooltip title={connectionDisabled ? 'Disconnected from daemon' : 'Upload Files'}>
                 <FileUploadButton
                   onClick={() => setUploadModalOpen(true)}
