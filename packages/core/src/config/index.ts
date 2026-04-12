@@ -14,4 +14,6 @@ export * from './env-validation';
 export * from './key-resolver';
 export * from './repo-list';
 export * from './repo-reference';
+export * from './resource-schemas';
+export * from './resource-sync';
 export * from './types';
