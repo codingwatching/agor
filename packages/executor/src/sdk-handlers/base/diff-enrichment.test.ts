@@ -3,7 +3,13 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { enrichContentBlocks, enrichToolResults, registerToolUses } from './diff-enrichment.js';
+import {
+  clearToolInvocationState,
+  enrichContentBlocks,
+  enrichToolResults,
+  registerToolInvocationStart,
+  registerToolUses,
+} from './diff-enrichment.js';
 
 interface TestContentBlock {
   type: string;
@@ -205,6 +211,190 @@ describe('diff enrichment', () => {
     expect(toolResult.diff?.files?.[0]?.kind).toBe('add');
     const lines = toolResult.diff?.files?.[0]?.structuredPatch?.[0]?.lines ?? [];
     expect(lines.some((line) => line.includes('+export const added = true;'))).toBe(true);
+  });
+
+  it('uses invocation snapshots so add then remove across calls both render correctly', () => {
+    const repoDir = createTempGitRepo();
+    const srcDir = path.join(repoDir, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.writeFileSync(path.join(repoDir, 'README.md'), '# test\n', 'utf-8');
+    execSync('git add .', { cwd: repoDir, stdio: 'ignore' });
+    execSync('git commit -m "initial"', { cwd: repoDir, stdio: 'ignore' });
+
+    const relPath = 'src/toggle.ts';
+    const absPath = path.join(repoDir, relPath);
+
+    // Invocation 1: add file
+    registerToolInvocationStart(
+      'tool-codex-edit-files-toggle-add',
+      'edit_files',
+      { changes: [{ path: relPath, kind: 'add' }] },
+      { workingDirectory: repoDir }
+    );
+    fs.writeFileSync(absPath, 'export const mode = "on";\n', 'utf-8');
+    const addBlocks: TestContentBlock[] = [
+      {
+        type: 'tool_use',
+        id: 'tool-codex-edit-files-toggle-add',
+        name: 'edit_files',
+        input: { changes: [{ path: relPath, kind: 'add' }] },
+      },
+      {
+        type: 'tool_result',
+        tool_use_id: 'tool-codex-edit-files-toggle-add',
+        content: '[completed]',
+      },
+    ];
+    enrichContentBlocks(addBlocks, { workingDirectory: repoDir });
+
+    expect(addBlocks[1].diff?.files).toHaveLength(1);
+    expect(addBlocks[1].diff?.files?.[0]?.kind).toBe('add');
+    const addLines = addBlocks[1].diff?.files?.[0]?.structuredPatch?.[0]?.lines ?? [];
+    expect(addLines.some((line) => line.includes('+export const mode = "on";'))).toBe(true);
+
+    // Invocation 2: delete same file (after add already happened)
+    registerToolInvocationStart(
+      'tool-codex-edit-files-toggle-delete',
+      'edit_files',
+      { changes: [{ path: relPath, kind: 'delete' }] },
+      { workingDirectory: repoDir }
+    );
+    fs.rmSync(absPath);
+    const deleteBlocks: TestContentBlock[] = [
+      {
+        type: 'tool_use',
+        id: 'tool-codex-edit-files-toggle-delete',
+        name: 'edit_files',
+        input: { changes: [{ path: relPath, kind: 'delete' }] },
+      },
+      {
+        type: 'tool_result',
+        tool_use_id: 'tool-codex-edit-files-toggle-delete',
+        content: '[completed]',
+      },
+    ];
+    enrichContentBlocks(deleteBlocks, { workingDirectory: repoDir });
+
+    expect(deleteBlocks[1].diff?.files).toHaveLength(1);
+    expect(deleteBlocks[1].diff?.files?.[0]?.kind).toBe('delete');
+    const deleteLines = deleteBlocks[1].diff?.files?.[0]?.structuredPatch?.[0]?.lines ?? [];
+    expect(deleteLines.some((line) => line.includes('-export const mode = "on";'))).toBe(true);
+  });
+
+  it('isolates snapshot lookups by scope when tool_use IDs collide', () => {
+    const sharedToolUseId = 'tool-collision-id';
+
+    const repoA = createTempGitRepo();
+    const fileA = path.join(repoA, 'collision-a.ts');
+    fs.writeFileSync(fileA, 'const value = "a-head";\n', 'utf-8');
+    execSync('git add .', { cwd: repoA, stdio: 'ignore' });
+    execSync('git commit -m "initial"', { cwd: repoA, stdio: 'ignore' });
+    fs.writeFileSync(fileA, 'const value = "a-pre";\n', 'utf-8');
+    registerToolInvocationStart(
+      sharedToolUseId,
+      'edit_files',
+      { changes: [{ path: 'collision-a.ts', kind: 'update' }] },
+      { workingDirectory: repoA, snapshotScope: 'scope-a' }
+    );
+    fs.writeFileSync(fileA, 'const value = "a-post";\n', 'utf-8');
+
+    const repoB = createTempGitRepo();
+    const fileB = path.join(repoB, 'collision-b.ts');
+    fs.writeFileSync(fileB, 'const value = "b-head";\n', 'utf-8');
+    execSync('git add .', { cwd: repoB, stdio: 'ignore' });
+    execSync('git commit -m "initial"', { cwd: repoB, stdio: 'ignore' });
+    fs.writeFileSync(fileB, 'const value = "b-pre";\n', 'utf-8');
+    registerToolInvocationStart(
+      sharedToolUseId,
+      'edit_files',
+      { changes: [{ path: 'collision-b.ts', kind: 'update' }] },
+      { workingDirectory: repoB, snapshotScope: 'scope-b' }
+    );
+    fs.writeFileSync(fileB, 'const value = "b-post";\n', 'utf-8');
+
+    const blocksA: TestContentBlock[] = [
+      {
+        type: 'tool_use',
+        id: sharedToolUseId,
+        name: 'edit_files',
+        input: { changes: [{ path: 'collision-a.ts', kind: 'update' }] },
+      },
+      {
+        type: 'tool_result',
+        tool_use_id: sharedToolUseId,
+        content: '[completed]',
+      },
+    ];
+
+    enrichContentBlocks(blocksA, { workingDirectory: repoA, snapshotScope: 'scope-a' });
+
+    const linesA = blocksA[1].diff?.files?.[0]?.structuredPatch?.[0]?.lines ?? [];
+    expect(linesA.some((line) => line.includes('-const value = "a-pre";'))).toBe(true);
+    expect(linesA.some((line) => line.includes('+const value = "a-post";'))).toBe(true);
+    expect(linesA.some((line) => line.includes('b-pre'))).toBe(false);
+
+    const blocksB: TestContentBlock[] = [
+      {
+        type: 'tool_use',
+        id: sharedToolUseId,
+        name: 'edit_files',
+        input: { changes: [{ path: 'collision-b.ts', kind: 'update' }] },
+      },
+      {
+        type: 'tool_result',
+        tool_use_id: sharedToolUseId,
+        content: '[completed]',
+      },
+    ];
+
+    enrichContentBlocks(blocksB, { workingDirectory: repoB, snapshotScope: 'scope-b' });
+
+    const linesB = blocksB[1].diff?.files?.[0]?.structuredPatch?.[0]?.lines ?? [];
+    expect(linesB.some((line) => line.includes('-const value = "b-pre";'))).toBe(true);
+    expect(linesB.some((line) => line.includes('+const value = "b-post";'))).toBe(true);
+    expect(linesB.some((line) => line.includes('a-pre'))).toBe(false);
+  });
+
+  it('falls back to git HEAD diff after explicit snapshot cleanup', () => {
+    const repoDir = createTempGitRepo();
+    const filePath = path.join(repoDir, 'cleanup.ts');
+
+    fs.writeFileSync(filePath, 'const value = "head";\n', 'utf-8');
+    execSync('git add .', { cwd: repoDir, stdio: 'ignore' });
+    execSync('git commit -m "initial"', { cwd: repoDir, stdio: 'ignore' });
+
+    // Diverge from HEAD before registering snapshot so snapshot and HEAD differ.
+    fs.writeFileSync(filePath, 'const value = "pre";\n', 'utf-8');
+    registerToolInvocationStart(
+      'tool-codex-edit-files-cleanup',
+      'edit_files',
+      { changes: [{ path: 'cleanup.ts', kind: 'update' }] },
+      { workingDirectory: repoDir, snapshotScope: 'scope-cleanup' }
+    );
+
+    fs.writeFileSync(filePath, 'const value = "post";\n', 'utf-8');
+    clearToolInvocationState('tool-codex-edit-files-cleanup', { snapshotScope: 'scope-cleanup' });
+
+    const blocks: TestContentBlock[] = [
+      {
+        type: 'tool_use',
+        id: 'tool-codex-edit-files-cleanup',
+        name: 'edit_files',
+        input: { changes: [{ path: 'cleanup.ts', kind: 'update' }] },
+      },
+      {
+        type: 'tool_result',
+        tool_use_id: 'tool-codex-edit-files-cleanup',
+        content: '[completed]',
+      },
+    ];
+
+    enrichContentBlocks(blocks, { workingDirectory: repoDir, snapshotScope: 'scope-cleanup' });
+
+    const lines = blocks[1].diff?.files?.[0]?.structuredPatch?.[0]?.lines ?? [];
+    expect(lines.some((line) => line.includes('-const value = "head";'))).toBe(true);
+    expect(lines.some((line) => line.includes('+const value = "post";'))).toBe(true);
+    expect(lines.some((line) => line.includes('-const value = "pre";'))).toBe(false);
   });
 
   it('skips unsafe relative paths when resolving git HEAD content', () => {
