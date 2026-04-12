@@ -20,6 +20,7 @@ import type {
 import { MessageRole } from '@agor/core/types';
 import { createFeathersBackedRepositories } from '../../db/feathers-repositories.js';
 import type { StreamingCallbacks } from '../../sdk-handlers/base/types.js';
+import { computeCodexContextWindowFromPreviousTask } from '../../sdk-handlers/codex/context-window-fallback.js';
 import { normalizeRawSdkResponse } from '../../sdk-handlers/normalizer-factory.js';
 import type { AgorClient } from '../../services/feathers-client.js';
 
@@ -436,23 +437,14 @@ export async function executeToolTask(params: {
       }
     }
 
-    // Use SDK's authoritative context usage when available (Claude Code),
-    // fall back to tool-specific computation for other tools (Codex, Gemini).
+    // Use SDK's authoritative context usage when available,
+    // fall back to tool-specific computation otherwise.
     // Handled independently of rawSdkResponse since the two data sources are separate.
     if (result.rawContextUsage && result.rawContextUsage.totalTokens > 0) {
       patchData.computed_context_window = result.rawContextUsage.totalTokens;
       console.log(
         `[${toolName}] SDK context usage: ${result.rawContextUsage.totalTokens}/${result.rawContextUsage.maxTokens} tokens (${result.rawContextUsage.percentage}%)`
       );
-
-      // Store rawContextUsage in the raw_sdk_response for debugging
-      if (patchData.raw_sdk_response && typeof patchData.raw_sdk_response === 'object') {
-        (patchData.raw_sdk_response as Record<string, unknown>).rawContextUsage = {
-          totalTokens: result.rawContextUsage.totalTokens,
-          maxTokens: result.rawContextUsage.maxTokens,
-          percentage: result.rawContextUsage.percentage,
-        };
-      }
 
       // Override contextWindowLimit in normalized response with the authoritative
       // maxTokens from getContextUsage() so the UI computes percentage correctly
@@ -461,23 +453,49 @@ export async function executeToolTask(params: {
         typeof patchData.normalized_sdk_response === 'object' &&
         result.rawContextUsage.maxTokens > 0
       ) {
-        (patchData.normalized_sdk_response as Record<string, unknown>).contextWindowLimit =
-          result.rawContextUsage.maxTokens;
+        const normalizedResponse = patchData.normalized_sdk_response as Record<string, unknown>;
+        normalizedResponse.contextWindowLimit = result.rawContextUsage.maxTokens;
+        normalizedResponse.contextUsageSnapshot = {
+          totalTokens: result.rawContextUsage.totalTokens,
+          maxTokens: result.rawContextUsage.maxTokens,
+          percentage: result.rawContextUsage.percentage,
+        };
       }
-    } else if (tool.computeContextWindow) {
-      try {
-        const contextWindow = await tool.computeContextWindow(
-          sessionId,
-          taskId,
-          result.rawSdkResponse
-        );
-        if (contextWindow > 0) {
-          patchData.computed_context_window = contextWindow;
-          console.log(`[${toolName}] Computed context window: ${contextWindow} tokens`);
+    } else {
+      if (toolName === 'codex' && result.rawSdkResponse) {
+        try {
+          const inferredWindow = await computeCodexContextWindowFromPreviousTask(
+            client,
+            sessionId,
+            taskId,
+            result.rawSdkResponse
+          );
+          if (inferredWindow && inferredWindow > 0) {
+            patchData.computed_context_window = inferredWindow;
+            console.log(
+              `[${toolName}] Inferred context window from previous-task running totals: ${inferredWindow} tokens`
+            );
+          }
+        } catch (error) {
+          console.warn(`[${toolName}] Failed to infer context window from previous task:`, error);
         }
-      } catch (error) {
-        console.error(`[${toolName}] Failed to compute context window:`, error);
-        // Continue without context window - not critical
+      }
+
+      if (patchData.computed_context_window === undefined && tool.computeContextWindow) {
+        try {
+          const contextWindow = await tool.computeContextWindow(
+            sessionId,
+            taskId,
+            result.rawSdkResponse
+          );
+          if (contextWindow > 0) {
+            patchData.computed_context_window = contextWindow;
+            console.log(`[${toolName}] Computed context window: ${contextWindow} tokens`);
+          }
+        } catch (error) {
+          console.error(`[${toolName}] Failed to compute context window:`, error);
+          // Continue without context window - not critical
+        }
       }
     }
 

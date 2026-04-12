@@ -23,6 +23,7 @@ import {
 import { Collapse, Popover, Tooltip, theme } from 'antd';
 import type React from 'react';
 import { copyToClipboard } from '../../utils/clipboard';
+import { getContextWindowPercentage } from '../../utils/contextWindow';
 import { Tag } from '../Tag';
 
 /**
@@ -193,6 +194,11 @@ interface ContextWindowPillProps extends BasePillProps {
       costUsd?: number;
       primaryModel?: string;
       durationMs?: number;
+      contextUsageSnapshot?: {
+        totalTokens: number;
+        maxTokens: number;
+        percentage: number;
+      };
     };
   };
 }
@@ -218,34 +224,22 @@ const ContextWindowPopoverContent: React.FC<{
   const normalized = taskMetadata?.normalized_sdk_response;
 
   // Add authoritative context usage from SDK's getContextUsage() if available
-  const rawContextUsage =
-    sdkResponse &&
-    typeof sdkResponse === 'object' &&
-    sdkResponse !== null &&
-    'rawContextUsage' in sdkResponse &&
-    sdkResponse.rawContextUsage &&
-    typeof sdkResponse.rawContextUsage === 'object'
-      ? (sdkResponse.rawContextUsage as {
-          totalTokens: number;
-          maxTokens: number;
-          percentage: number;
-        })
-      : null;
+  const contextUsageSnapshot = normalized?.contextUsageSnapshot ?? null;
 
-  if (rawContextUsage) {
+  if (contextUsageSnapshot) {
     advancedItems.push({
       key: 'sdk-context-usage',
       label: 'Context Window (SDK)',
       children: (
         <div style={{ fontSize: '0.9em', color: token.colorTextSecondary }}>
           <div>
-            Used: <strong>{rawContextUsage.totalTokens.toLocaleString()}</strong> tokens
+            Used: <strong>{contextUsageSnapshot.totalTokens.toLocaleString()}</strong> tokens
           </div>
           <div>
-            Limit: <strong>{rawContextUsage.maxTokens.toLocaleString()}</strong> tokens
+            Limit: <strong>{contextUsageSnapshot.maxTokens.toLocaleString()}</strong> tokens
           </div>
           <div>
-            Percentage: <strong>{rawContextUsage.percentage}%</strong>
+            Percentage: <strong>{contextUsageSnapshot.percentage}%</strong>
           </div>
           <div style={{ fontSize: '0.85em', color: token.colorTextTertiary, marginTop: 4 }}>
             Authoritative snapshot from SDK getContextUsage()
@@ -409,7 +403,7 @@ export const ContextWindowPill: React.FC<ContextWindowPillProps> = ({
   style,
 }) => {
   // Handle division by zero - if no limit, show as unknown percentage
-  const percentage = limit > 0 ? Math.round((used / limit) * 100) : 0;
+  const percentage = limit > 0 ? Math.round(getContextWindowPercentage(used, limit)) : 0;
   const hasLimit = limit > 0;
 
   // Color-code based on usage: green (<50%), yellow (50-80%), red (>80%)
