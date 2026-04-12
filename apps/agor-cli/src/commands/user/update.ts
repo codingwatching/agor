@@ -2,7 +2,7 @@
  * `agor user update` - Update a user
  */
 
-import type { User } from '@agor/core/types';
+import type { User } from '@agor-live/client';
 import { Args, Flags } from '@oclif/core';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
@@ -56,7 +56,7 @@ export default class UserUpdate extends BaseCommand {
     try {
       // Find user by email or ID
       const usersService = client.service('users');
-      const users = (await usersService.findAll()) as User[];
+      const users = await usersService.findAll();
 
       const user = users.find(
         (u) => u.email === args.user || u.user_id === args.user || u.user_id.startsWith(args.user)

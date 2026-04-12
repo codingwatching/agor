@@ -4,8 +4,7 @@
  * Removes a worktree from the database and optionally from the filesystem.
  */
 
-import { formatShortId } from '@agor/core/db';
-import type { Worktree } from '@agor/core/types';
+import { formatShortId } from '@agor-live/client';
 import { Args, Flags } from '@oclif/core';
 import chalk from 'chalk';
 import { BaseCommand } from '../../base-command';
@@ -43,7 +42,7 @@ export default class WorktreeRemove extends BaseCommand {
       const worktreesService = client.service('worktrees');
 
       // Fetch worktree first to show what we're removing
-      const worktree = (await worktreesService.get(args.worktreeId)) as Worktree;
+      const worktree = await worktreesService.get(args.worktreeId);
 
       this.log('');
       this.log(chalk.yellow('⚠  Warning: You are about to remove:'));

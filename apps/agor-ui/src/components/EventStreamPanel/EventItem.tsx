@@ -2,8 +2,7 @@
  * EventItem - Display a single socket event with timestamp, type, and data
  */
 
-import type { AgorClient } from '@agor/core/api';
-import type { Repo, Session, SpawnConfig, User, Worktree } from '@agor/core/types';
+import type { AgorClient, Repo, Session, SpawnConfig, User, Worktree } from '@agor-live/client';
 import {
   AimOutlined,
   ApiOutlined,

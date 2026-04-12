@@ -4,8 +4,8 @@
  * Update issue URL, PR URL, notes, and other metadata fields.
  */
 
-import { formatShortId } from '@agor/core/db';
-import type { Worktree } from '@agor/core/types';
+import type { Worktree } from '@agor-live/client';
+import { formatShortId } from '@agor-live/client';
 import { Args, Flags } from '@oclif/core';
 import chalk from 'chalk';
 import { BaseCommand } from '../../base-command';
@@ -60,7 +60,7 @@ export default class WorktreeUpdate extends BaseCommand {
       if (flags.notes !== undefined) updates.notes = flags.notes;
 
       // Update worktree
-      const updated = (await worktreesService.patch(args.worktreeId, updates)) as Worktree;
+      const updated = await worktreesService.patch(args.worktreeId, updates);
 
       this.log('');
       this.log(`${chalk.green('✓')} Worktree updated: ${chalk.cyan(updated.name)}`);

@@ -5,8 +5,8 @@
  * Manages user authentication state and provides login/logout functions
  */
 
-import { createClient } from '@agor/core/api';
-import type { User } from '@agor/core/types';
+import type { User } from '@agor-live/client';
+import { createRestClient } from '@agor-live/client';
 import { useCallback, useEffect, useState } from 'react';
 import { getDaemonUrl } from '../config/daemon';
 import {
@@ -31,6 +31,51 @@ interface UseAuthReturn extends AuthState {
   reAuthenticate: () => Promise<void>;
 }
 
+function isLikelyConnectionError(error: unknown): boolean {
+  const errorMessage =
+    error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  const errorName = error instanceof Error ? error.constructor.name : '';
+  const errorObject = error as
+    | {
+        status?: unknown;
+        statusCode?: unknown;
+      }
+    | undefined;
+
+  const status =
+    typeof errorObject?.statusCode === 'number'
+      ? errorObject.statusCode
+      : typeof errorObject?.status === 'number'
+        ? errorObject.status
+        : undefined;
+
+  // Definite auth failures should not be treated as connectivity issues.
+  if (status === 401 || status === 403) {
+    return false;
+  }
+
+  if (status === 0 || status === 408 || status === 429 || (status !== undefined && status >= 500)) {
+    return true;
+  }
+
+  if (errorName === 'TypeError' && errorMessage.includes('fetch')) {
+    return true;
+  }
+
+  return (
+    errorMessage.includes('connection') ||
+    errorMessage.includes('timeout') ||
+    errorMessage.includes('websocket') ||
+    errorMessage.includes('transport') ||
+    errorMessage.includes('failed to fetch') ||
+    errorMessage.includes('networkerror') ||
+    errorMessage.includes('network error') ||
+    errorMessage.includes('load failed') ||
+    errorName === 'TransportError' ||
+    errorName === 'WebSocketError'
+  );
+}
+
 /**
  * Authentication hook
  */
@@ -51,9 +96,6 @@ export function useAuth(): UseAuthReturn {
     const MAX_RETRIES = 5;
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
-    // Move client outside try block so it's accessible in finally
-    let client: ReturnType<typeof createClient> | null = null;
-
     try {
       const storedAccessToken = getStoredAccessToken();
       const storedRefreshToken = getStoredRefreshToken();
@@ -69,32 +111,7 @@ export function useAuth(): UseAuthReturn {
         return;
       }
 
-      // Create temporary client
-      client = createClient(getDaemonUrl());
-
-      // Connect the client first (since autoConnect is false)
-      client.io.connect();
-
-      // Wait for connection (longer timeout for daemon restarts)
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Connection timeout')), 10000);
-
-        if (client.io.connected) {
-          clearTimeout(timeout);
-          resolve();
-          return;
-        }
-
-        client.io.once('connect', () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-
-        client.io.once('connect_error', (err) => {
-          clearTimeout(timeout);
-          reject(err);
-        });
-      });
+      const client = await createRestClient(getDaemonUrl());
 
       // Try to authenticate with stored access token first
       if (storedAccessToken) {
@@ -150,16 +167,7 @@ export function useAuth(): UseAuthReturn {
       });
     } catch (error) {
       // Connection or authentication error - retry if daemon just restarted
-      const errorMessage =
-        error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-      const errorName = error instanceof Error ? error.constructor.name : '';
-      const isConnectionError =
-        errorMessage.includes('connection') ||
-        errorMessage.includes('timeout') ||
-        errorMessage.includes('websocket') ||
-        errorMessage.includes('transport') ||
-        errorName === 'TransportError' ||
-        errorName === 'WebSocketError';
+      const isConnectionError = isLikelyConnectionError(error);
 
       if (isConnectionError && retryCount < MAX_RETRIES) {
         const delay = Math.min(2000 * 1.5 ** retryCount, 10000); // Exponential backoff: 2s, 3s, 4.5s, 6.75s, 10s (capped)
@@ -183,12 +191,6 @@ export function useAuth(): UseAuthReturn {
         loading: false,
         error: isConnectionError ? 'Connection lost - waiting for daemon...' : null,
       });
-    } finally {
-      // CRITICAL: Always close the client connection to prevent leaks
-      if (client?.io) {
-        client.io.removeAllListeners();
-        client.io.close();
-      }
     }
   }, []);
 
@@ -244,31 +246,8 @@ export function useAuth(): UseAuthReturn {
         return;
       }
 
-      let client: ReturnType<typeof createClient> | null = null;
-
       try {
-        client = createClient(getDaemonUrl());
-        client.io.connect();
-
-        await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error('Connection timeout')), 5000);
-
-          if (client.io.connected) {
-            clearTimeout(timeout);
-            resolve();
-            return;
-          }
-
-          client.io.once('connect', () => {
-            clearTimeout(timeout);
-            resolve();
-          });
-
-          client.io.once('connect_error', (err) => {
-            clearTimeout(timeout);
-            reject(err);
-          });
-        });
+        const client = await createRestClient(getDaemonUrl());
 
         const refreshResult = await refreshAndStoreTokens(client, refreshToken);
 
@@ -279,20 +258,21 @@ export function useAuth(): UseAuthReturn {
         }));
       } catch (error) {
         console.error('Failed to auto-refresh token:', error);
-        // Token refresh failed, user needs to login again
-        clearTokens();
-        setState({
-          user: null,
-          accessToken: null,
-          authenticated: false,
-          loading: false,
-          error: 'Session expired, please login again',
-        });
-      } finally {
-        // CRITICAL: Always close the client connection to prevent leaks
-        if (client?.io) {
-          client.io.removeAllListeners();
-          client.io.close();
+        if (isLikelyConnectionError(error)) {
+          setState((prev) => ({
+            ...prev,
+            error: 'Connection lost - waiting for daemon...',
+          }));
+        } else {
+          // Definite refresh/auth failure: token refresh failed, user must login again.
+          clearTokens();
+          setState({
+            user: null,
+            accessToken: null,
+            authenticated: false,
+            loading: false,
+            error: 'Session expired, please login again',
+          });
         }
       }
     }, REFRESH_INTERVAL);
@@ -306,35 +286,8 @@ export function useAuth(): UseAuthReturn {
   const login = async (email: string, password: string): Promise<boolean> => {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
-    let client: ReturnType<typeof createClient> | null = null;
-
     try {
-      // Create temporary client for login
-      client = createClient(getDaemonUrl());
-
-      // Connect the client first (since autoConnect is false)
-      client.io.connect();
-
-      // Wait for connection
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Connection timeout')), 5000);
-
-        if (client.io.connected) {
-          clearTimeout(timeout);
-          resolve();
-          return;
-        }
-
-        client.io.once('connect', () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-
-        client.io.once('connect_error', (err) => {
-          clearTimeout(timeout);
-          reject(err);
-        });
-      });
+      const client = await createRestClient(getDaemonUrl());
 
       // Authenticate
       const result = await client.authenticate({
@@ -365,12 +318,6 @@ export function useAuth(): UseAuthReturn {
         error: errorMessage,
       }));
       return false;
-    } finally {
-      // CRITICAL: Always close the client connection to prevent leaks
-      if (client?.io) {
-        client.io.removeAllListeners();
-        client.io.close();
-      }
     }
   };
 

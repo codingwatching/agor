@@ -1,5 +1,12 @@
-import type { AgorClient } from '@agor/core/api';
-import type { Board, BoardComment, Repo, Session, User, Worktree } from '@agor/core/types';
+import type {
+  AgorClient,
+  Board,
+  BoardComment,
+  Repo,
+  Session,
+  User,
+  Worktree,
+} from '@agor-live/client';
 import { Drawer, Layout, Typography } from 'antd';
 import { useState } from 'react';
 import { Route, Routes } from 'react-router-dom';

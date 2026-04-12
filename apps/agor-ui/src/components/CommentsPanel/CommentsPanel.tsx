@@ -1,13 +1,13 @@
-import type { AgorClient } from '@agor/core/api';
 import type {
+  AgorClient,
   BoardComment,
   BoardObject,
   CommentReaction,
   ReactionSummary,
   User,
   Worktree,
-} from '@agor/core/types';
-import { groupReactions, isThreadRoot } from '@agor/core/types';
+} from '@agor-live/client';
+import { groupReactions, isThreadRoot } from '@agor-live/client';
 import {
   AppstoreOutlined,
   BranchesOutlined,

@@ -4,8 +4,7 @@
  * Displays comprehensive information about a specific worktree.
  */
 
-import { formatShortId } from '@agor/core/db';
-import type { Worktree } from '@agor/core/types';
+import { formatShortId } from '@agor-live/client';
 import { Args } from '@oclif/core';
 import chalk from 'chalk';
 import { BaseCommand } from '../../base-command';
@@ -54,7 +53,7 @@ export default class WorktreeShow extends BaseCommand {
       const worktreesService = client.service('worktrees');
 
       // Fetch worktree by ID
-      const worktree = (await worktreesService.get(args.worktreeId)) as Worktree;
+      const worktree = await worktreesService.get(args.worktreeId);
 
       this.log('');
       this.log(chalk.bold.cyan(`Worktree: ${worktree.name}`));

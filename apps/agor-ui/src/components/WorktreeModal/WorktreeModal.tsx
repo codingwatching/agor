@@ -1,5 +1,5 @@
-import type { AgorClient } from '@agor/core/api';
 import type {
+  AgorClient,
   Board,
   BoardEntityObject,
   MCPServer,
@@ -7,8 +7,8 @@ import type {
   Session,
   User,
   Worktree,
-} from '@agor/core/types';
-import { getAssistantConfig, isAssistant } from '@agor/core/types';
+} from '@agor-live/client';
+import { getAssistantConfig, isAssistant } from '@agor-live/client';
 import { Badge, Modal, Tabs, theme } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { mapToArray } from '@/utils/mapHelpers';

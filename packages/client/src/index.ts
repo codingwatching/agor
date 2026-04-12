@@ -6,12 +6,13 @@
  *   const client = createClient('http://localhost:3030');
  */
 
-import type { AgorClient as CoreAgorClient } from '../../core/src/api/index';
+import type { AgorClient as CoreAgorClient } from '@agor/core/api';
 import {
   createClient as createCoreClient,
   createRestClient as createCoreRestClient,
+  getApiKeyFromEnv,
   isDaemonRunning,
-} from '../../core/src/api/index';
+} from '@agor/core/api';
 import {
   attachReactiveSessionApi,
   type ReactiveAgorClient,
@@ -22,6 +23,8 @@ import {
   type ReactiveSessionState,
   type ReactiveStreamingMessagesById,
   type ReactiveToolsByTask,
+  releaseReactiveSession,
+  retainReactiveSession,
   type StreamingMessageState,
   type TaskHydrationMode,
   type ToolExecutionState,
@@ -38,7 +41,7 @@ export type {
   SessionsService,
   TasksService,
   WorktreesService,
-} from '../../core/src/api/index';
+} from '@agor/core/api';
 
 export type {
   ReactiveAgorClient,
@@ -54,24 +57,13 @@ export type {
   ToolExecutionState,
 };
 
-// Core types that consumers need for working with the API
-export type {
-  Artifact,
-  AuthenticationResult,
-  Board,
-  BoardExportBlob,
-  CardType,
-  CardWithType,
-  ContextFileDetail,
-  ContextFileListItem,
-  MCPServer,
-  Message,
-  Repo,
-  Session,
-  Task,
-  User,
-  Worktree,
-} from '../../core/src/types/index';
+export * from '@agor/core/config/browser';
+export type { AgorConfig } from '@agor/core/config/types';
+export * from '@agor/core/models';
+export * from '@agor/core/templates/handlebars-helpers';
+// Re-export full browser-safe type/runtime surface for UI consumers.
+export * from '@agor/core/types';
+export { toShortId as formatShortId } from '@agor/core/types';
 
 export function createClient(...args: Parameters<typeof createCoreClient>): ReactiveAgorClient {
   const client = createCoreClient(...args);
@@ -85,4 +77,6 @@ export async function createRestClient(
 }
 
 export { attachReactiveSessionApi };
+export { releaseReactiveSession, retainReactiveSession };
+export { getApiKeyFromEnv };
 export { isDaemonRunning };

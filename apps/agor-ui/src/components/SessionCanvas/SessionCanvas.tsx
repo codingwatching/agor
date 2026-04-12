@@ -1,6 +1,6 @@
-import type { AgorClient } from '@agor/core/api';
 import type {
   AgenticToolName,
+  AgorClient,
   Board,
   BoardComment,
   BoardCommentCreate,
@@ -17,7 +17,7 @@ import type {
   Worktree,
   WorktreeID,
   ZoneTrigger,
-} from '@agor/core/types';
+} from '@agor-live/client';
 import {
   BorderOutlined,
   CommentOutlined,

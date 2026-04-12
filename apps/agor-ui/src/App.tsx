@@ -1,4 +1,3 @@
-import { getRepoReferenceOptions } from '@agor/core/config/browser';
 import type {
   Artifact,
   Board,
@@ -15,7 +14,8 @@ import type {
   User,
   UUID,
   Worktree,
-} from '@agor/core/types';
+} from '@agor-live/client';
+import { getRepoReferenceOptions } from '@agor-live/client';
 import { Alert, App as AntApp, ConfigProvider, Spin, theme } from 'antd';
 import { useEffect, useState } from 'react';
 import { BrowserRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';

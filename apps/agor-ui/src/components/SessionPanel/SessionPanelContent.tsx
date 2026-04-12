@@ -1,6 +1,5 @@
-import type { AgorClient } from '@agor/core/api';
-import type { Message, Session, SpawnConfig, Worktree } from '@agor/core/types';
-import { getAssistantConfig, isAssistant } from '@agor/core/types';
+import type { AgorClient, Message, Session, SpawnConfig, Worktree } from '@agor-live/client';
+import { getAssistantConfig, isAssistant } from '@agor-live/client';
 import {
   CopyOutlined,
   DeleteOutlined,

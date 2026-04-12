@@ -1,6 +1,5 @@
-import type { SessionStatus, TaskStatus } from '@agor/core/types';
+import type { SessionStatus, TaskStatus } from '@agor-live/client';
 // TODO: Move normalization to DB or daemon API
-// import { normalizeRawSdkResponse } from '@agor/core/utils/sdk-normalizer';
 import {
   ApartmentOutlined,
   BranchesOutlined,
