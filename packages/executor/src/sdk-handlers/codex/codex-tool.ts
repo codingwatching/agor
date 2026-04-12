@@ -31,7 +31,11 @@ import {
 } from '../../types.js';
 import { enrichContentBlocks } from '../base/diff-enrichment.js';
 import type { ITool, StreamingCallbacks, ToolCapabilities } from '../base/index.js';
-import type { MessagesService, TasksService } from '../claude/claude-tool.js';
+import type {
+  MessagesService,
+  TasksService,
+  TasksStreamingService,
+} from '../claude/claude-tool.js';
 import { DEFAULT_CODEX_MODEL } from './models.js';
 import { CodexPromptService } from './prompt-service.js';
 
@@ -56,6 +60,7 @@ export class CodexTool implements ITool {
   private worktreesRepo?: WorktreeRepository;
   private messagesService?: MessagesService;
   private tasksService?: TasksService;
+  private tasksStreamingService?: TasksStreamingService;
 
   constructor(
     messagesRepo?: MessagesRepository,
@@ -66,6 +71,7 @@ export class CodexTool implements ITool {
     apiKey?: string,
     messagesService?: MessagesService,
     tasksService?: TasksService,
+    tasksStreamingService?: TasksStreamingService,
     _useNativeAuth?: boolean, // Codex doesn't have OAuth fallback, but accept for interface consistency
     mcpServerRepo?: MCPServerRepository,
     usersRepo?: UsersRepository
@@ -75,6 +81,7 @@ export class CodexTool implements ITool {
     this.worktreesRepo = worktreesRepo;
     this.messagesService = messagesService;
     this.tasksService = tasksService;
+    this.tasksStreamingService = tasksStreamingService;
 
     if (messagesRepo && sessionsRepo) {
       this.promptService = new CodexPromptService(
@@ -110,6 +117,19 @@ export class CodexTool implements ITool {
     } catch {
       return false;
     }
+  }
+
+  private async emitTaskEvent(
+    event: 'tool:start' | 'tool:complete' | 'thinking:chunk',
+    data: Record<string, unknown>
+  ): Promise<void> {
+    if (this.tasksStreamingService) {
+      await this.tasksStreamingService.create({ event, data });
+      return;
+    }
+
+    // Fallback for environments that don't expose /tasks/streaming.
+    this.tasksService?.emit(event, data);
   }
 
   /**
@@ -168,6 +188,7 @@ export class CodexTool implements ITool {
     let streamStarted = false; // tracks whether onStreamStart succeeded (for safe onStreamEnd)
     let wasStopped = false;
     let workingDirectory: string | undefined;
+    const pendingToolMessageIds = new Map<string, MessageID>();
 
     if (this.sessionsRepo && this.worktreesRepo) {
       const session = await this.sessionsRepo.findById(sessionId);
@@ -197,6 +218,45 @@ export class CodexTool implements ITool {
         } else if (event.type === 'complete') {
           resolvedModel = event.resolvedModel;
         }
+      }
+
+      // Handle tool execution start (live UI indicator)
+      if (event.type === 'tool_start') {
+        if (taskId) {
+          await this.emitTaskEvent('tool:start', {
+            task_id: taskId,
+            session_id: sessionId,
+            tool_use_id: event.toolUse.id,
+            tool_name: event.toolUse.name,
+          });
+        }
+
+        // Create tool row immediately so UI shows "running" state.
+        const toolMessageId = generateId() as MessageID;
+        await this.createAssistantMessage(
+          sessionId,
+          toolMessageId,
+          [
+            {
+              type: 'tool_use',
+              id: event.toolUse.id,
+              name: event.toolUse.name,
+              input: event.toolUse.input,
+            },
+          ],
+          [
+            {
+              id: event.toolUse.id,
+              name: event.toolUse.name,
+              input: event.toolUse.input,
+            },
+          ],
+          taskId,
+          nextIndex++,
+          resolvedModel
+        );
+        assistantMessageIds.push(toolMessageId);
+        pendingToolMessageIds.set(event.toolUse.id, toolMessageId);
       }
 
       if (event.type === 'complete' && event.usage) {
@@ -270,8 +330,20 @@ export class CodexTool implements ITool {
       }
       // Handle tool completion (create message immediately for live updates)
       else if (event.type === 'tool_complete') {
-        // Create a message for this tool use immediately
-        const toolMessageId = generateId() as MessageID;
+        if (taskId) {
+          await this.emitTaskEvent('tool:complete', {
+            task_id: taskId,
+            session_id: sessionId,
+            tool_use_id: event.toolUse.id,
+          });
+        }
+
+        const toolResultContent =
+          event.toolUse.output !== undefined
+            ? event.toolUse.output
+            : event.toolUse.status
+              ? `[${event.toolUse.status}]`
+              : '';
         const toolContent = [
           {
             type: 'tool_use',
@@ -284,7 +356,7 @@ export class CodexTool implements ITool {
                 {
                   type: 'tool_result',
                   tool_use_id: event.toolUse.id,
-                  content: event.toolUse.output || `[${event.toolUse.status}]`,
+                  content: toolResultContent,
                   is_error: event.toolUse.status === 'failed' || event.toolUse.status === 'error',
                 },
               ]
@@ -294,42 +366,59 @@ export class CodexTool implements ITool {
         // Best-effort diff enrichment for Edit/Write tool results
         enrichContentBlocks(toolContent, { workingDirectory });
 
-        await this.createAssistantMessage(
-          sessionId,
-          toolMessageId,
-          toolContent as Array<{
-            type: string;
-            text?: string;
-            id?: string;
-            name?: string;
-            input?: Record<string, unknown>;
-          }>,
-          [
-            {
-              id: event.toolUse.id,
-              name: event.toolUse.name,
-              input: event.toolUse.input,
-            },
-          ],
-          taskId,
-          nextIndex++,
-          resolvedModel
-        );
-        assistantMessageIds.push(toolMessageId);
+        const existingToolMessageId = pendingToolMessageIds.get(event.toolUse.id);
+        if (existingToolMessageId) {
+          await this.messagesService?.patch(existingToolMessageId, {
+            content: toolContent as Message['content'],
+            content_preview:
+              typeof toolResultContent === 'string' ? toolResultContent.substring(0, 200) : '',
+          });
+          pendingToolMessageIds.delete(event.toolUse.id);
+        } else {
+          // Fallback path if start event wasn't observed.
+          const toolMessageId = generateId() as MessageID;
+          await this.createAssistantMessage(
+            sessionId,
+            toolMessageId,
+            toolContent as Array<{
+              type: string;
+              text?: string;
+              id?: string;
+              name?: string;
+              input?: Record<string, unknown>;
+            }>,
+            [
+              {
+                id: event.toolUse.id,
+                name: event.toolUse.name,
+                input: event.toolUse.input,
+              },
+            ],
+            taskId,
+            nextIndex++,
+            resolvedModel
+          );
+          assistantMessageIds.push(toolMessageId);
+        }
       }
       // Handle complete message (save to database)
       else if (event.type === 'complete' && event.content) {
         const usageForMessage = event.usage ?? tokenUsage;
-        // Filter out tool_use and tool_result blocks (already saved via tool_complete events)
-        // But KEEP text blocks - these contain the response
-        const textOnlyContent = event.content.filter(
-          (block) => block.type === 'text' // Only keep text blocks
+        // Filter out tool_use and tool_result blocks (already saved via tool_complete events),
+        // but keep text + thinking blocks so Codex reasoning is visible in the UI.
+        const nonToolContent = event.content.filter(
+          (block) => block.type === 'text' || block.type === 'thinking'
         );
 
-        // Only create message if there's text content (not just tools)
-        if (textOnlyContent.length > 0) {
+        // Only create message if there's non-tool content (not just tools)
+        if (nonToolContent.length > 0) {
           // Extract full text for streaming callback
-          const fullText = textOnlyContent
+          const fullText = nonToolContent
+            .filter((block) => block.type === 'text')
+            .map((block) => (block as { text?: string }).text || '')
+            .join('');
+          const fullThinking = nonToolContent
+            .filter((block) => block.type === 'thinking')
             .map((block) => (block as { text?: string }).text || '')
             .join('');
 
@@ -370,11 +459,29 @@ export class CodexTool implements ITool {
             }
           }
 
-          // Create complete message in DB (text only, tools already saved)
+          // Codex reasoning is not token-streamed by SDK. Emit a synthetic single
+          // thinking chunk so users see reasoning activity in real time.
+          if (streamingCallbacks && fullThinking && !fullText) {
+            try {
+              if (streamingCallbacks.onThinkingStart) {
+                await streamingCallbacks.onThinkingStart(assistantMessageId, {});
+              }
+              if (streamingCallbacks.onThinkingChunk) {
+                await streamingCallbacks.onThinkingChunk(assistantMessageId, fullThinking);
+              }
+              if (streamingCallbacks.onThinkingEnd) {
+                await streamingCallbacks.onThinkingEnd(assistantMessageId);
+              }
+            } catch (err) {
+              console.error(`[Codex] Thinking callback failed for ${assistantMessageId}:`, err);
+            }
+          }
+
+          // Create complete message in DB (non-tool content only, tools already saved)
           await this.createAssistantMessage(
             sessionId,
             assistantMessageId,
-            textOnlyContent,
+            nonToolContent,
             undefined, // No tool uses in this message (already saved separately)
             taskId,
             nextIndex++,
@@ -482,10 +589,14 @@ export class CodexTool implements ITool {
     resolvedModel?: string,
     tokenUsage?: TokenUsage
   ): Promise<Message> {
-    // Extract text content for preview
+    // Extract preview text (prefer normal text, then thinking text)
     const textBlocks = content.filter((b) => b.type === 'text').map((b) => b.text || '');
     const fullTextContent = textBlocks.join('');
-    const contentPreview = fullTextContent.substring(0, 200);
+    const fallbackThinking = content
+      .filter((b) => b.type === 'thinking')
+      .map((b) => b.text || '')
+      .join('');
+    const contentPreview = (fullTextContent || fallbackThinking).substring(0, 200);
 
     const message: Message = {
       message_id: messageId,
