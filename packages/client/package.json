@@ -28,10 +28,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@feathersjs/authentication-client": "^5.0.41",
-    "@feathersjs/feathers": "^5.0.41",
-    "@feathersjs/rest-client": "^5.0.41",
-    "@feathersjs/socketio-client": "^5.0.41",
+    "@feathersjs/authentication-client": "^5.0.44",
+    "@feathersjs/feathers": "^5.0.44",
+    "@feathersjs/rest-client": "^5.0.44",
+    "@feathersjs/socketio-client": "^5.0.44",
     "js-yaml": "^4.1.1",
     "socket.io-client": "^4.8.3"
   },
