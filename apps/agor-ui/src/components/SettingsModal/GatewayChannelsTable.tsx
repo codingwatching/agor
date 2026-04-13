@@ -51,7 +51,7 @@ import {
   Typography,
   theme,
 } from 'antd';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { getDaemonUrl } from '@/config/daemon';
 import { copyToClipboard } from '@/utils/clipboard';
@@ -61,6 +61,7 @@ import { AgenticToolConfigForm } from '../AgenticToolConfigForm';
 import { AgentSelectionGrid } from '../AgentSelectionGrid';
 import { AVAILABLE_AGENTS } from '../AgentSelectionGrid/availableAgents';
 import { JSONEditor, validateJSON } from '../JSONEditor';
+import { WorktreeSelect } from './WorktreeSelect';
 
 interface GatewayChannelsTableProps {
   client: AgorClient | null;
@@ -346,17 +347,7 @@ const ChannelFormFields: React.FC<{
             : undefined
         }
       >
-        <Select placeholder="Select a worktree" showSearch optionFilterProp="children">
-          {Array.from(worktreeById.values())
-            .sort((a, b) =>
-              (a.name || a.ref || a.worktree_id).localeCompare(b.name || b.ref || b.worktree_id)
-            )
-            .map((wt) => (
-              <Select.Option key={wt.worktree_id} value={wt.worktree_id}>
-                {wt.name || wt.ref || wt.worktree_id}
-              </Select.Option>
-            ))}
-        </Select>
+        <WorktreeSelect worktreeById={worktreeById} />
       </Form.Item>
 
       {/* For GitHub channels, "Post messages as" lives in the User Alignment section */}
@@ -1150,6 +1141,11 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
   const [createdChannelType, setCreatedChannelType] = useState<ChannelType | null>(null);
   const [createForm] = Form.useForm();
   const [editForm] = Form.useForm();
+  const [referencedWorktreesById, setReferencedWorktreesById] = useState<Map<string, Worktree>>(
+    () => new Map()
+  );
+  const loadingReferencedWorktreeIds = useRef<Set<string>>(new Set());
+  const referencedWorktreesByIdRef = useRef<Map<string, Worktree>>(new Map());
 
   // ── GitHub App Setup State (lifted from ChannelFormFields) ──
   const [githubStep, setGithubStep] = useState(0);
@@ -1174,6 +1170,73 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
       navigate('/', { replace: true });
     }
   }, [location.search, navigate]);
+
+  // Keep referenced target worktrees resolvable in CRUD even when archived worktrees
+  // are excluded from the core store.
+  useEffect(() => {
+    referencedWorktreesByIdRef.current = referencedWorktreesById;
+  }, [referencedWorktreesById]);
+
+  useEffect(() => {
+    if (!client) return;
+
+    const targetIds = new Set<string>();
+    for (const channel of gatewayChannelById.values()) {
+      if (channel.target_worktree_id) {
+        targetIds.add(channel.target_worktree_id);
+      }
+    }
+
+    const missingIds = Array.from(targetIds).filter(
+      (id) => !worktreeById.has(id) && !referencedWorktreesByIdRef.current.has(id)
+    );
+    if (missingIds.length === 0) return;
+
+    let cancelled = false;
+    void Promise.all(
+      missingIds.map(async (id) => {
+        if (loadingReferencedWorktreeIds.current.has(id)) return null;
+        loadingReferencedWorktreeIds.current.add(id);
+        try {
+          const worktree = (await client.service('worktrees').get(id)) as Worktree;
+          return worktree;
+        } catch {
+          return null;
+        } finally {
+          loadingReferencedWorktreeIds.current.delete(id);
+        }
+      })
+    ).then((results) => {
+      if (cancelled) return;
+      const resolved = results.filter((wt): wt is Worktree => wt !== null);
+      if (resolved.length === 0) return;
+
+      setReferencedWorktreesById((prev) => {
+        const next = new Map(prev);
+        for (const wt of resolved) {
+          next.set(wt.worktree_id, wt);
+        }
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client, gatewayChannelById, worktreeById]);
+
+  const worktreeOptionsById = useMemo(() => {
+    const merged = new Map<string, Worktree>();
+    for (const wt of worktreeById.values()) {
+      merged.set(wt.worktree_id, wt);
+    }
+    for (const wt of referencedWorktreesById.values()) {
+      if (!merged.has(wt.worktree_id)) {
+        merged.set(wt.worktree_id, wt);
+      }
+    }
+    return merged;
+  }, [referencedWorktreesById, worktreeById]);
 
   // No automatic credential fetch — user provides App ID and PEM manually
 
@@ -1459,10 +1522,12 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
       key: 'target_worktree_id',
       width: 180,
       render: (worktreeId: string) => {
-        const wt = worktreeById.get(worktreeId);
+        const wt = worktreeOptionsById.get(worktreeId);
         return (
           <Typography.Text type="secondary">
-            {wt ? wt.name || wt.ref || worktreeId : worktreeId}
+            {wt
+              ? `${wt.name || wt.ref || worktreeId}${wt.archived ? ' (archived)' : ''}`
+              : worktreeId}
           </Typography.Text>
         );
       },
@@ -1613,7 +1678,7 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
             mode="create"
             channelType={channelType}
             onChannelTypeChange={setChannelType}
-            worktreeById={worktreeById}
+            worktreeById={worktreeOptionsById}
             userById={userById}
             mcpServerById={mcpServerById}
             selectedAgent={selectedAgent}
@@ -1648,7 +1713,7 @@ export const GatewayChannelsTable: React.FC<GatewayChannelsTableProps> = ({
             mode="edit"
             channelType={channelType}
             onChannelTypeChange={setChannelType}
-            worktreeById={worktreeById}
+            worktreeById={worktreeOptionsById}
             userById={userById}
             mcpServerById={mcpServerById}
             selectedAgent={selectedAgent}
