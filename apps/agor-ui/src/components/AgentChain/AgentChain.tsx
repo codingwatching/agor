@@ -44,6 +44,7 @@ import { CollapsibleText } from '../CollapsibleText';
 import { Tag } from '../Tag';
 import {
   ALWAYS_EXPANDED_TOOLS,
+  buildBashDescriptionNode,
   deriveToolStatus,
   IMPLICIT_RESULT_TOOLS,
   renderToolStatusIcon,
@@ -467,17 +468,10 @@ export const AgentChain = React.memo<AgentChainProps>(
       let description = getToolDescription(toolUse);
       let descriptionNode: React.ReactNode | undefined;
 
-      if (toolUse.name === 'Bash' && toolUse.input.command) {
-        const bashDesc = toolUse.input.description ? String(toolUse.input.description) : null;
-        if (bashDesc) {
-          description = bashDesc;
-        } else {
-          const cmd = String(toolUse.input.command);
-          descriptionNode = (
-            <Typography.Text code ellipsis style={{ fontSize: token.fontSizeSM - 1 }}>
-              {cmd}
-            </Typography.Text>
-          );
+      if (toolUse.name === 'Bash') {
+        const bashNode = buildBashDescriptionNode(toolUse.input, token);
+        if (bashNode) {
+          descriptionNode = bashNode;
           description = null;
         }
       } else if ((toolUse.name === 'Grep' || toolUse.name === 'Glob') && toolUse.input.pattern) {
