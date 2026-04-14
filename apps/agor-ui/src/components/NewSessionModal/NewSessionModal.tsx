@@ -3,6 +3,7 @@ import type {
   AgorClient,
   CodexApprovalPolicy,
   CodexSandboxMode,
+  EffortLevel,
   MCPServer,
   PermissionMode,
   User,
@@ -12,7 +13,7 @@ import { getDefaultPermissionMode } from '@agor-live/client';
 import { DownOutlined } from '@ant-design/icons';
 import { Alert, Collapse, Form, Input, Modal, Typography } from 'antd';
 import { useEffect, useState } from 'react';
-import { AgenticToolConfigForm } from '../AgenticToolConfigForm';
+import { AgenticToolConfigForm, getFormValuesFromConfig } from '../AgenticToolConfigForm';
 import {
   type AgenticToolOption,
   AgentSelectionGrid,
@@ -28,6 +29,7 @@ export interface NewSessionConfig {
 
   // Advanced configuration
   modelConfig?: ModelConfig;
+  effort?: EffortLevel;
   mcpServerIds?: string[];
   permissionMode?: PermissionMode;
   codexSandboxMode?: CodexSandboxMode;
@@ -77,54 +79,40 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
 
     // Get default config for the selected agent
     const agentDefaults = currentUser?.default_agentic_config?.['claude-code'];
+    const baseValues = getFormValuesFromConfig('claude-code', agentDefaults);
 
     // MCP inheritance: worktree config > user defaults
     const worktreeMcpIds = worktree?.mcp_server_ids;
-    const effectiveMcpServerIds =
-      worktreeMcpIds && worktreeMcpIds.length > 0
-        ? worktreeMcpIds
-        : agentDefaults?.mcpServerIds || [];
 
     form.setFieldsValue({
       title: '',
       initialPrompt: '',
-      permissionMode: agentDefaults?.permissionMode || getDefaultPermissionMode('claude-code'),
-      mcpServerIds: effectiveMcpServerIds,
-      modelConfig: agentDefaults?.modelConfig,
-      codexSandboxMode: agentDefaults?.codexSandboxMode || 'workspace-write',
-      codexApprovalPolicy: agentDefaults?.codexApprovalPolicy || 'on-request',
-      codexNetworkAccess: agentDefaults?.codexNetworkAccess ?? false,
+      ...baseValues,
+      mcpServerIds:
+        worktreeMcpIds && worktreeMcpIds.length > 0 ? worktreeMcpIds : baseValues.mcpServerIds,
     });
   }, [open, form]);
 
   // Update permission mode and other defaults when agent changes
   useEffect(() => {
     if (selectedAgent) {
-      const agentDefaults = currentUser?.default_agentic_config?.[selectedAgent as AgenticToolName];
+      const tool = selectedAgent as AgenticToolName;
+      const agentDefaults = currentUser?.default_agentic_config?.[tool];
+      const baseValues = getFormValuesFromConfig(tool, agentDefaults);
 
       // MCP inheritance: worktree config > user defaults
-      const effectiveMcpServerIds =
-        worktree?.mcp_server_ids && worktree.mcp_server_ids.length > 0
-          ? worktree.mcp_server_ids
-          : agentDefaults?.mcpServerIds || [];
-
       form.setFieldsValue({
-        permissionMode:
-          agentDefaults?.permissionMode ||
-          getDefaultPermissionMode((selectedAgent as AgenticToolName) || 'claude-code'),
-        mcpServerIds: effectiveMcpServerIds,
-        modelConfig: agentDefaults?.modelConfig,
-        ...(selectedAgent === 'codex'
-          ? {
-              codexSandboxMode: agentDefaults?.codexSandboxMode || 'workspace-write',
-              codexApprovalPolicy: agentDefaults?.codexApprovalPolicy || 'on-request',
-              codexNetworkAccess: agentDefaults?.codexNetworkAccess ?? false,
-            }
-          : {
-              codexSandboxMode: undefined,
-              codexApprovalPolicy: undefined,
-              codexNetworkAccess: undefined,
-            }),
+        ...baseValues,
+        mcpServerIds:
+          worktree?.mcp_server_ids && worktree.mcp_server_ids.length > 0
+            ? worktree.mcp_server_ids
+            : baseValues.mcpServerIds,
+        // Clear codex fields when switching away from codex
+        ...(tool !== 'codex' && {
+          codexSandboxMode: undefined,
+          codexApprovalPolicy: undefined,
+          codexNetworkAccess: undefined,
+        }),
       });
     }
   }, [selectedAgent, form, currentUser, worktree?.mcp_server_ids]);
@@ -151,6 +139,7 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
         initialPrompt: values.initialPrompt,
         // Use form values if present (user expanded advanced), otherwise use defaults
         modelConfig: values.modelConfig ?? agentDefaults?.modelConfig,
+        effort: (values.effort as EffortLevel | undefined) ?? agentDefaults?.modelConfig?.effort,
         mcpServerIds: values.mcpServerIds ?? fallbackMcpServerIds,
         permissionMode:
           (values.permissionMode as PermissionMode | undefined) ??

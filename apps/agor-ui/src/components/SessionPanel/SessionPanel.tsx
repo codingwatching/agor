@@ -2,6 +2,7 @@ import type {
   AgorClient,
   CodexApprovalPolicy,
   CodexSandboxMode,
+  EffortLevel,
   Message,
   PermissionMode,
   Session,
@@ -36,12 +37,12 @@ import { mcpServerNeedsAuth } from '../../utils/mcpAuth';
 import { getSessionDisplayTitle, getSessionTitleStyles } from '../../utils/sessionTitle';
 import { compileTemplate } from '../../utils/templates';
 import { AutocompleteTextarea } from '../AutocompleteTextarea';
+import { EffortSelector } from '../EffortSelector';
 import { FileUpload, FileUploadButton } from '../FileUpload';
 import { MCPServerPill } from '../MCPServerPill';
 import { CreatedByTag } from '../metadata';
 import { PermissionModeSelector } from '../PermissionModeSelector';
 import { ContextWindowPill, ModelPill, SessionIdPill, TimerPill, TokenCountPill } from '../Pill';
-import { ThinkingModeSelector } from '../ThinkingModeSelector';
 import { ToolIcon } from '../ToolIcon';
 import { SessionPanelContent } from './SessionPanelContent';
 
@@ -326,8 +327,8 @@ const SessionPanel: React.FC<SessionPanelProps> = ({
   const [codexApprovalPolicy, setCodexApprovalPolicy] = React.useState<CodexApprovalPolicy>(
     session?.permission_config?.codex?.approvalPolicy || 'on-request'
   );
-  const [thinkingMode, setThinkingMode] = React.useState<'auto' | 'manual' | 'off'>(
-    session?.model_config?.thinkingMode || 'auto'
+  const [effortLevel, setEffortLevel] = React.useState<EffortLevel>(
+    session?.model_config?.effort || 'high'
   );
   const [scrollToBottom, setScrollToBottom] = React.useState<(() => void) | null>(null);
   const [scrollToTop, setScrollToTop] = React.useState<(() => void) | null>(null);
@@ -482,12 +483,10 @@ const SessionPanel: React.FC<SessionPanelProps> = ({
     getDefaultPermissionMode,
   ]);
 
-  // Update thinking mode when session changes
+  // Update effort level when session changes (default to 'high' for sessions without effort config)
   React.useEffect(() => {
-    if (session?.model_config?.thinkingMode) {
-      setThinkingMode(session.model_config.thinkingMode);
-    }
-  }, [session?.model_config?.thinkingMode]);
+    setEffortLevel(session?.model_config?.effort || 'high');
+  }, [session?.model_config?.effort]);
 
   // Scroll to bottom when panel opens or session changes
   React.useEffect(() => {
@@ -677,15 +676,15 @@ const SessionPanel: React.FC<SessionPanelProps> = ({
     }
   };
 
-  const handleThinkingModeChange = (newMode: 'auto' | 'manual' | 'off') => {
-    setThinkingMode(newMode);
+  const handleEffortChange = (newEffort: EffortLevel) => {
+    setEffortLevel(newEffort);
 
     if (session && onUpdateSession) {
       if (session.model_config) {
         onUpdateSession(session.session_id, {
           model_config: {
             ...session.model_config,
-            thinkingMode: newMode,
+            effort: newEffort,
           },
         });
       }
@@ -850,9 +849,9 @@ const SessionPanel: React.FC<SessionPanelProps> = ({
           </Space>
           <Space size={4} wrap style={{ marginLeft: 'auto' }}>
             {session.agentic_tool === 'claude-code' && (
-              <ThinkingModeSelector
-                value={thinkingMode}
-                onChange={handleThinkingModeChange}
+              <EffortSelector
+                value={effortLevel}
+                onChange={handleEffortChange}
                 size="small"
                 compact
               />
