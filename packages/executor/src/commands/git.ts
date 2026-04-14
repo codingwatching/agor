@@ -15,6 +15,7 @@
  * Feathers hooks handle WebSocket broadcasts automatically when records are created/updated.
  */
 
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseAgorYml } from '@agor/core/config';
 import {
@@ -533,6 +534,53 @@ export async function handleGitWorktreeAdd(
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error('[git.worktree.add] Failed:', errorMessage);
 
+    // Fallback: ensure the directory exists with correct perms/ACLs even when
+    // git worktree add fails (e.g., branch deleted during archive). This
+    // unblocks sync-unix, sessions, and manual recovery — the directory just
+    // won't be a proper git worktree. Also repairs perms if a prior attempt
+    // created the dir but failed on group initialization.
+    const fallbackPath = payload.params.worktreePath;
+    let fallbackCreated = false;
+    let fallbackPermissionsApplied = false;
+    if (fallbackPath) {
+      // Step 1: Ensure directory exists
+      if (!existsSync(fallbackPath)) {
+        try {
+          mkdirSync(fallbackPath, { recursive: true });
+          console.log(`[git.worktree.add] Fallback: created empty directory ${fallbackPath}`);
+          fallbackCreated = true;
+        } catch (mkdirError) {
+          console.error(
+            '[git.worktree.add] Fallback: failed to create directory:',
+            mkdirError instanceof Error ? mkdirError.message : String(mkdirError)
+          );
+        }
+      }
+
+      // Step 2: Apply perms/ACLs (runs even if dir already existed from a prior attempt)
+      if (existsSync(fallbackPath) && payload.params.initUnixGroup && worktreeId && client) {
+        try {
+          const othersAccess = payload.params.othersAccess || 'read';
+          await initializeWorktreeGroup(
+            worktreeId,
+            fallbackPath,
+            othersAccess,
+            client,
+            payload.params.daemonUser,
+            payload.params.creatorUnixUsername,
+            payload.params.repoUnixGroup
+          );
+          console.log(`[git.worktree.add] Fallback: applied Unix group permissions`);
+          fallbackPermissionsApplied = true;
+        } catch (permError) {
+          console.error(
+            '[git.worktree.add] Fallback: failed to set Unix group permissions:',
+            permError instanceof Error ? permError.message : String(permError)
+          );
+        }
+      }
+    }
+
     // Try to mark worktree as failed (if we have a worktreeId and client)
     if (worktreeId && client) {
       try {
@@ -565,6 +613,8 @@ export async function handleGitWorktreeAdd(
           repoPath: payload.params.repoPath,
           worktreeName: payload.params.worktreeName,
           worktreePath: payload.params.worktreePath,
+          fallbackDirectoryCreated: fallbackCreated,
+          fallbackPermissionsApplied,
         },
       },
     };
