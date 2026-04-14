@@ -75,9 +75,8 @@ export function hasWorktreePermission(
     return true;
   }
 
-  // Superadmins can always view any worktree (including others_can=none)
-  // For prompt/all, they must self-assign ownership first
-  if (isSuperAdmin(userRole, allowSuperadmin) && requiredLevel === 'view') {
+  // Superadmins have full access to all worktrees
+  if (isSuperAdmin(userRole, allowSuperadmin)) {
     return true;
   }
 
@@ -110,15 +109,11 @@ export function resolveWorktreePermission(
   if (isOwner) {
     return 'all';
   }
-  // Superadmins get at least 'view' on all worktrees, even others_can=none
-  const basePermission = worktree.others_can ?? 'session';
-  if (
-    isSuperAdmin(userRole, allowSuperadmin) &&
-    PERMISSION_RANK[basePermission] < PERMISSION_RANK.view
-  ) {
-    return 'view';
+  // Superadmins get full access to all worktrees
+  if (isSuperAdmin(userRole, allowSuperadmin)) {
+    return 'all';
   }
-  return basePermission;
+  return worktree.others_can ?? 'session';
 }
 
 /**
