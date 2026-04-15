@@ -9,7 +9,7 @@ import {
   RobotOutlined,
 } from '@ant-design/icons';
 import { Button, Empty, Form, Input, Modal, Select, Space, Table, Typography, theme } from 'antd';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { mapToArray } from '@/utils/mapHelpers';
 import { ArchiveDeleteWorktreeModal } from '../ArchiveDeleteWorktreeModal';
 import { ArchiveToggleButton } from '../ArchiveToggleButton';
@@ -76,6 +76,7 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
   const [archivedWorktrees, setArchivedWorktrees] = useState<Worktree[]>([]);
   const [archivedLoaded, setArchivedLoaded] = useState(false);
   const [archivedLoading, setArchivedLoading] = useState(false);
+  const archivedFetchingRef = useRef(false);
 
   // No need for reposById anymore, we already have it as a prop
 
@@ -83,11 +84,12 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
     if (archiveFilter !== 'archived' && archiveFilter !== 'all') {
       return;
     }
-    if (archivedLoaded || archivedLoading || !client) {
+    if (archivedLoaded || archivedFetchingRef.current || !client) {
       return;
     }
 
     let cancelled = false;
+    archivedFetchingRef.current = true;
     setArchivedLoading(true);
 
     client
@@ -102,6 +104,7 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
         // Keep table functional with active-only data if archived fetch fails
       })
       .finally(() => {
+        archivedFetchingRef.current = false;
         if (!cancelled) {
           setArchivedLoading(false);
         }
@@ -110,7 +113,7 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [archiveFilter, archivedLoaded, archivedLoading, client]);
+  }, [archiveFilter, archivedLoaded, client]);
 
   // Validate form fields to enable/disable Create button
   const validateForm = useCallback(() => {
