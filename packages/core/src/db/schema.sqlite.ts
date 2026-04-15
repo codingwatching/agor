@@ -527,6 +527,7 @@ export const worktrees = sqliteTable(
         issue_url?: string; // GitHub/GitLab issue
         pull_request_url?: string; // PR link
         notes?: string; // Freeform user notes
+        error_message?: string; // Error details when filesystem_status is 'failed'
 
         // Environment instance (runtime state only, no variables)
         environment_instance?: {

@@ -155,6 +155,7 @@ export class WorktreeRepository implements BaseRepository<Worktree, Partial<Work
         issue_url: worktree.issue_url,
         pull_request_url: worktree.pull_request_url,
         notes: worktree.notes,
+        error_message: worktree.error_message,
         environment_instance: worktree.environment_instance,
         last_used: worktree.last_used ?? new Date(now).toISOString(),
         custom_context: worktree.custom_context,
