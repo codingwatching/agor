@@ -3,7 +3,7 @@
  *
  * Central controller for all Unix-level operations in Agor:
  * - Unix group management for worktree isolation
- * - Unix group management for repo .git/ access
+ * - Unix group management for repo-root traversal + .git access
  * - Unix user creation/management
  * - Symlink management in user home directories
  *
@@ -470,10 +470,12 @@ export class UnixIntegrationService {
       unix_group: groupName,
     });
 
-    // Apply group ownership and permissions to .git directory
+    // Apply group ownership and permissions to repo Unix-group-managed paths:
+    // - repo root (non-recursive, traversal)
+    // - `.git` (recursive, shared git objects/refs + worktree metadata)
     const repo = await this.repoRepo.findById(repoId);
     if (repo?.local_path) {
-      await this.setRepoGitPermissions(repoId, repo.local_path);
+      await this.setRepoPermissions(repoId, repo.local_path);
     }
 
     // Add the daemon user to the repo group so it can run git commands
@@ -531,37 +533,55 @@ export class UnixIntegrationService {
   }
 
   /**
-   * Set filesystem permissions for a repo's .git directory
+   * Set filesystem permissions for a repo directory
    *
-   * Applies group ownership and setgid permissions to ensure
-   * new git objects inherit the correct group.
+   * Applies group ownership/ACLs to:
+   * - repo root directory (non-recursive) for traversal
+   * - `.git` directory (recursive) for shared git data and metadata
    *
    * @param repoId - Repo ID
    * @param repoPath - Absolute path to repo directory
    */
-  async setRepoGitPermissions(repoId: RepoID, repoPath: string): Promise<void> {
+  async setRepoPermissions(repoId: RepoID, repoPath: string): Promise<void> {
     const repo = await this.repoRepo.findById(repoId);
     if (!repo?.unix_group) {
       console.log(
-        `[UnixIntegration] No Unix group for repo ${repoId.substring(0, 8)}, skipping .git permissions`
+        `[UnixIntegration] No Unix group for repo ${repoId.substring(0, 8)}, skipping repo permissions`
       );
       return;
     }
 
     const gitPath = `${repoPath}/.git`;
+    const gitExists = await this.executor.check(`[ -d "${gitPath}" ]`);
 
     console.log(
-      `[UnixIntegration] Setting .git permissions ${REPO_GIT_PERMISSION_MODE} for ${gitPath} (group: ${repo.unix_group})`
+      `[UnixIntegration] Setting repo permissions ${REPO_GIT_PERMISSION_MODE} for ${repoPath}${gitExists ? ' and .git' : ''} (group: ${repo.unix_group})`
     );
 
     await this.executor.execAll(
-      UnixGroupCommands.setDirectoryGroup(gitPath, repo.unix_group, REPO_GIT_PERMISSION_MODE)
+      UnixGroupCommands.setDirectoryGroupShallow(
+        repoPath,
+        repo.unix_group,
+        REPO_GIT_PERMISSION_MODE
+      )
     );
 
-    // Set explicit user ACL for the daemon user on .git directory
-    // (same stale supplementary groups fix as worktree directories)
+    if (gitExists) {
+      await this.executor.execAll(
+        UnixGroupCommands.setDirectoryGroup(gitPath, repo.unix_group, REPO_GIT_PERMISSION_MODE)
+      );
+    }
+
+    // Set explicit user ACL for the daemon user:
+    // - repo root (shallow): traversal even with stale supplementary groups
+    // - `.git` (recursive): git operations even with stale supplementary groups
     if (this.config.daemonUser) {
-      await this.executor.execAll(UnixGroupCommands.setUserAcl(gitPath, this.config.daemonUser));
+      await this.executor.execAll(
+        UnixGroupCommands.setUserAclShallow(repoPath, this.config.daemonUser)
+      );
+      if (gitExists) {
+        await this.executor.execAll(UnixGroupCommands.setUserAcl(gitPath, this.config.daemonUser));
+      }
     }
   }
 
