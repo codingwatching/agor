@@ -19,7 +19,7 @@ import type {
   User,
   Worktree,
 } from '@agor-live/client';
-import { PermissionScope } from '@agor-live/client';
+import { hasMinimumRole, PermissionScope } from '@agor-live/client';
 import { Layout, Upload } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -55,7 +55,7 @@ import { SessionCanvas, type SessionCanvasRef } from '../SessionCanvas';
 import { SessionPanel } from '../SessionPanel';
 import { SessionSettingsModal } from '../SessionSettingsModal';
 import { SettingsModal, UserSettingsModal } from '../SettingsModal';
-import { TerminalModal } from '../TerminalModal';
+import { TerminalModal, WEB_TERMINAL_MIN_ROLE } from '../TerminalModal';
 import { ThemeEditorModal } from '../ThemeEditorModal';
 import { WorktreeListDrawer } from '../WorktreeListDrawer';
 import { WorktreeModal, type WorktreeModalTab } from '../WorktreeModal';
@@ -155,6 +155,8 @@ export interface AppProps {
   instanceLabel?: string;
   /** Instance description (markdown) shown in popover around the instance label */
   instanceDescription?: string;
+  /** Whether the web terminal is enabled on this instance (execution.allow_web_terminal) */
+  webTerminalEnabled?: boolean;
 }
 
 export const App: React.FC<AppProps> = ({
@@ -229,6 +231,7 @@ export const App: React.FC<AppProps> = ({
   onRetryConnection,
   instanceLabel,
   instanceDescription,
+  webTerminalEnabled = false,
 }) => {
   const sessionCanvasRef = useRef<SessionCanvasRef>(null);
   const [newSessionWorktreeId, setNewSessionWorktreeId] = useState<string | null>(null);
@@ -640,6 +643,13 @@ export const App: React.FC<AppProps> = ({
     ]
   );
 
+  // Web terminal is gated by both the instance-level feature flag and the
+  // user's role (`WEB_TERMINAL_MIN_ROLE`, shared with TerminalModal so the
+  // threshold lives in one place). When disabled, we pass `undefined` so
+  // consumers (WorktreeCard, SessionPanel, EventStreamPanel) can hide their
+  // terminal buttons via `{onOpenTerminal && ...}`.
+  const canOpenTerminal = webTerminalEnabled && hasMinimumRole(user?.role, WEB_TERMINAL_MIN_ROLE);
+
   // Memoize AppActionsContext value with useCallback-wrapped handlers
   const appActionsValue = useMemo(
     () => ({
@@ -660,7 +670,7 @@ export const App: React.FC<AppProps> = ({
         setWorktreeModalWorktreeId(worktreeId);
         setWorktreeModalTab(tab);
       },
-      onOpenTerminal: handleOpenTerminal,
+      onOpenTerminal: canOpenTerminal ? handleOpenTerminal : undefined,
     }),
     [
       onSendPrompt,
@@ -675,6 +685,7 @@ export const App: React.FC<AppProps> = ({
       onStopEnvironment,
       onNukeEnvironment,
       handleOpenTerminal,
+      canOpenTerminal,
     ]
   );
 
@@ -854,7 +865,7 @@ export const App: React.FC<AppProps> = ({
                           setWorktreeModalWorktreeId(worktreeId);
                         }}
                         onArchiveOrDeleteWorktree={onArchiveOrDeleteWorktree}
-                        onOpenTerminal={handleOpenTerminal}
+                        onOpenTerminal={canOpenTerminal ? handleOpenTerminal : undefined}
                         onStartEnvironment={onStartEnvironment}
                         onStopEnvironment={onStopEnvironment}
                         onViewLogs={setLogsModalWorktreeId}

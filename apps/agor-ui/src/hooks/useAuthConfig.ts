@@ -33,6 +33,14 @@ interface OnboardingConfig {
   systemCredentials?: SystemCredentials;
 }
 
+interface FeaturesConfig {
+  /**
+   * Whether the web terminal is enabled for members (execution.allow_web_terminal).
+   * Defaults to true when the daemon config key is unset.
+   */
+  webTerminal?: boolean;
+}
+
 interface HealthResponse {
   status: string;
   timestamp: number;
@@ -42,6 +50,7 @@ interface HealthResponse {
   instance?: InstanceConfig;
   onboarding?: OnboardingConfig;
   services?: DaemonServicesConfig;
+  features?: FeaturesConfig;
 }
 
 export function useAuthConfig() {
@@ -49,6 +58,7 @@ export function useAuthConfig() {
   const [instanceConfig, setInstanceConfig] = useState<InstanceConfig | null>(null);
   const [onboardingConfig, setOnboardingConfig] = useState<OnboardingConfig | null>(null);
   const [servicesConfig, setServicesConfig] = useState<DaemonServicesConfig | undefined>(undefined);
+  const [featuresConfig, setFeaturesConfig] = useState<FeaturesConfig | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
 
@@ -65,6 +75,7 @@ export function useAuthConfig() {
         setInstanceConfig(health.instance ?? null);
         setOnboardingConfig(health.onboarding ?? null);
         setServicesConfig(health.services);
+        setFeaturesConfig(health.features);
         setError(null);
       } catch (err) {
         setError(err instanceof Error ? err : new Error(String(err)));
@@ -73,6 +84,7 @@ export function useAuthConfig() {
         setInstanceConfig(null);
         setOnboardingConfig(null);
         setServicesConfig(undefined);
+        setFeaturesConfig(undefined);
       } finally {
         setLoading(false);
       }
@@ -81,5 +93,13 @@ export function useAuthConfig() {
     fetchAuthConfig();
   }, []);
 
-  return { config, instanceConfig, onboardingConfig, servicesConfig, loading, error };
+  return {
+    config,
+    instanceConfig,
+    onboardingConfig,
+    servicesConfig,
+    featuresConfig,
+    loading,
+    error,
+  };
 }

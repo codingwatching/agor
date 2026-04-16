@@ -373,7 +373,25 @@ execution:
 
   # Password sync (strict mode)
   sync_unix_passwords: boolean # default: true
+
+  # Web terminal (xterm.js modal) for members+
+  allow_web_terminal: boolean # default: true
 ```
+
+### Web Terminal Access
+
+The browser terminal is enabled by default for any user with role `member` or
+higher. Setting `execution.allow_web_terminal: false` disables it for everyone,
+including admins, and hides the modal from the UI. Worktree-level RBAC still
+applies: opening a terminal tab against a specific worktree requires at least
+`session` permission on that worktree.
+
+⚠️ **Security caveat:** this flag does *not* reason about Unix isolation. In
+`unix_user_mode: simple`, the terminal runs as the daemon user and gives
+members a shell with access to `~/.agor/config.yaml`, `agor.db`, and the JWT
+secret. The daemon prints a startup warning when this combination is detected.
+Safe defaults are `strict` (per-user Unix account) or `insulated` (shared
+executor user, no daemon access).
 
 ### Permission Tiers (`others_can`)
 

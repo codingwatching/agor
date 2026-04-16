@@ -28,7 +28,7 @@ import { getNextRunTime, validateCron } from '@agor/core/utils/cron';
 import { isAllowedHealthCheckUrl } from '@agor/core/utils/url';
 import { DrizzleService } from '../adapters/drizzle';
 import { resolveGitImpersonationForWorktree } from '../utils/git-impersonation.js';
-import { getDaemonUrl, spawnExecutor } from '../utils/spawn-executor.js';
+import { generateSessionToken, getDaemonUrl, spawnExecutor } from '../utils/spawn-executor.js';
 import type { InternalEnrichmentParams } from './sessions';
 
 /**
@@ -619,13 +619,6 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
       // Set filesystem_status to 'creating' while we rebuild
       await this.patch(id, { filesystem_status: 'creating' }, { provider: undefined });
 
-      const userId = (params as AuthenticatedParams | undefined)?.user?.user_id as
-        | UserID
-        | undefined;
-      const appWithToken = this.app as unknown as {
-        sessionTokenService?: import('../services/session-token-service').SessionTokenService;
-      };
-
       // Look up repo to get local_path
       const reposService = this.app.service('repos');
       const repo = (await reposService.get(worktree.repo_id)) as Repo;
@@ -639,53 +632,43 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
       // to the wrong home directory, causing safety check failures.
 
       try {
-        const sessionToken = await appWithToken.sessionTokenService?.generateToken(
-          'worktree-unarchive',
-          userId || 'anonymous'
+        // Use a service JWT so the executor can patch rendered env command
+        // templates without tripping requireAdminForEnvConfig when unarchive
+        // is performed by a non-admin user.
+        const sessionToken = generateSessionToken(
+          this.app as unknown as { settings: { authentication?: { secret?: string } } }
         );
-        if (sessionToken) {
-          spawnExecutor(
-            {
-              command: 'git.worktree.add',
-              sessionToken,
-              daemonUrl: getDaemonUrl(),
-              params: {
-                worktreeId: worktree.worktree_id,
-                repoId: repo.repo_id,
-                repoPath: repo.local_path,
-                worktreeName: worktree.name,
-                worktreePath: worktree.path,
-                branch: worktree.ref,
-                refType: worktree.ref_type || 'branch',
-                // Use restore mode: checks if branch exists on remote via ls-remote,
-                // checks out existing branch if found, otherwise creates new branch from base_ref.
-                // This is safe because it only creates a new branch when ls-remote confirms
-                // the branch doesn't exist on the remote (no risk of force-deleting existing branches).
-                createBranch: false,
-                restoreMode: true,
-                sourceBranch: worktree.base_ref || repo.default_branch || 'main',
-                // Unix group isolation
-                initUnixGroup: rbacEnabled,
-                othersAccess: worktree.others_fs_access || 'read',
-                daemonUser,
-                repoUnixGroup: repo.unix_group,
-              },
+        spawnExecutor(
+          {
+            command: 'git.worktree.add',
+            sessionToken,
+            daemonUrl: getDaemonUrl(),
+            params: {
+              worktreeId: worktree.worktree_id,
+              repoId: repo.repo_id,
+              repoPath: repo.local_path,
+              worktreeName: worktree.name,
+              worktreePath: worktree.path,
+              branch: worktree.ref,
+              refType: worktree.ref_type || 'branch',
+              // Use restore mode: checks if branch exists on remote via ls-remote,
+              // checks out existing branch if found, otherwise creates new branch from base_ref.
+              // This is safe because it only creates a new branch when ls-remote confirms
+              // the branch doesn't exist on the remote (no risk of force-deleting existing branches).
+              createBranch: false,
+              restoreMode: true,
+              sourceBranch: worktree.base_ref || repo.default_branch || 'main',
+              // Unix group isolation
+              initUnixGroup: rbacEnabled,
+              othersAccess: worktree.others_fs_access || 'read',
+              daemonUser,
+              repoUnixGroup: repo.unix_group,
             },
-            {
-              logPrefix: `[WorktreesService.unarchive ${worktree.name}]`,
-            }
-          );
-        } else {
-          console.error('⚠️  No session token service available for worktree recreation');
-          await this.patch(
-            id,
-            {
-              filesystem_status: 'failed',
-              error_message: 'Session token service not available for worktree recreation',
-            },
-            { provider: undefined }
-          );
-        }
+          },
+          {
+            logPrefix: `[WorktreesService.unarchive ${worktree.name}]`,
+          }
+        );
       } catch (error) {
         console.error(
           `⚠️  Failed to spawn executor for worktree recreation:`,
