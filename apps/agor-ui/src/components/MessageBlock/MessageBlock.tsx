@@ -40,6 +40,7 @@ import {
   deriveToolStatus,
   IMPLICIT_RESULT_TOOLS,
   renderToolStatusIcon,
+  shouldExpandToolByDefault,
   ToolBlock,
 } from '../ToolBlock';
 import { ToolIcon } from '../ToolIcon';
@@ -685,7 +686,7 @@ export const MessageBlock: React.FC<MessageBlockProps> = ({
                   description={bashNode ? undefined : getToolDescription(toolUse)}
                   descriptionNode={bashNode}
                   status={status}
-                  expandedByDefault
+                  expandedByDefault={shouldExpandToolByDefault(toolUse.name)}
                 >
                   <ToolUseRenderer toolUse={toolUse} toolResult={toolResult} />
                 </ToolBlock>

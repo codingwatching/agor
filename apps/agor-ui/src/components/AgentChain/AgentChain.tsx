@@ -47,6 +47,7 @@ import {
   deriveToolStatus,
   IMPLICIT_RESULT_TOOLS,
   renderToolStatusIcon,
+  shouldExpandToolByDefault,
   ToolBlock,
 } from '../ToolBlock';
 import { ToolUseRenderer } from '../ToolUseRenderer';
@@ -486,7 +487,7 @@ export const AgentChain = React.memo<AgentChainProps>(
           description={description ?? undefined}
           descriptionNode={descriptionNode}
           status={status}
-          expandedByDefault
+          expandedByDefault={shouldExpandToolByDefault(toolUse.name)}
         >
           <ToolUseRenderer toolUse={toolUse} toolResult={toolResult} />
         </ToolBlock>

@@ -23,7 +23,8 @@ export interface ToolBlockProps {
   descriptionNode?: React.ReactNode;
   /** Status indicator */
   status?: 'success' | 'error' | 'pending' | 'stale';
-  /** Whether to expand by default */
+  /** Whether to expand by default. Defaults to false; the caller decides
+   *  which tools should land open. */
   expandedByDefault?: boolean;
   /** Body content shown when expanded */
   children?: React.ReactNode;
@@ -35,7 +36,7 @@ export const ToolBlock: React.FC<ToolBlockProps> = ({
   description,
   descriptionNode,
   status,
-  expandedByDefault = true,
+  expandedByDefault = false,
   children,
 }) => {
   const [expanded, setExpanded] = useState(expandedByDefault);
