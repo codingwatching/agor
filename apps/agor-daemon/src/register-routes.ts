@@ -46,6 +46,7 @@ import type {
   StreamingEventType,
   Task,
   User,
+  UUID,
 } from '@agor/core/types';
 import {
   AGENTIC_TOOL_CAPABILITIES,
@@ -76,7 +77,11 @@ import {
   requireMinimumRole,
 } from './utils/authorization.js';
 import { createUploadMiddleware } from './utils/upload.js';
-import { ensureWorktreePermission } from './utils/worktree-authorization.js';
+import {
+  ensureWorktreePermission,
+  PERMISSION_RANK,
+  resolveWorktreePermission,
+} from './utils/worktree-authorization.js';
 
 /**
  * Extended Params with route ID parameter.
@@ -1085,11 +1090,40 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
         return res.status(404).json({ error: 'Session not found' });
       }
 
-      if (session.created_by !== params.user?.user_id) {
-        console.error(
-          `❌ [Upload Handler] User ${params.user?.user_id?.substring(0, 8)} not authorized for session ${sessionId.substring(0, 8)}`
+      // Worktree RBAC: mirror ensureCanPromptInSession semantics.
+      // - 'prompt'/'all' → upload to any session
+      // - 'session'      → upload only to own sessions
+      // - 'view'/'none'  → denied
+      // Fail-closed: if RBAC is enabled but worktree can't be resolved, deny.
+      // When RBAC is disabled, any authenticated member can upload.
+      if (worktreeRbacEnabled) {
+        const userId = params.user?.user_id as UUID;
+        if (!session.worktree_id) {
+          return res.status(403).json({ error: 'Not authorized to upload to this session' });
+        }
+        const wt = await worktreeRepo.findById(session.worktree_id);
+        if (!wt) {
+          return res.status(404).json({ error: 'Worktree not found' });
+        }
+        const isOwner = await worktreeRepo.isOwner(wt.worktree_id, userId);
+        const effectiveLevel = resolveWorktreePermission(
+          wt,
+          userId,
+          isOwner,
+          params.user?.role,
+          superadminOpts.allowSuperadmin
         );
-        return res.status(403).json({ error: 'Not authorized to upload to this session' });
+
+        const canUpload =
+          PERMISSION_RANK[effectiveLevel] >= PERMISSION_RANK.prompt ||
+          (effectiveLevel === 'session' && session.created_by === userId);
+
+        if (!canUpload) {
+          console.error(
+            `❌ [Upload Handler] User ${userId.substring(0, 8)} has '${effectiveLevel}' permission, cannot upload to worktree ${wt.worktree_id.substring(0, 8)}`
+          );
+          return res.status(403).json({ error: 'Not authorized to upload to this session' });
+        }
       }
 
       if (!files || files.length === 0) {
