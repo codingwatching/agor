@@ -43,7 +43,6 @@ import { toolResultToDisplayText } from '../../utils/toolResultToDisplayText';
 import { CollapsibleText } from '../CollapsibleText';
 import { Tag } from '../Tag';
 import {
-  ALWAYS_EXPANDED_TOOLS,
   buildBashDescriptionNode,
   deriveToolStatus,
   IMPLICIT_RESULT_TOOLS,
@@ -79,7 +78,7 @@ interface AgentChainProps {
   messages: Message[];
   /** Whether the parent task is still running (controls spinner vs stale for pending tools) */
   isTaskRunning?: boolean;
-  /** Whether this is the latest (most recent) agent chain block in the task */
+  /** Whether this is the latest (most recent) agent chain block — used for pending/stale status detection */
   isLatest?: boolean;
 }
 
@@ -137,10 +136,7 @@ function getToolIcon(toolName: string): React.ReactElement {
 export const AgentChain = React.memo<AgentChainProps>(
   ({ messages, isTaskRunning = false, isLatest }) => {
     const { token } = theme.useToken();
-    // Track whether user manually toggled this chain (null = auto-managed)
-    const [userOverride, setUserOverride] = useState<boolean | null>(null);
-    // Auto-managed: expand if latest (or if isLatest not provided, for backward compat)
-    const expanded = userOverride !== null ? userOverride : isLatest !== false;
+    const [expanded, setExpanded] = useState(true);
 
     // Extract chain items (thoughts and tools) from messages
     const chainItems = useMemo(() => {
@@ -449,7 +445,6 @@ export const AgentChain = React.memo<AgentChainProps>(
       };
       const isError = toolResult?.is_error;
       const displayName = resolveDisplayName(toolUse);
-      const isAlwaysExpanded = ALWAYS_EXPANDED_TOOLS.has(toolUse.name);
       const hasImplicitResult = IMPLICIT_RESULT_TOOLS.has(toolUse.name);
 
       // Derive status and icon via shared helper.
@@ -491,7 +486,7 @@ export const AgentChain = React.memo<AgentChainProps>(
           description={description ?? undefined}
           descriptionNode={descriptionNode}
           status={status}
-          expandedByDefault={isAlwaysExpanded}
+          expandedByDefault
         >
           <ToolUseRenderer toolUse={toolUse} toolResult={toolResult} />
         </ToolBlock>
@@ -590,7 +585,7 @@ export const AgentChain = React.memo<AgentChainProps>(
       <div style={{ margin: `${token.sizeUnit * 1.5}px 0` }}>
         {/* Collapsed summary - clickable */}
         <div
-          onClick={() => setUserOverride(!expanded)}
+          onClick={() => setExpanded(!expanded)}
           style={{
             padding: token.sizeUnit * 1.5,
             borderRadius: token.borderRadius,
