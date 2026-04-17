@@ -14,15 +14,23 @@
  * 1. Local subprocess (default): Spawns executor as a child process
  * 2. Templated/remote: Uses executor_command_template for k8s/docker/remote execution
  *
- * IMPERSONATION: When asUser is provided, the executor is spawned via `sudo su -`
- * to run as the target Unix user with fresh group memberships.
+ * IMPERSONATION: When asUser is provided, the executor is spawned via
+ * `sudo -n -u $asUser bash -c '...'` to run as the target Unix user with
+ * fresh group memberships. Secret-looking env vars are routed through a
+ * 0600 env-file owned by the target user so their values never appear in
+ * argv / /proc/<pid>/cmdline.
  */
 
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildSpawnArgs } from '@agor/core/unix';
+import {
+  attachEnvFileCleanup,
+  buildSpawnArgs,
+  isSecretEnvKey,
+  prepareImpersonationEnv,
+} from '@agor/core/unix';
 import jwt from 'jsonwebtoken';
 
 /**
@@ -86,8 +94,10 @@ export interface SpawnExecutorOptions {
 
   /**
    * Unix user to run executor as (impersonation)
-   * When set, spawns via `sudo su - $asUser -c 'node executor --stdin'`
-   * This gives the executor fresh group memberships for the target user.
+   * When set, spawns via `sudo -n -u $asUser bash -c '...'` so the executor
+   * gets fresh group memberships for the target user. Secret env vars are
+   * routed through a 0600 env-file owned by `asUser` so their values stay
+   * out of argv / /proc/<pid>/cmdline.
    */
   asUser?: string;
 
@@ -276,17 +286,27 @@ function spawnExecutorLocal(payload: Record<string, unknown>, options: SpawnExec
 
   const envWithDaemonUrl = essentialEnv;
 
+  // Route secret-looking env vars through an on-disk env file owned by the
+  // target user (mode 0600). This keeps API keys/tokens out of argv and out
+  // of /proc/<pid>/cmdline. Non-secret vars (PATH, DAEMON_URL, NODE_ENV)
+  // are still inlined for simplicity.
+  const prepared = asUser
+    ? prepareImpersonationEnv({ asUser, env: envWithDaemonUrl })
+    : { inlineEnv: undefined, envFilePath: undefined };
+
   // Build spawn command - handles impersonation via sudo -u when asUser is set
   const { cmd, args } = buildSpawnArgs('node', [executorPath, '--stdin'], {
     asUser,
-    env: asUser ? envWithDaemonUrl : undefined, // Only inject env when impersonating (sudo -u needs env passed explicitly)
+    env: asUser ? prepared.inlineEnv : undefined, // Non-secret env only; secrets are sourced from envFilePath
+    envFilePath: prepared.envFilePath,
   });
 
   if (asUser) {
-    console.log(`${logPrefix} Spawning executor as user: ${asUser}`);
-    console.log(`${logPrefix} DAEMON_URL being passed: ${envWithDaemonUrl.DAEMON_URL}`);
-    console.log(`${logPrefix} Env vars being passed: ${Object.keys(envWithDaemonUrl).join(', ')}`);
-    console.log(`${logPrefix} Full command: ${cmd} ${args.join(' ')}`);
+    // Safe summary only — never log secret values or their key names.
+    const safeEnvKeys = Object.keys(prepared.inlineEnv ?? {}).filter((k) => !isSecretEnvKey(k));
+    console.log(
+      `${logPrefix} Spawning executor as user=${asUser} tool=${payload.command ?? '?'} envKeys=[${safeEnvKeys.join(',')}]${prepared.envFilePath ? ' (secrets in env-file)' : ''}`
+    );
   }
   console.log(`${logPrefix} Spawning executor at: ${executorPath}`);
   console.log(`${logPrefix} Command: ${payload.command}`);
@@ -297,6 +317,12 @@ function spawnExecutorLocal(payload: Record<string, unknown>, options: SpawnExec
     stdio: ['pipe', 'inherit', 'inherit'], // stdin: pipe, stdout/stderr: inherit (show in daemon logs)
     detached: false, // Don't detach - let daemon manage lifecycle
   });
+
+  // Best-effort safety-net cleanup: the inner bash script `rm -f`s the env
+  // file before exec, but if sudo/bash failed to launch — or `set -eu`
+  // aborted the source step — the file may remain. attachEnvFileCleanup
+  // uses `sudo -u <asUser> rm -f` so it works under sticky /tmp.
+  attachEnvFileCleanup(executorProcess, { envFilePath: prepared.envFilePath, asUser });
 
   // Log if process fails to spawn
   executorProcess.on('error', (error) => {

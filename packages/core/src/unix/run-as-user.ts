@@ -2,8 +2,8 @@
  * Run As User - Central Unix Command Execution Utility
  *
  * Provides a unified interface for running commands as another Unix user.
- * When impersonation is needed, always uses `sudo -u $USER bash -c "..."` to ensure
- * fresh Unix group memberships are loaded.
+ * When impersonation is needed, always uses `sudo -n -u $USER bash -c "..."`
+ * to ensure fresh Unix group memberships are loaded.
  *
  * HOW `sudo -u` PROVIDES FRESH GROUP MEMBERSHIPS:
  * When sudo switches users (via -u), it calls the initgroups() syscall which reads
@@ -18,10 +18,17 @@
  * SECURITY NOTE: We use `sudo -u` instead of `sudo su` to avoid needing to
  * whitelist the /usr/bin/su binary in sudoers, which would be a security risk.
  *
+ * Secret-aware classification (`isSecretEnvKey`, `redactSecretEnv`) lives in
+ * {@link ./secret-env.js}. On-disk env-file primitives
+ * (`writeUserEnvFile`, `prepareImpersonationEnv`, cleanup helpers) live in
+ * {@link ./user-env-file.js}.
+ *
  * @see context/guides/rbac-and-unix-isolation.md
  */
 
 import { execSync } from 'node:child_process';
+
+import { isValidUnixUsername } from './user-manager.js';
 
 /**
  * Default timeout for commands in milliseconds
@@ -130,14 +137,35 @@ export interface BuildSpawnArgsOptions {
   /**
    * Environment variables to pass to the inner command.
    *
-   * When impersonating (asUser is set), these env vars are injected into the
-   * inner command using the `env` command prefix. This is necessary because
-   * `sudo su -` creates a fresh login shell that ignores the env passed to spawn().
-   *
    * When NOT impersonating, these env vars should be passed to spawn() directly
    * via the `env` option (this function doesn't modify them).
+   *
+   * When impersonating (asUser is set) AND `envFilePath` is not set, env vars
+   * are inlined into the inner command via the `env` prefix. This path is
+   * retained for non-secret env (e.g., TERM, PATH, DAEMON_URL) and tests.
+   *
+   * WARNING: values passed this way end up in the process's argv and are
+   * visible via `ps`, `/proc/<pid>/cmdline`, audit logs, etc. Never pass
+   * secrets (API keys, tokens) via `env` alone when impersonating — use
+   * `writeUserEnvFile` + `envFilePath` instead.
    */
   env?: Record<string, string>;
+
+  /**
+   * Path to an on-disk env file to source before `exec`ing the inner command.
+   *
+   * When set together with `asUser`, the generated command sources this file
+   * inside the impersonated shell, then removes it, then `exec`s the real
+   * command. The env values never appear in argv. The path itself is in argv
+   * but it is not secret.
+   *
+   * Use `writeUserEnvFile` to produce a path that is owned by the target
+   * user with mode 0600.
+   *
+   * Requires `asUser`: passing `envFilePath` without `asUser` throws, since
+   * the env-file is only sourced inside the impersonated shell.
+   */
+  envFilePath?: string;
 }
 
 /**
@@ -147,9 +175,10 @@ export interface BuildSpawnArgsOptions {
  * Use this when you need to spawn a long-running process rather than exec.
  *
  * IMPORTANT: When impersonating (asUser is set), env vars passed to spawn()
- * are ignored because `sudo su -` creates a fresh login shell. To pass env vars
- * to the inner command, provide them via the `env` option here - they will be
- * injected using the `env` command prefix.
+ * are ignored because `sudo -u` starts a fresh environment. To pass env vars
+ * to the inner command, provide them via the `env` option here — they will
+ * be injected using the `env` command prefix — or (for secrets) via
+ * `envFilePath`, which keeps values out of argv.
  *
  * @param command - Command to run (e.g., 'zellij')
  * @param args - Arguments to pass to the command
@@ -179,7 +208,15 @@ export function buildSpawnArgs(
   // Handle backward compatibility: options can be a string (asUser) or object
   const opts: BuildSpawnArgsOptions =
     typeof options === 'string' ? { asUser: options } : (options ?? {});
-  const { asUser, env } = opts;
+  const { asUser, env, envFilePath } = opts;
+
+  // envFilePath only makes sense when impersonating — the env-file is sourced
+  // inside the impersonated shell. Fail loudly rather than silently dropping.
+  if (envFilePath !== undefined && !asUser) {
+    throw new Error(
+      'buildSpawnArgs: envFilePath requires asUser (env-file is only sourced inside the impersonated shell)'
+    );
+  }
 
   if (!asUser) {
     // No impersonation: return command/args as-is
@@ -187,6 +224,52 @@ export function buildSpawnArgs(
     return { cmd: command, args };
   }
 
+  // Defence-in-depth: validate asUser format before it is used as an argv
+  // token to `sudo -u`. `isValidUnixUsername` rejects anything outside
+  // [a-z_][a-z0-9_-]{0,31} so it cannot be a shell metachar or a flag.
+  if (!isValidUnixUsername(asUser)) {
+    throw new Error(`buildSpawnArgs: invalid Unix username: ${JSON.stringify(asUser)}`);
+  }
+
+  // Prefer env-file sourcing: secrets stay out of argv entirely.
+  if (envFilePath) {
+    // Structural validation only. The path is passed as a positional argv
+    // entry and referenced as "$1" inside bash, so shell metachars (spaces,
+    // parens, etc.) are safe and we must accept them — e.g. macOS TMPDIR
+    // lives under `/var/folders/.../T/` with fine characters but Linux
+    // sysadmins sometimes mount a shared TMPDIR with spaces.
+    //
+    // We reject: relative paths, NUL/newline/control chars (which would
+    // break `. "$ENVFILE"` or allow line-splitting tricks).
+    if (!envFilePath.startsWith('/')) {
+      throw new Error(
+        `buildSpawnArgs: envFilePath must be absolute: ${JSON.stringify(envFilePath)}`
+      );
+    }
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: explicitly rejecting control chars
+    if (/[\x00-\x1f\x7f]/.test(envFilePath)) {
+      throw new Error(
+        `buildSpawnArgs: envFilePath contains control characters: ${JSON.stringify(envFilePath)}`
+      );
+    }
+
+    // Inner bash script:
+    //   $1 = env file path, $2... = real command + args
+    //   - set -eu: if source fails, abort BEFORE rm+exec so we never
+    //     launch the real process with missing secrets
+    //   - source env into current shell (set -a auto-exports)
+    //   - unlink file before exec so it does not linger on disk
+    //   - exec preserves env into the target process
+    const innerScript =
+      'set -eu; ENVFILE="$1"; shift; set -a; . "$ENVFILE"; set +a; rm -f -- "$ENVFILE"; exec "$@"';
+
+    return {
+      cmd: 'sudo',
+      args: ['-n', '-u', asUser, 'bash', '-c', innerScript, '--', envFilePath, command, ...args],
+    };
+  }
+
+  // Legacy/non-secret path: inline env vars into argv.
   // Build env prefix if env vars provided
   // Format: env VAR1='val1' VAR2='val2' ...
   let envPrefix = '';

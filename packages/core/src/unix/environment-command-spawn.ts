@@ -11,6 +11,7 @@ import type { Database } from '../db/index.js';
 import { UsersRepository } from '../db/repositories/index.js';
 import type { Worktree } from '../types/index.js';
 import { buildSpawnArgs } from './run-as-user.js';
+import { attachEnvFileCleanup, prepareImpersonationEnv } from './user-env-file.js';
 import { resolveUnixUserForImpersonation, validateResolvedUnixUser } from './user-manager.js';
 
 /**
@@ -92,19 +93,35 @@ export async function spawnEnvironmentCommand(
   // If impersonating, strip HOME/USER/LOGNAME/SHELL so sudo -u can set them properly
   const env = await createUserProcessEnvironment(worktree.created_by, db, undefined, !!asUser);
 
+  // Route secret-looking env vars through an on-disk env file owned by the
+  // target user (mode 0600) so user-scoped API keys/tokens never appear in
+  // the `sudo bash -c '...'` argv exposed to /proc/<pid>/cmdline.
+  const prepared = asUser
+    ? prepareImpersonationEnv({ asUser, env })
+    : { inlineEnv: undefined, envFilePath: undefined };
+
   // Build spawn args with impersonation
   const { cmd, args } = buildSpawnArgs(command, [], {
     asUser,
-    env: asUser ? env : undefined, // Only pass env via sudo wrapper if impersonating
+    env: asUser ? prepared.inlineEnv : undefined, // Non-secret env only; secrets are sourced from envFilePath
+    envFilePath: prepared.envFilePath,
   });
 
   // Spawn the command
   // When not impersonating (simple mode), buildSpawnArgs returns the raw command string,
   // so we need shell: true to handle multi-word commands like "docker compose up -d"
-  return spawn(cmd, args, {
+  const child = spawn(cmd, args, {
     cwd: worktree.path,
     env: asUser ? undefined : env, // Use process env if not impersonating
     stdio,
     shell: !asUser, // Use shell for simple mode, buildSpawnArgs wraps sudo in bash -c
   });
+
+  // Safety-net cleanup. The inner bash script `rm -f`s the file before exec
+  // in the normal path, so this only fires if sudo/bash fails to launch, or
+  // if `set -eu` aborts the source step. Uses sudo when asUser is set so
+  // it works under sticky /tmp.
+  attachEnvFileCleanup(child, { envFilePath: prepared.envFilePath, asUser });
+
+  return child;
 }

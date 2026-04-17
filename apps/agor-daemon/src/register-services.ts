@@ -521,6 +521,8 @@ function createExecuteHandler(
       UnixUserNotFoundError,
       buildSpawnArgs,
       getHomedirFromUsername,
+      prepareImpersonationEnv,
+      attachEnvFileCleanup,
     } = await import('@agor/core/unix');
 
     const unixUserMode = (config.execution?.unix_user_mode ?? 'simple') as UnixUserMode;
@@ -657,13 +659,24 @@ function createExecuteHandler(
       },
     };
 
+    // Route secret-looking env vars through an on-disk env file owned by the
+    // target user (mode 0600) so API keys/tokens never appear in argv.
+    const prepared = executorUnixUser
+      ? prepareImpersonationEnv({ asUser: executorUnixUser, env: executorEnv })
+      : { inlineEnv: undefined, envFilePath: undefined };
+
     const { cmd, args } = buildSpawnArgs('node', [executorPath, '--stdin'], {
       asUser: executorUnixUser || undefined,
-      env: executorUnixUser ? executorEnv : undefined,
+      env: executorUnixUser ? prepared.inlineEnv : undefined,
+      envFilePath: prepared.envFilePath,
     });
 
     if (executorUnixUser) {
-      console.log(`[Daemon] Spawning executor as user: ${executorUnixUser}`);
+      console.log(
+        `[Daemon] Spawning executor as user=${executorUnixUser}${
+          prepared.envFilePath ? ' (secrets in env-file)' : ''
+        }`
+      );
     } else {
       console.log(`[Daemon] Spawning executor as current user (no impersonation)`);
     }
@@ -695,6 +708,15 @@ function createExecuteHandler(
       cwd,
       env: executorUnixUser ? undefined : executorEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    // Safety-net cleanup for the env file. The inner bash script `rm -f`s
+    // the file before exec in the normal path, so this only fires if sudo
+    // or bash failed to launch at all, or `set -eu` aborted the source
+    // step. Uses sudo when asUser is set so it works under sticky /tmp.
+    attachEnvFileCleanup(executorProcess, {
+      envFilePath: prepared.envFilePath,
+      asUser: executorUnixUser || undefined,
     });
 
     if (executorProcess.pid) {
