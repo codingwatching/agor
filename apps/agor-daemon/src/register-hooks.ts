@@ -391,6 +391,30 @@ export function registerHooks(ctx: RegisterHooksContext): void {
       },
       requireAuth
     );
+
+    registerAuthenticatedRoute(
+      app,
+      '/artifacts/:id/sandpack-error',
+      {
+        async create(
+          data: {
+            error: import('@agor/core/types').SandpackError | null;
+            status?: string;
+          },
+          _params: RouteParams
+        ) {
+          const artifactId = _params.route?.id;
+          if (!artifactId) throw new Error('Artifact ID required');
+          const artifactsService = app.service('artifacts') as unknown as ArtifactsService;
+          artifactsService.setSandpackError(artifactId, data.error, data.status);
+          return { success: true };
+        },
+      },
+      {
+        create: { role: ROLES.MEMBER, action: 'post artifact sandpack error' },
+      },
+      requireAuth
+    );
   }
 
   // ============================================================================
