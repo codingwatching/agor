@@ -9,6 +9,7 @@
 import { type AgorConfig, isUnixImpersonationEnabled, type UnknownJson } from '@agor/core/config';
 import {
   ArtifactRepository,
+  BoardRepository,
   type Database,
   type SessionRepository,
   UserMCPOAuthTokenRepository,
@@ -73,11 +74,60 @@ import {
   loadWorktreeFromSession,
   PERMISSION_RANK,
   resolveSessionContext,
+  scopeFindToAccessibleBoards,
+  scopeFindToAccessibleSessions,
+  scopeFindToAccessibleWorktrees,
   scopeSessionQuery,
   scopeWorktreeQuery,
   setSessionUnixUsername,
   validateSessionUnixUsername,
 } from './utils/worktree-authorization.js';
+
+/**
+ * Session fields written as runtime bookkeeping during the prompt/execution
+ * lifecycle, on behalf of the session's authenticated user. These are NOT
+ * session metadata (name, model_config, permission_config, callback_config).
+ *
+ * Sources:
+ *   - `/sessions/:id/prompt`  → `tasks`, `archived`, `archived_reason`
+ *   - `/sessions/:id/stop`    → `status`, `ready_for_prompt`
+ *   - executor status updates → `status`, `ready_for_prompt`
+ *     (claude/copilot permission-hooks, see packages/executor)
+ *   - executor git-SHA capture → `git_state` (per-message current_sha)
+ *   - executor opencode init   → `sdk_session_id` (SDK session handle)
+ *
+ * When a `patch` touches ONLY these fields, the sessions hook chain downgrades
+ * the required worktree permission from `'all'` to the same tier that
+ * {@link ensureCanPromptInSession} enforces:
+ *   - `'prompt'` or `'all'` → can patch any session's prompt-flow fields
+ *   - `'session'`           → can patch own session's prompt-flow fields
+ *   - `'view'` or `'none'`  → denied
+ *
+ * Any mixed-field patch (e.g. `{ tasks: [...], name: 'x' }`) fails the
+ * `isPromptFlowPatchOnly` check and falls through to the strict `'all'` path,
+ * so widening the whitelist here cannot accidentally leak metadata writes.
+ *
+ * NOTE: `git_state` and `sdk_session_id` are on this list because the executor
+ * authenticates as the session creator (see auth/session-token-strategy.ts),
+ * not as a service account. Proper long-term fix is to give the executor a
+ * service-account token so these patches bypass RBAC entirely.
+ */
+export const PROMPT_FLOW_PATCH_FIELDS: readonly string[] = [
+  'tasks',
+  'archived',
+  'archived_reason',
+  'status',
+  'ready_for_prompt',
+  'git_state',
+  'sdk_session_id',
+];
+
+export function isPromptFlowPatchOnly(data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+  const keys = Object.keys(data);
+  if (keys.length === 0) return false;
+  return keys.every((key) => PROMPT_FLOW_PATCH_FIELDS.includes(key));
+}
 
 /**
  * Extended Params with route ID parameter (needed by artifact routes in hooks).
@@ -156,6 +206,14 @@ export function registerHooks(ctx: RegisterHooksContext): void {
   app.service('messages').hooks({
     before: {
       all: [requireAuth],
+      find: [
+        // RBAC: Scope messages.find() to sessions the caller can access.
+        // Without this backstop, any authenticated member could list messages
+        // across every session/worktree by omitting the session_id filter.
+        ...(worktreeRbacEnabled
+          ? [scopeFindToAccessibleSessions(sessionsRepository, superadminOpts)]
+          : []),
+      ],
       get: [
         ...(worktreeRbacEnabled
           ? [
@@ -249,6 +307,12 @@ export function registerHooks(ctx: RegisterHooksContext): void {
         ...getReadAuthHooks(),
         ...(allowAnonymous ? [] : [requireMinimumRole(ROLES.MEMBER, 'manage board objects')]),
       ],
+      // NOTE: We deliberately do NOT add scopeFindToAccessibleWorktrees here.
+      // Board-objects may reference `worktree_id` (worktree cards) OR `card_id`
+      // (kanban cards with no worktree) OR neither (zones, layout objects).
+      // The before-hook would filter out rows with null worktree_id, breaking
+      // card-only boards. Access control lives in the after-hook below, which
+      // correctly preserves card/zone rows while scoping worktree-bound ones.
     },
     after: {
       find: [
@@ -348,6 +412,16 @@ export function registerHooks(ctx: RegisterHooksContext): void {
   safeService('artifacts')?.hooks({
     before: {
       all: [...getReadAuthHooks()],
+      find: [
+        // RBAC: Artifacts carry a `worktree_id` (nullable — survives worktree deletion).
+        // Scope find() to the worktrees the caller can access. Rows with null
+        // worktree_id (orphaned artifacts) will be excluded by the $in filter,
+        // which is the safe default — orphans can only be surfaced via explicit
+        // board-scoped queries.
+        ...(worktreeRbacEnabled
+          ? [scopeFindToAccessibleWorktrees(worktreeRepository, superadminOpts)]
+          : []),
+      ],
       create: [requireMinimumRole(ROLES.MEMBER, 'create artifacts')],
       patch: [requireMinimumRole(ROLES.MEMBER, 'update artifacts')],
       remove: [requireMinimumRole(ROLES.MEMBER, 'delete artifacts')],
@@ -718,6 +792,9 @@ export function registerHooks(ctx: RegisterHooksContext): void {
     return context;
   };
 
+  // NOTE: mcp-servers is global admin-managed configuration. These rows are
+  // not worktree- or session-scoped, so no RBAC find() scoping is applied.
+  // Creation/update/removal remain gated by requireMinimumRole(ADMIN).
   safeService('mcp-servers')?.hooks({
     before: {
       all: [typedValidateQuery(mcpServerQueryValidator), ...getReadAuthHooks()],
@@ -734,7 +811,13 @@ export function registerHooks(ctx: RegisterHooksContext): void {
   safeService('session-mcp-servers')?.hooks({
     before: {
       all: [requireAuth],
-      find: [requireMinimumRole(ROLES.MEMBER, 'list session MCP servers')],
+      find: [
+        requireMinimumRole(ROLES.MEMBER, 'list session MCP servers'),
+        // RBAC: Scope to sessions the caller can access.
+        ...(worktreeRbacEnabled
+          ? [scopeFindToAccessibleSessions(sessionsRepository, superadminOpts)]
+          : []),
+      ],
     },
     after: {
       find: [injectPerUserOAuthTokens],
@@ -786,7 +869,7 @@ export function registerHooks(ctx: RegisterHooksContext): void {
     before: {
       all: [requireAuth],
       create: [
-        requireMinimumRole(ROLES.MEMBER, 'create gateway channels'),
+        requireMinimumRole(ROLES.ADMIN, 'create gateway channels'),
         // Encrypt env var values at rest (same pattern as user env vars / API keys)
         async (context: HookContext) => {
           const data = context.data as Record<string, unknown> | undefined;
@@ -803,7 +886,7 @@ export function registerHooks(ctx: RegisterHooksContext): void {
         },
       ],
       patch: [
-        requireMinimumRole(ROLES.MEMBER, 'update gateway channels'),
+        requireMinimumRole(ROLES.ADMIN, 'update gateway channels'),
         // Resolve redacted env var sentinel values ('••••••••') back to real
         // values from the database. Uses the repository directly to bypass
         // the after-hook redaction that the service layer applies.
@@ -886,7 +969,7 @@ export function registerHooks(ctx: RegisterHooksContext): void {
           return context;
         },
       ],
-      remove: [requireMinimumRole(ROLES.MEMBER, 'delete gateway channels')],
+      remove: [requireMinimumRole(ROLES.ADMIN, 'delete gateway channels')],
     },
     after: {
       all: [
@@ -962,7 +1045,46 @@ export function registerHooks(ctx: RegisterHooksContext): void {
 
   safeService('files')?.hooks({
     before: {
-      all: [requireAuth, requireMinimumRole(ROLES.MEMBER, 'search files')],
+      all: [
+        requireAuth,
+        requireMinimumRole(ROLES.MEMBER, 'search files'),
+        // RBAC: files service takes a sessionId query param and returns files
+        // from that session's worktree. Verify the caller can at least 'view'
+        // that worktree before running git ls-files. If sessionId is missing
+        // the service itself returns []; we skip the permission check in that
+        // case rather than throwing.
+        ...(worktreeRbacEnabled
+          ? [
+              async (context: HookContext) => {
+                if (!context.params.provider) return context;
+                if (context.params.user?._isServiceAccount) return context;
+                const query = context.params.query as { sessionId?: string } | undefined;
+                const sessionId = query?.sessionId;
+                if (!sessionId) return context;
+                context.params.sessionId = sessionId;
+                // Delegate to the existing chain now that sessionId is primed.
+                await loadSession(sessionsService)(context);
+                await loadWorktreeFromSession(worktreeRepository)(context);
+                await ensureCanView(superadminOpts)(context);
+                return context;
+              },
+            ]
+          : []),
+      ],
+    },
+  });
+
+  // /file (singular): read-only worktree filesystem browser. Takes worktree_id
+  // as a query param. Gate with worktree RBAC 'view' permission when enabled.
+  safeService('/file')?.hooks({
+    before: {
+      all: [
+        requireAuth,
+        requireMinimumRole(ROLES.MEMBER, 'read files'),
+        ...(worktreeRbacEnabled
+          ? [loadWorktree(worktreeRepository, 'worktree_id'), ensureCanView(superadminOpts)]
+          : []),
+      ],
     },
   });
 
@@ -1380,7 +1502,25 @@ export function registerHooks(ctx: RegisterHooksContext): void {
               resolveSessionContext(),
               loadSession(sessionsService),
               loadWorktreeFromSession(worktreeRepository),
-              ensureWorktreePermission('all', 'update sessions', superadminOpts), // Require 'all' permission
+              // Branch permission by patch type:
+              //   - Prompt-flow patches (tasks, archived, status, …) are bookkeeping
+              //     emitted by /sessions/:id/prompt and /sessions/:id/stop on behalf
+              //     of the authenticated user. They need only the same tier as
+              //     prompting the session (session-tier for own, prompt-tier for
+              //     others), matching the permission table in CLAUDE.md.
+              //   - Everything else is session metadata and still requires 'all'.
+              // Mixed-field patches fail isPromptFlowPatchOnly and fall through to
+              // the strict 'all' path, so there's no partial-trust footgun.
+              (context: HookContext) => {
+                if (isPromptFlowPatchOnly(context.data)) {
+                  return ensureCanPromptInSession(superadminOpts)(context);
+                }
+                return ensureWorktreePermission(
+                  'all',
+                  'update session metadata',
+                  superadminOpts
+                )(context);
+              },
             ]
           : []),
         // Validate user has prompt permission on callback target session's worktree
@@ -1623,6 +1763,12 @@ export function registerHooks(ctx: RegisterHooksContext): void {
   app.service('tasks').hooks({
     before: {
       all: [typedValidateQuery(taskQueryValidator), requireAuth],
+      find: [
+        // RBAC: Scope tasks.find() to sessions the caller can access.
+        ...(worktreeRbacEnabled
+          ? [scopeFindToAccessibleSessions(sessionsRepository, superadminOpts)]
+          : []),
+      ],
       get: [
         ...(worktreeRbacEnabled
           ? [
@@ -1677,7 +1823,20 @@ export function registerHooks(ctx: RegisterHooksContext): void {
             ]
           : []),
       ],
-      remove: [requireMinimumRole(ROLES.MEMBER, 'delete tasks')],
+      remove: [
+        requireMinimumRole(ROLES.MEMBER, 'delete tasks'),
+        // RBAC: deleting a task requires 'all' permission on the worktree
+        // (mirrors sessions.remove). Without this, any member with 'session'
+        // access could delete tasks owned by other users on shared worktrees.
+        ...(worktreeRbacEnabled
+          ? [
+              resolveSessionContext(),
+              loadSession(sessionsService),
+              loadWorktreeFromSession(worktreeRepository),
+              ensureWorktreePermission('all', 'delete tasks', superadminOpts),
+            ]
+          : []),
+      ],
     },
   });
 
@@ -1685,9 +1844,21 @@ export function registerHooks(ctx: RegisterHooksContext): void {
   // Boards hooks
   // ============================================================================
 
+  // BoardRepository for RBAC find-scope hook (single instance reused across
+  // requests). Cheap to construct — just wraps the shared db handle.
+  const boardRepository = new BoardRepository(db);
+
   safeService('boards')?.hooks({
     before: {
       all: [typedValidateQuery(boardQueryValidator), ...getReadAuthHooks()],
+      find: [
+        // RBAC: restrict boards.find to boards the caller created or has a
+        // worktree on. Runs at the SQL layer via BoardRepository.findVisibleBoardIds
+        // to avoid hydrating every accessible worktree in-memory.
+        ...(worktreeRbacEnabled
+          ? [scopeFindToAccessibleBoards(boardRepository, superadminOpts)]
+          : []),
+      ],
       create: [
         requireMinimumRole(ROLES.MEMBER, 'create boards'),
         async (context: HookContext<Board>) => {

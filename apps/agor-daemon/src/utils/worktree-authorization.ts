@@ -10,7 +10,7 @@
  * @see context/explorations/unix-user-modes.md
  */
 
-import type { SessionRepository, WorktreeRepository } from '@agor/core/db';
+import type { BoardRepository, SessionRepository, WorktreeRepository } from '@agor/core/db';
 import { Forbidden, NotAuthenticated } from '@agor/core/feathers';
 import type {
   HookContext,
@@ -1161,4 +1161,208 @@ export function ensureCanPromptInSession(options?: { allowSuperadmin?: boolean }
  */
 export function ensureCanView(options?: { allowSuperadmin?: boolean }) {
   return ensureWorktreePermission('view', 'view this worktree', options);
+}
+
+/**
+ * Empty paginated result helper — used to short-circuit find() for unauthenticated
+ * callers or callers whose query falls outside their accessible worktree set.
+ */
+function emptyFindResult(context: HookContext): HookContext {
+  const query = (context.params.query ?? {}) as Record<string, unknown>;
+  context.result = {
+    total: 0,
+    limit: (query.$limit as number) ?? 0,
+    skip: (query.$skip as number) ?? 0,
+    data: [],
+  };
+  return context;
+}
+
+/**
+ * Result of the common find-scope guard checks (provider/service-account/
+ * auth/superadmin). Returned by {@link resolveFindScopeAccess} so the two
+ * scope hook factories below don't repeat the same preamble.
+ */
+type FindScopeDecision =
+  | { kind: 'passThrough' }
+  | { kind: 'handled' }
+  | { kind: 'filter'; accessibleIds: Set<string> };
+
+/**
+ * Shared guard for the find-scoping hooks. Handles internal/service-account
+ * pass-through, unauthenticated short-circuit, and superadmin bypass. If the
+ * caller is a regular user, resolves accessible ids via `loadAccessibleIds`.
+ *
+ * Callers inspect the returned decision:
+ * - 'passThrough': nothing to do, return context unchanged.
+ * - 'handled':     context.result was set (empty result); return context.
+ * - 'filter':      apply intersection using `accessibleIds`.
+ */
+async function resolveFindScopeAccess(
+  context: HookContext,
+  options: { allowSuperadmin?: boolean } | undefined,
+  loadAccessibleIds: (userId: UUID) => Promise<string[]>
+): Promise<FindScopeDecision> {
+  if (context.method !== 'find') return { kind: 'passThrough' };
+  if (!context.params.provider) return { kind: 'passThrough' };
+  if (context.params.user?._isServiceAccount) return { kind: 'passThrough' };
+
+  const userId = context.params.user?.user_id as UUID | undefined;
+  if (!userId) {
+    emptyFindResult(context);
+    return { kind: 'handled' };
+  }
+
+  const userRole = context.params.user?.role as string | undefined;
+  const allowSuperadmin = options?.allowSuperadmin ?? true;
+  if (isSuperAdmin(userRole, allowSuperadmin)) return { kind: 'passThrough' };
+
+  const ids = await loadAccessibleIds(userId);
+  return { kind: 'filter', accessibleIds: new Set<string>(ids) };
+}
+
+/**
+ * Intersect the existing `query[field]` filter with the caller's accessible
+ * id set. Handles scalar string, `{ $in: [...] }`, and unset cases.
+ *
+ * - Scalar outside the accessible set → empty result.
+ * - `$in` intersected with accessible set; empty intersection → empty result.
+ * - Unset → inject `{ $in: [...accessibleIds] }` (empty set → empty result).
+ */
+function intersectFindQuery(
+  context: HookContext,
+  field: string,
+  accessibleIds: Set<string>
+): HookContext {
+  // biome-ignore lint/suspicious/noExplicitAny: Feathers query shape is dynamic
+  const query = (context.params.query ?? {}) as any;
+  const existing = query[field];
+
+  if (typeof existing === 'string') {
+    if (!accessibleIds.has(existing)) return emptyFindResult(context);
+    return context;
+  }
+
+  if (existing && typeof existing === 'object' && Array.isArray(existing.$in)) {
+    const intersect = (existing.$in as string[]).filter((id) => accessibleIds.has(id));
+    if (intersect.length === 0) return emptyFindResult(context);
+    query[field] = { $in: intersect };
+    context.params.query = query;
+    return context;
+  }
+
+  if (accessibleIds.size === 0) return emptyFindResult(context);
+  query[field] = { $in: Array.from(accessibleIds) };
+  context.params.query = query;
+  return context;
+}
+
+/**
+ * Scope find() queries on worktree-scoped resources to the set of worktrees
+ * the caller can access.
+ *
+ * This is a BEFORE hook factory for services whose rows carry a `worktree_id`
+ * foreign key (e.g. artifacts, board-objects tied to a worktree, etc.).
+ *
+ * Behavior:
+ * - Internal calls (no `context.params.provider`) pass through unchanged.
+ * - Service accounts (`context.params.user._isServiceAccount`) pass through.
+ * - Unauthenticated requests short-circuit with an empty paginated result.
+ * - Superadmins (when `allowSuperadmin` is true) pass through; the default
+ *   query runs unmodified and returns all rows.
+ * - Non-superadmin authenticated users get their accessible worktree set
+ *   resolved via `findAccessibleWorktrees(userId)`. The set is then intersected
+ *   with any existing `worktree_id` filter in `context.params.query`:
+ *   - If the caller passed `worktree_id` (string) outside the accessible set,
+ *     short-circuit with an empty result.
+ *   - If the caller passed `worktree_id` within the accessible set, preserve it.
+ *   - If the caller passed `{ $in: [...] }`, intersect with accessible ids.
+ *   - Otherwise, inject `worktree_id: { $in: [...accessibleIds] }`.
+ *
+ * Only applies when `context.method === 'find'`. No-op for other methods.
+ *
+ * @param worktreeRepo - WorktreeRepository instance
+ * @param options - Optional flags (allowSuperadmin)
+ * @returns Feathers hook
+ */
+export function scopeFindToAccessibleWorktrees(
+  worktreeRepo: WorktreeRepository,
+  options?: { allowSuperadmin?: boolean }
+) {
+  return async (context: HookContext) => {
+    const decision = await resolveFindScopeAccess(context, options, async (uid) => {
+      const accessible = await worktreeRepo.findAccessibleWorktrees(uid);
+      return accessible.map((w) => w.worktree_id as string);
+    });
+
+    if (decision.kind !== 'filter') return context;
+    return intersectFindQuery(context, 'worktree_id', decision.accessibleIds);
+  };
+}
+
+/**
+ * Scope find() queries on session-scoped resources to the set of sessions
+ * the caller can access (via their accessible worktrees).
+ *
+ * This is a BEFORE hook factory for services whose rows carry a `session_id`
+ * foreign key (e.g. tasks, messages, session-mcp-servers).
+ *
+ * Behavior mirrors {@link scopeFindToAccessibleWorktrees} but resolves via
+ * `findAccessibleSessions(userId)` and mutates `context.params.query.session_id`:
+ * - Internal / service-account calls pass through.
+ * - Unauthenticated → empty result.
+ * - Superadmins pass through.
+ * - Regular users: if an explicit `session_id` is passed, it must be in the
+ *   accessible set; otherwise inject `session_id: { $in: [...accessibleIds] }`.
+ *
+ * Only applies when `context.method === 'find'`.
+ *
+ * @param sessionRepo - SessionRepository instance
+ * @param options - Optional flags (allowSuperadmin)
+ * @returns Feathers hook
+ */
+export function scopeFindToAccessibleSessions(
+  sessionRepo: SessionRepository,
+  options?: { allowSuperadmin?: boolean }
+) {
+  return async (context: HookContext) => {
+    const decision = await resolveFindScopeAccess(context, options, async (uid) => {
+      const accessible = await sessionRepo.findAccessibleSessions(uid);
+      return accessible.map((s) => s.session_id as string);
+    });
+
+    if (decision.kind !== 'filter') return context;
+    return intersectFindQuery(context, 'session_id', decision.accessibleIds);
+  };
+}
+
+/**
+ * Scope find() queries on the boards service to the set of boards the caller
+ * can see.
+ *
+ * A board is visible if the caller created it OR any worktree on the board is
+ * accessible to them (owner or `others_can` permits at least 'view'). Empty
+ * boards stay visible to their creator; superadmins bypass.
+ *
+ * Resolution happens in a single SQL EXISTS query via
+ * {@link BoardRepository.findVisibleBoardIds}, avoiding the hydrate-every-
+ * worktree cost of the previous in-memory after-hook and letting Feathers'
+ * pagination/sort run against the already-scoped id set.
+ *
+ * @param boardRepo - BoardRepository instance
+ * @param options - Optional flags (allowSuperadmin)
+ * @returns Feathers hook
+ */
+export function scopeFindToAccessibleBoards(
+  boardRepo: BoardRepository,
+  options?: { allowSuperadmin?: boolean }
+) {
+  return async (context: HookContext) => {
+    const decision = await resolveFindScopeAccess(context, options, (uid) =>
+      boardRepo.findVisibleBoardIds(uid)
+    );
+
+    if (decision.kind !== 'filter') return context;
+    return intersectFindQuery(context, 'board_id', decision.accessibleIds);
+  };
 }
