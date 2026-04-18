@@ -29,6 +29,7 @@ import {
 } from '@ant-design/icons';
 import {
   Alert,
+  message as antdMessage,
   Badge,
   Button,
   Checkbox,
@@ -57,6 +58,7 @@ import { getDaemonUrl } from '@/config/daemon';
 import { copyToClipboard } from '@/utils/clipboard';
 import { mapToSortedArray } from '@/utils/mapHelpers';
 import { useThemedMessage } from '@/utils/message';
+import { ACCESS_TOKEN_KEY } from '@/utils/tokenRefresh';
 import { AgenticToolConfigForm } from '../AgenticToolConfigForm';
 import { AgentSelectionGrid } from '../AgentSelectionGrid';
 import { AVAILABLE_AGENTS } from '../AgentSelectionGrid/availableAgents';
@@ -425,8 +427,8 @@ const ChannelFormFields: React.FC<{
             <div style={{ marginBottom: 16 }}>
               <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
                 Create a GitHub App to connect Agor to your repositories. This uses GitHub&apos;s
-                App Manifest flow — you&apos;ll be redirected to GitHub to authorize the app, then
-                brought back here to complete setup.
+                URL-parameters registration flow — you&apos;ll be redirected to GitHub with the form
+                pre-filled, then brought back here to complete setup.
               </Typography.Paragraph>
 
               <Form.Item label="App Name" name="github_app_name">
@@ -445,15 +447,55 @@ const ChannelFormFields: React.FC<{
                 type="primary"
                 icon={<GithubOutlined />}
                 block
-                onClick={() => {
+                onClick={async () => {
                   const daemonUrl = getDaemonUrl();
                   const params = new URLSearchParams();
                   const appName = form.getFieldValue('github_app_name');
                   const org = form.getFieldValue('github_org');
                   if (appName) params.set('name', appName);
                   if (org) params.set('org', org);
-                  const qs = params.toString();
-                  window.open(`${daemonUrl}/api/github/setup/new${qs ? `?${qs}` : ''}`, '_blank');
+
+                  // Fetch a one-time CSRF state token bound to the current admin.
+                  // This authenticates the install-initiation step and binds the
+                  // post-install callback to this user_id.
+                  try {
+                    const accessToken = localStorage.getItem(ACCESS_TOKEN_KEY);
+                    if (!accessToken) {
+                      antdMessage.error(
+                        'You must be logged in as an admin to install the GitHub App.'
+                      );
+                      return;
+                    }
+                    const stateRes = await fetch(`${daemonUrl}/api/github/setup/state`, {
+                      method: 'POST',
+                      headers: {
+                        Authorization: `Bearer ${accessToken}`,
+                        'Content-Type': 'application/json',
+                      },
+                    });
+                    if (!stateRes.ok) {
+                      const body = await stateRes
+                        .json()
+                        .catch(() => ({}) as Record<string, unknown>);
+                      const err =
+                        typeof body?.error === 'string'
+                          ? body.error
+                          : `Failed to start GitHub App install (HTTP ${stateRes.status})`;
+                      antdMessage.error(err);
+                      return;
+                    }
+                    const { state } = (await stateRes.json()) as { state?: string };
+                    if (!state) {
+                      antdMessage.error('Daemon did not return an install state token.');
+                      return;
+                    }
+                    params.set('state', state);
+                    window.open(`${daemonUrl}/api/github/setup/new?${params.toString()}`, '_blank');
+                  } catch (err) {
+                    antdMessage.error(
+                      err instanceof Error ? err.message : 'Failed to initiate GitHub App install'
+                    );
+                  }
                 }}
               >
                 Create GitHub App on GitHub
