@@ -59,6 +59,8 @@ import {
   TaskStatus,
 } from '@agor/core/types';
 import { NotFoundError } from '@agor/core/utils/errors';
+import type { Request } from 'express';
+import { rateLimit } from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import type {
   BoardsServiceImpl,
@@ -78,12 +80,17 @@ import type { TerminalsService } from './services/terminals.js';
 import { createUserApiKeysService } from './services/user-api-keys.js';
 import { applyTierHooks } from './setup/service-tiers.js';
 import { AnonymousStrategy } from './strategies/anonymous.js';
+import { buildAuthRateLimitKey } from './utils/auth-rate-limit-key.js';
 import {
   ensureMinimumRole,
   registerAuthenticatedRoute,
   requireMinimumRole,
 } from './utils/authorization.js';
-import { createUploadMiddleware } from './utils/upload.js';
+import {
+  createUploadMiddleware,
+  enforceParsedTotalUploadSize,
+  enforceTotalUploadSize,
+} from './utils/upload.js';
 import {
   ensureWorktreePermission,
   PERMISSION_RANK,
@@ -212,6 +219,15 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     authStrategiesArray.push('session-token');
   }
 
+  // Access token TTL — short by design. The /authentication/refresh route
+  // (and the after-hook below) issues a 30-day refresh token so users stay
+  // logged in across browser restarts; the access token itself stays
+  // short-lived so that a leaked one expires quickly. Both the auth-service
+  // config AND the refresh endpoint MUST use this constant — if they drift,
+  // the refresh path silently downgrades the security of the auth path.
+  const ACCESS_TOKEN_TTL = '15m';
+  const REFRESH_TOKEN_TTL = '30d';
+
   app.set('authentication', {
     secret: jwtSecret,
     entity: 'user',
@@ -223,7 +239,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
       audience: 'https://agor.dev',
       issuer: 'agor',
       algorithm: 'HS256',
-      expiresIn: '7d', // Access token: 7 days (refresh token: 30 days)
+      expiresIn: ACCESS_TOKEN_TTL,
     },
     local: {
       usernameField: 'email',
@@ -252,42 +268,43 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
   const userApiKeysRepo = new UserApiKeysRepository(db);
   apiKeyStrategy.setDependencies(userApiKeysRepo, usersService);
 
-  // SECURITY: Simple in-memory rate limiter for authentication endpoints
-  const authAttempts = new Map<string, { count: number; resetAt: number }>();
-  const AUTH_RATE_LIMIT = 50; // Max attempts (increased for development/multiple tabs)
-  const AUTH_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+  // SECURITY: Rate-limit the authentication + refresh endpoints.
+  //
+  // express-rate-limit gives us standardized response headers
+  // (`RateLimit-Limit/Remaining/Reset`, IETF draft-7) and `Retry-After` for
+  // free, plus battle-tested concurrency / clock-skew handling. The default
+  // in-memory MemoryStore is fine for solo/team deployments; multi-instance
+  // operators can plug in a distributed store (redis, memcached) later
+  // without touching this call site.
+  //
+  // Mounted at `/authentication` so it covers BOTH the Feathers auth service
+  // (POST /authentication) and the custom refresh endpoint
+  // (POST /authentication/refresh) — Express's path-prefix matching means
+  // a single middleware handles both, and the keyGenerator branches on the
+  // sub-path to choose the right composite key.
+  const AUTH_RATE_LIMIT_MAX = 50;
+  const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 
-  const checkAuthRateLimit = (identifier: string): boolean => {
-    const now = Date.now();
-    const record = authAttempts.get(identifier);
+  const authRateLimiter = rateLimit({
+    windowMs: AUTH_RATE_LIMIT_WINDOW_MS,
+    limit: AUTH_RATE_LIMIT_MAX,
+    // Modern IETF draft-7 headers (RateLimit-*) — clients can back off.
+    standardHeaders: 'draft-7',
+    // Drop the legacy X-RateLimit-* set; they're noisy and non-standard.
+    legacyHeaders: false,
+    // Composite key on (ip, email). For the refresh sub-path the body has
+    // no email, so we bucket purely by IP. Trust only Express's resolved
+    // `req.ip` (which respects `app.set('trust proxy', n)`) — never
+    // X-Forwarded-For directly.
+    keyGenerator: (req: Request): string => buildAuthRateLimitKey(req),
+    message: 'Too many authentication attempts. Please try again in 15 minutes.',
+  });
 
-    if (!record || now > record.resetAt) {
-      authAttempts.set(identifier, { count: 1, resetAt: now + AUTH_WINDOW_MS });
-      return true;
-    }
-
-    if (record.count >= AUTH_RATE_LIMIT) {
-      return false;
-    }
-
-    record.count++;
-    return true;
-  };
-
-  // Cleanup old rate limit entries every hour
-  const rateLimitCleanupInterval = setInterval(
-    () => {
-      const now = Date.now();
-      for (const [key, record] of authAttempts.entries()) {
-        if (now > record.resetAt) {
-          authAttempts.delete(key);
-        }
-      }
-    },
-    60 * 60 * 1000
-  );
-
-  process.once('beforeExit', () => clearInterval(rateLimitCleanupInterval));
+  // Mount BEFORE the auth service so the limiter intercepts first. The same
+  // middleware also covers /authentication/refresh below thanks to Express
+  // path-prefix matching.
+  // biome-ignore lint/suspicious/noExplicitAny: Feathers Application vs Express middleware overload
+  app.use('/authentication', authRateLimiter as any);
 
   app.use('/authentication', authentication);
 
@@ -305,33 +322,16 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     security: [],
   };
 
-  // Hook: Add refresh token to authentication response + rate limiting
+  // Hook: Add refresh token to authentication response.
+  // Rate limiting is enforced by express-rate-limit middleware mounted on
+  // `/authentication` above — by the time we reach this hook the limiter
+  // has already 429'd any over-quota request.
   authService.hooks({
     before: {
       create: [
         // biome-ignore lint/suspicious/noExplicitAny: FeathersJS context type not fully typed
         async (context: any) => {
           const data = Array.isArray(context.data) ? context.data[0] : context.data;
-
-          if (context.params.provider) {
-            const httpParams = context.params as AuthenticatedParams & {
-              ip?: string;
-              headers?: Record<string, string | string[] | undefined>;
-              connection?: { remoteAddress?: string };
-            };
-            const ip =
-              httpParams.ip ||
-              (httpParams.headers?.['x-forwarded-for'] as string | undefined)?.split(',')[0] ||
-              httpParams.connection?.remoteAddress ||
-              'unknown';
-            const identifier = data?.email || ip;
-
-            if (!checkAuthRateLimit(identifier)) {
-              console.warn(`⚠️  Rate limit exceeded for authentication attempt: ${identifier}`);
-              throw new Error('Too many authentication attempts. Please try again in 15 minutes.');
-            }
-          }
-
           console.log('🔐 Authentication attempt:', {
             strategy: data?.strategy,
             email: data?.email,
@@ -360,7 +360,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
               },
               jwtSecret,
               {
-                expiresIn: '30d',
+                expiresIn: REFRESH_TOKEN_TTL,
                 issuer: 'agor',
                 audience: 'https://agor.dev',
               }
@@ -379,25 +379,9 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
   // ============================================================================
 
   app.use('/authentication/refresh', {
-    async create(data: { refreshToken: string }, params?: Params) {
-      if (params?.provider) {
-        const p = params as Params & {
-          ip?: string;
-          headers?: Record<string, string | string[] | undefined>;
-          connection?: { remoteAddress?: string };
-        };
-        const ip =
-          p.ip ||
-          (p.headers?.['x-forwarded-for'] as string | undefined)?.split(',')[0] ||
-          p.connection?.remoteAddress ||
-          'unknown';
-        const identifier = ip;
-        if (!checkAuthRateLimit(identifier)) {
-          console.warn(`⚠️  Rate limit exceeded for token refresh: ${identifier}`);
-          throw new Error('Too many token refresh attempts. Please try again in 15 minutes.');
-        }
-      }
-
+    async create(data: { refreshToken: string }, _params?: Params) {
+      // Rate limiting handled by express-rate-limit at the
+      // /authentication mount point (path-prefix match catches /refresh).
       try {
         const decoded = jwt.verify(data.refreshToken, jwtSecret, {
           issuer: 'agor',
@@ -410,14 +394,17 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
 
         const user = await usersService.get(decoded.sub as import('@agor/core/types').UUID);
 
+        // Use the SAME ACCESS_TOKEN_TTL as the auth-service config above —
+        // otherwise this endpoint silently downgrades the access-token
+        // hardening. Refresh tokens get the standard 30-day TTL.
         const accessToken = jwt.sign({ sub: user.user_id, type: 'access' }, jwtSecret, {
-          expiresIn: '7d',
+          expiresIn: ACCESS_TOKEN_TTL,
           issuer: 'agor',
           audience: 'https://agor.dev',
         });
 
         const newRefreshToken = jwt.sign({ sub: user.user_id, type: 'refresh' }, jwtSecret, {
-          expiresIn: '30d',
+          expiresIn: REFRESH_TOKEN_TTL,
           issuer: 'agor',
           audience: 'https://agor.dev',
         });
@@ -1217,24 +1204,14 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
 
       let token = null;
 
+      // Bearer-only. We previously fell back to feathers-jwt / agor-access-token
+      // / jwt cookies, which made the upload endpoint vulnerable to CSRF (a
+      // forged form-post would inherit the user's cookie). All in-tree callers
+      // (UI FileUpload component) already send `Authorization: Bearer …`.
       const authHeader = req.headers.authorization;
       if (authHeader?.startsWith('Bearer ')) {
         token = authHeader.substring(7);
         if (DEBUG_UPLOAD) console.log('   Found token in Authorization header');
-      }
-
-      if (!token) {
-        const cookies = req.headers.cookie || '';
-        const patterns = [/feathers-jwt=([^;]+)/, /agor-access-token=([^;]+)/, /jwt=([^;]+)/];
-
-        for (const pattern of patterns) {
-          const match = cookies.match(pattern);
-          if (match) {
-            token = match[1];
-            if (DEBUG_UPLOAD) console.log('   Found token in cookie');
-            break;
-          }
-        }
       }
 
       if (!token) {
@@ -1282,8 +1259,16 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
       next();
       // biome-ignore lint/suspicious/noExplicitAny: Express 5 type compatibility
     }) as any,
+    // Cheap pre-multer Content-Length check — short-circuits before we spend
+    // time writing oversize uploads to disk.
+    // biome-ignore lint/suspicious/noExplicitAny: Express 5 type compatibility
+    enforceTotalUploadSize() as any,
     // biome-ignore lint/suspicious/noExplicitAny: Express 5 + multer type compatibility
     uploadMiddleware.array('files', 10) as any,
+    // Defence-in-depth aggregate-size check using the actual file sizes that
+    // multer wrote — catches Content-Length-spoofing clients.
+    // biome-ignore lint/suspicious/noExplicitAny: Express 5 type compatibility
+    enforceParsedTotalUploadSize() as any,
     // biome-ignore lint/suspicious/noExplicitAny: Express 5 type compatibility
     ((req: any, res: any, next: any) => {
       if (DEBUG_UPLOAD) {

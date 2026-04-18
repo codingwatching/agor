@@ -41,13 +41,14 @@ import expressStaticGzip from 'express-static-gzip';
 import { registerHooks } from './register-hooks.js';
 import { registerRoutes } from './register-routes.js';
 import { registerServices } from './register-services.js';
-import { buildCorsConfig } from './setup/cors.js';
+import { buildCorsConfig, isSandpackOrigin } from './setup/cors.js';
 import {
   initializeAnthropicApiKey,
   initializeAnthropicAuthToken,
   initializeAnthropicBaseUrl,
 } from './setup/credentials.js';
 import { initializeDatabase } from './setup/database.js';
+import { securityHeaders } from './setup/security-headers.js';
 import { logServicesConfig, resolveServicesConfig } from './setup/service-tiers.js';
 import { configureChannels, createSocketIOConfig } from './setup/socketio.js';
 import { configureSwagger } from './setup/swagger.js';
@@ -217,6 +218,25 @@ export async function startDaemon(options?: DaemonStartOptions): Promise<void> {
   // --------------------------------------------------------------------------
   const app = feathersExpress(feathers());
 
+  // Configure how many reverse proxies we trust in front of the daemon.
+  // Default 0 = ignore X-Forwarded-* entirely (so a client cannot spoof their
+  // IP via headers). Operators with an explicit proxy chain set
+  // `daemon.trust_proxy_hops` to the hop count.
+  // The Number.isFinite guard is critical: `Number(Infinity) || 0` returns
+  // Infinity (truthy), and Express interprets `trust proxy = Infinity` as
+  // "trust everything" — which is the exact spoofing posture we are
+  // defending against. Reject non-finite values (Infinity, NaN) to 0.
+  const rawHops = Number(config.daemon?.trust_proxy_hops ?? 0);
+  const trustProxyHops = Number.isFinite(rawHops) ? Math.max(0, Math.floor(rawHops)) : 0;
+  app.set('trust proxy', trustProxyHops);
+  if (trustProxyHops > 0) {
+    console.log(
+      `🔒 trust proxy = ${trustProxyHops} (honouring X-Forwarded-* from ${trustProxyHops} hop(s))`
+    );
+  } else {
+    console.log('🔒 trust proxy = 0 (X-Forwarded-* headers ignored)');
+  }
+
   const safeService = (path: string) => {
     try {
       return app.service(path);
@@ -226,7 +246,12 @@ export async function startDaemon(options?: DaemonStartOptions): Promise<void> {
   };
 
   // CORS
-  const { origin: corsOrigin } = buildCorsConfig({
+  const {
+    origin: corsOrigin,
+    credentialsAllowed,
+    isWildcard,
+    isAllowedOrigin,
+  } = buildCorsConfig({
     uiPort: UI_PORT,
     isCodespaces: process.env.CODESPACES === 'true',
     corsOriginOverride: process.env.CORS_ORIGIN,
@@ -234,14 +259,73 @@ export async function startDaemon(options?: DaemonStartOptions): Promise<void> {
     configOrigins: config.daemon?.cors_origins,
   });
 
+  // Refuse to boot when a hardened deployment is configured to reflect any
+  // origin with credentials enabled. In dev/local mode we only warn loudly
+  // and let the cors helper drop credentials so the daemon stays usable.
+  // `execution.deployment_mode` is intentionally read defensively — the key
+  // may not yet be defined in older configs.
+  const deploymentMode = (config.execution as { deployment_mode?: string } | undefined)
+    ?.deployment_mode;
+  if (isWildcard) {
+    const banner =
+      '\n*** SECURITY WARNING: CORS is set to reflect ANY origin (CORS_ORIGIN=*).\n' +
+      '    Credentials have been disabled to prevent credentialed cross-origin requests.\n' +
+      '    Restrict CORS_ORIGIN before exposing this daemon to untrusted networks. ***\n';
+    if (deploymentMode === 'solo' || deploymentMode === 'team') {
+      console.error(banner);
+      console.error(
+        `❌ Refusing to start: deployment_mode=${deploymentMode} forbids wildcard CORS.`
+      );
+      process.exit(1);
+    } else {
+      console.error(banner);
+    }
+  }
+
+  // Per-request middleware (runs BEFORE cors()):
+  //   1. Echo Access-Control-Allow-Private-Network ONLY for explicit allow-list
+  //      origins (never for Sandpack, never for unknown wildcard origins).
+  //   2. Patch res.setHeader so that Access-Control-Allow-Credentials is
+  //      suppressed on Sandpack-origin responses — INCLUDING preflights. The
+  //      previous post-cors() removeHeader middleware never ran for OPTIONS,
+  //      because cors() short-circuits the preflight chain via res.end().
+  //      Patching setHeader catches headers cors() sets on its way to end().
   app.use((req, res, next) => {
-    if (req.headers['access-control-request-private-network'] === 'true') {
+    const origin = req.headers.origin;
+    if (
+      typeof origin === 'string' &&
+      req.headers['access-control-request-private-network'] === 'true' &&
+      isAllowedOrigin(origin)
+    ) {
       res.setHeader('Access-Control-Allow-Private-Network', 'true');
+    }
+
+    if (typeof origin === 'string' && isSandpackOrigin(origin)) {
+      const originalSetHeader = res.setHeader.bind(res);
+      // biome-ignore lint/suspicious/noExplicitAny: setHeader has many overloads
+      (res as any).setHeader = (name: string, value: any) => {
+        if (typeof name === 'string' && name.toLowerCase() === 'access-control-allow-credentials') {
+          return res;
+        }
+        return originalSetHeader(name, value);
+      };
     }
     next();
   });
-  app.use(cors({ origin: corsOrigin, credentials: true }));
 
+  app.use(cors({ origin: corsOrigin, credentials: credentialsAllowed }));
+
+  // Security headers (CSP, X-Frame-Options, nosniff, Referrer-Policy, HSTS).
+  // Must run after CORS so preflights still get the Access-Control-* headers.
+  app.use(securityHeaders({ daemonUrl }) as never);
+
+  // Default to a 10MB JSON body. The previous 10MB pre-hardening default was
+  // unbounded enough to allow trivial memory-pressure DoS, and a 1MB ceiling
+  // turned out to break legitimate flows (large prompts, /messages/bulk
+  // batches, oversized template payloads). 10MB is the balance: tight enough
+  // to bound a single attacker request, loose enough that real bulk-message
+  // payloads pass without per-route overrides. Multipart uploads bypass this
+  // limit (multer parses the body itself) and are capped separately.
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -340,7 +424,12 @@ export async function startDaemon(options?: DaemonStartOptions): Promise<void> {
     console.log(`🔑 Loaded existing JWT secret from config (length=${jwtSecret.length})`);
   }
 
-  const socketIOConfig = createSocketIOConfig(app, { corsOrigin, jwtSecret, allowAnonymous });
+  const socketIOConfig = createSocketIOConfig(app, {
+    corsOrigin,
+    jwtSecret,
+    allowAnonymous,
+    credentialsAllowed,
+  });
   app.configure(socketio(socketIOConfig.serverOptions, socketIOConfig.callback));
   configureChannels(app);
   configureSwagger(app, { version: DAEMON_VERSION, port: DAEMON_PORT });
