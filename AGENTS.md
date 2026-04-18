@@ -525,6 +525,11 @@ pnpm agor config set ui.port 5174
 - `VITE_DAEMON_URL` - Full daemon URL for UI
 - `VITE_DAEMON_PORT` - Daemon port for UI
 
+### Security Headers (CSP + CORS)
+
+Tunable from `~/.agor/config.yaml` under `security.*` — see
+`context/concepts/security.md`.
+
 ---
 
 ## Troubleshooting
