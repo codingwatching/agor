@@ -11,6 +11,7 @@ export * from './env-blocklist';
 export * from './env-locking';
 export * from './env-resolver';
 export * from './env-validation';
+export * from './env-vars';
 export * from './key-resolver';
 export * from './repo-list';
 export * from './repo-reference';

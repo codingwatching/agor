@@ -1,6 +1,8 @@
 import type {
   AgenticToolName,
   AgorClient,
+  EnvVarMetadata,
+  EnvVarScope,
   MCPServer,
   UpdateUserInput,
   User,
@@ -87,8 +89,8 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
   });
   const [savingApiKeys, setSavingApiKeys] = useState<Record<string, boolean>>({});
 
-  // Environment variable management state
-  const [userEnvVars, setUserEnvVars] = useState<Record<string, boolean>>({});
+  // Environment variable management state (scope-aware, v0.5 env-var-access)
+  const [userEnvVars, setUserEnvVars] = useState<Record<string, EnvVarMetadata>>({});
   const [savingEnvVars, setSavingEnvVars] = useState<Record<string, boolean>>({});
 
   // Saving state for agentic tool tabs
@@ -257,18 +259,42 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
     }
   };
 
-  // Handle env var save
-  const handleEnvVarSave = async (key: string, value: string) => {
+  // Handle env var save (value + scope). v0.5 env-var-access.
+  const handleEnvVarSave = async (key: string, value: string, scope: EnvVarScope) => {
     if (!user) return;
 
     try {
       setSavingEnvVars((prev) => ({ ...prev, [key]: true }));
       await onUpdate?.(user.user_id, {
         env_vars: { [key]: value },
+        env_var_scopes: { [key]: scope },
       });
-      setUserEnvVars((prev) => ({ ...prev, [key]: true }));
+      setUserEnvVars((prev) => ({
+        ...prev,
+        [key]: { set: true, scope, resource_id: null },
+      }));
     } catch (err) {
       console.error(`Failed to save ${key}:`, err);
+      throw err;
+    } finally {
+      setSavingEnvVars((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  // Handle scope change for an existing env var (no value rotation).
+  const handleEnvVarScopeChange = async (key: string, scope: EnvVarScope) => {
+    if (!user) return;
+    try {
+      setSavingEnvVars((prev) => ({ ...prev, [key]: true }));
+      await onUpdate?.(user.user_id, {
+        env_var_scopes: { [key]: scope },
+      });
+      setUserEnvVars((prev) => ({
+        ...prev,
+        [key]: { ...(prev[key] ?? { set: true }), set: true, scope, resource_id: null },
+      }));
+    } catch (err) {
+      console.error(`Failed to update scope for ${key}:`, err);
       throw err;
     } finally {
       setSavingEnvVars((prev) => ({ ...prev, [key]: false }));
@@ -584,6 +610,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
             <EnvVarEditor
               envVars={userEnvVars}
               onSave={handleEnvVarSave}
+              onScopeChange={handleEnvVarScopeChange}
               onDelete={handleEnvVarDelete}
               loading={savingEnvVars}
             />

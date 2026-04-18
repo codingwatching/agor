@@ -8,12 +8,14 @@
 import { PAGINATION } from '@agor/core/config';
 import {
   type Database,
+  SessionEnvSelectionRepository,
   SessionMCPServerRepository,
   SessionRepository,
   type SessionWithLastMessage,
 } from '@agor/core/db';
 import type { Application } from '@agor/core/feathers';
 import type {
+  AuthenticatedParams,
   MCPServerID,
   Paginated,
   QueryParams,
@@ -21,8 +23,9 @@ import type {
   SessionID,
   TaskID,
 } from '@agor/core/types';
-import { SessionStatus } from '@agor/core/types';
+import { ROLES, SessionStatus } from '@agor/core/types';
 import { DrizzleService } from '../adapters/drizzle';
+import { isSuperAdmin } from '../utils/worktree-authorization.js';
 
 /**
  * Session runtime configuration that should be inherited across forks, spawns, and btw.
@@ -66,6 +69,7 @@ export type SessionParams = QueryParams<{
   include_last_message?: boolean | 'true' | 'false'; // Opt-in last message enrichment
   last_message_truncation_length?: number; // Default: 500 chars, min: 50, max: 10000
 }> &
+  AuthenticatedParams &
   InternalEnrichmentParams & {
     /** Root-level include_last_message flag (bypasses Feathers query filtering, used by internal service calls) */
     _include_last_message?: boolean | 'true' | 'false';
@@ -115,6 +119,7 @@ export class SessionsService extends DrizzleService<Session, Partial<Session>, S
   private sessionRepo: SessionRepository;
   private app: Application;
   private sessionMCPRepo: SessionMCPServerRepository;
+  private sessionEnvSelectionRepo: SessionEnvSelectionRepository;
 
   constructor(db: Database, app: Application) {
     const sessionRepo = new SessionRepository(db);
@@ -131,6 +136,7 @@ export class SessionsService extends DrizzleService<Session, Partial<Session>, S
     this.sessionRepo = sessionRepo;
     this.app = app;
     this.sessionMCPRepo = new SessionMCPServerRepository(db);
+    this.sessionEnvSelectionRepo = new SessionEnvSelectionRepository(db);
   }
 
   /**
@@ -228,6 +234,18 @@ export class SessionsService extends DrizzleService<Session, Partial<Session>, S
       session.session_id as SessionID,
       'fork'
     );
+
+    // Copy session env var selections from parent to forked session
+    // (same creator, same selection context).
+    const parentEnvSelections = await this.sessionEnvSelectionRepo.listNames(
+      parent.session_id as SessionID
+    );
+    if (parentEnvSelections.length > 0) {
+      await this.sessionEnvSelectionRepo.setAll(
+        session.session_id as SessionID,
+        parentEnvSelections
+      );
+    }
 
     // Update parent's children list
     const parentChildren = parent.genealogy?.children || [];
@@ -412,6 +430,27 @@ export class SessionsService extends DrizzleService<Session, Partial<Session>, S
         session.session_id as SessionID,
         'spawn'
       );
+    }
+
+    // Session env var selections: explicit envVarNames > copy from parent.
+    // Only the parent's creator (now the spawned session's creator) or a
+    // global admin may override selections — otherwise silently fall back to
+    // copying the parent's selections (the caller cannot see the creator's
+    // env var names anyway).
+    const callerUserId = params?.user?.user_id as string | undefined;
+    const callerRole = params?.user?.role as string | undefined;
+    const callerIsCreatorOrAdmin =
+      callerUserId === parent.created_by || callerRole === ROLES.ADMIN || isSuperAdmin(callerRole);
+
+    if (data.envVarNames !== undefined && callerIsCreatorOrAdmin) {
+      await this.sessionEnvSelectionRepo.setAll(session.session_id as SessionID, data.envVarNames);
+    } else {
+      const parentNames = await this.sessionEnvSelectionRepo.listNames(
+        parent.session_id as SessionID
+      );
+      if (parentNames.length > 0) {
+        await this.sessionEnvSelectionRepo.setAll(session.session_id as SessionID, parentNames);
+      }
     }
 
     // Update parent's children list
