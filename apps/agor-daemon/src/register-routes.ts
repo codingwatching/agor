@@ -1924,10 +1924,10 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     app,
     '/repos/:id/import-agor-yml',
     {
-      async create(_data: unknown, params: RouteParams) {
+      async create(data: { worktree_id?: string } | undefined, params: RouteParams) {
         const id = params.route?.id;
         if (!id) throw new Error('Repo ID required');
-        return reposService.importFromAgorYml(id, {}, params);
+        return reposService.importFromAgorYml(id, data, params);
       },
     },
     {
@@ -1940,10 +1940,10 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     app,
     '/repos/:id/export-agor-yml',
     {
-      async create(_data: unknown, params: RouteParams) {
+      async create(data: { worktree_id?: string } | undefined, params: RouteParams) {
         const id = params.route?.id;
         if (!id) throw new Error('Repo ID required');
-        return reposService.exportToAgorYml(id, {}, params);
+        return reposService.exportToAgorYml(id, data, params);
       },
     },
     {
@@ -2079,7 +2079,12 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
       },
     },
     {
-      create: { role: ROLES.ADMIN, action: 'start worktree environments' },
+      // Role is enforced at the service layer via managed_envs_minimum_role
+      // (default: member). This route-level gate is just "authenticated", so
+      // it accepts the lowest authenticated role (viewer). The service gate
+      // is the single source of truth for whether the user can actually
+      // trigger the command.
+      create: { role: ROLES.VIEWER, action: 'start worktree environments' },
     },
     requireAuth
   );
@@ -2098,7 +2103,8 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
       },
     },
     {
-      create: { role: ROLES.ADMIN, action: 'stop worktree environments' },
+      // Service-layer enforcement via managed_envs_minimum_role
+      create: { role: ROLES.VIEWER, action: 'stop worktree environments' },
     },
     requireAuth
   );
@@ -2117,7 +2123,8 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
       },
     },
     {
-      create: { role: ROLES.ADMIN, action: 'restart worktree environments' },
+      // Service-layer enforcement via managed_envs_minimum_role
+      create: { role: ROLES.VIEWER, action: 'restart worktree environments' },
     },
     requireAuth
   );
@@ -2136,7 +2143,8 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
       },
     },
     {
-      create: { role: ROLES.ADMIN, action: 'nuke worktree environments' },
+      // Service-layer enforcement via managed_envs_minimum_role
+      create: { role: ROLES.VIEWER, action: 'nuke worktree environments' },
     },
     requireAuth
   );
@@ -2381,7 +2389,8 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
       // biome-ignore lint/suspicious/noExplicitAny: Service type not compatible with Express
     } as any,
     {
-      find: { role: ROLES.MEMBER, action: 'view worktree logs' },
+      // Service-layer enforcement via managed_envs_minimum_role
+      find: { role: ROLES.VIEWER, action: 'view worktree logs' },
     },
     requireAuth
   );
@@ -2677,6 +2686,13 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
           // flag exists so the UI can skip rendering buttons that would fail.
           // Defaults to true when the config key is unset.
           webTerminal: config.execution?.allow_web_terminal !== false,
+          // Minimum role required to trigger managed environment commands
+          // (start / stop / nuke / logs). UI uses this to disable + tooltip
+          // the trigger buttons for users below the threshold. The server-side
+          // gate in services/worktrees.ts is the source of truth.
+          // Value: 'none' | 'viewer' | 'member' | 'admin' | 'superadmin'.
+          // Defaults to 'member' when unset.
+          managedEnvsMinimumRole: config.execution?.managed_envs_minimum_role ?? 'member',
         },
       };
 

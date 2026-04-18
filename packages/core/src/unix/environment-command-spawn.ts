@@ -10,6 +10,7 @@ import { createUserProcessEnvironment } from '../config/index.js';
 import type { Database } from '../db/index.js';
 import { UsersRepository } from '../db/repositories/index.js';
 import type { Worktree } from '../types/index.js';
+import { assertEnvCommandAllowed } from './environment-command-deny-list.js';
 import { buildSpawnArgs } from './run-as-user.js';
 import { attachEnvFileCleanup, prepareImpersonationEnv } from './user-env-file.js';
 import { resolveUnixUserForImpersonation, validateResolvedUnixUser } from './user-manager.js';
@@ -30,6 +31,64 @@ export interface SpawnEnvironmentCommandOptions {
   commandType: EnvironmentCommandType;
   /** stdio configuration (default: 'inherit') */
   stdio?: SpawnOptions['stdio'];
+  /**
+   * Identity of the user who triggered the command. Used for audit logging
+   * only — authorization is enforced at the service layer.
+   */
+  triggeredBy?: { user_id?: string; email?: string };
+}
+
+/**
+ * Structured audit entry emitted (as a single JSON line) whenever an env
+ * command is spawned. Captures who/what/where so trigger history can be
+ * reconstructed from daemon logs. We do not persist these rows — the
+ * daemon's journald/docker logs are the source of truth.
+ */
+export interface EnvCommandAuditEntry {
+  event: 'agor.env_command.spawn';
+  timestamp: string;
+  worktree_id: string;
+  worktree_name: string;
+  command_type: EnvironmentCommandType;
+  /**
+   * Command string as spawned, after secret redaction and length truncation.
+   * Inline `KEY=value` pairs whose key matches a secret-looking name are
+   * replaced with `KEY=***`. Commands longer than AUDIT_COMMAND_MAX_LENGTH
+   * are truncated with a trailing marker.
+   */
+  command: string;
+  triggered_by_user_id: string | undefined;
+  triggered_by_email: string | undefined;
+  as_unix_user: string | undefined;
+  unix_user_mode: string;
+}
+
+/**
+ * Keys whose inline assignment values should be redacted from audit logs.
+ * Matched case-insensitively as a suffix of the key (so `MY_API_KEY` and
+ * `DATABASE_PASSWORD` both redact). Agor sources real secrets via an env-file
+ * out of /proc/PID/cmdline, but users routinely paste `FOO_TOKEN=abc docker …`
+ * into templates, so this keeps those from leaking into daemon logs.
+ */
+const SECRET_KEY_PATTERN =
+  /(?:^|[\s;&|])((?:[A-Z_][A-Z0-9_]*)?(?:TOKEN|SECRET|PASSWORD|PASSWD|KEY|CRED|CREDENTIAL|AUTH|API|PRIVATE|SIGNATURE))=(\S+)/gi;
+
+/** Max length of the command string emitted in an audit entry. */
+const AUDIT_COMMAND_MAX_LENGTH = 1024;
+
+/**
+ * Produce the command string that goes into the audit log: redacts inline
+ * `KEY=value` pairs for secret-looking keys and truncates. Not a security
+ * boundary — the real secret path is the env-file — just keeps honest logs
+ * honest.
+ */
+export function redactCommandForAudit(command: string): string {
+  const redacted = command.replace(SECRET_KEY_PATTERN, (match, key) => {
+    const leader = match.startsWith(key) ? '' : match[0];
+    return `${leader}${key}=***`;
+  });
+  if (redacted.length <= AUDIT_COMMAND_MAX_LENGTH) return redacted;
+  return `${redacted.slice(0, AUDIT_COMMAND_MAX_LENGTH)}…[truncated]`;
 }
 
 /**
@@ -52,9 +111,13 @@ export interface SpawnEnvironmentCommandOptions {
 export async function spawnEnvironmentCommand(
   options: SpawnEnvironmentCommandOptions
 ): Promise<ChildProcess> {
-  const { command, worktree, db, commandType, stdio = 'inherit' } = options;
+  const { command, worktree, db, commandType, stdio = 'inherit', triggeredBy } = options;
 
   const logPrefix = `[Environment.${commandType} ${worktree.name}]`;
+
+  // Defence-in-depth: refuse obviously-dangerous commands even if an admin
+  // authored them. Runs on every spawn path (REST, MCP, WebSocket).
+  assertEnvCommandAllowed(command, commandType);
 
   // Load config for Unix impersonation settings
   const { loadConfig } = await import('../config/config-manager.js');
@@ -100,12 +163,36 @@ export async function spawnEnvironmentCommand(
     ? prepareImpersonationEnv({ asUser, env })
     : { inlineEnv: undefined, envFilePath: undefined };
 
-  // Build spawn args with impersonation
+  // Build spawn args with impersonation.
+  //
+  // `shell: true` is critical here: env commands are user-authored shell
+  // strings (e.g. `SEED=true UID=$(id -u) docker compose up -d --build`)
+  // that need shell parsing — env-var prefixes, `$(...)` subshells, argument
+  // word-splitting, etc. Without this, the impersonated + secret-file path
+  // emits `exec "$@"` which treats the whole string as a single program
+  // name and fails with `exec: <full string>: not found`.
   const { cmd, args } = buildSpawnArgs(command, [], {
     asUser,
     env: asUser ? prepared.inlineEnv : undefined, // Non-secret env only; secrets are sourced from envFilePath
     envFilePath: prepared.envFilePath,
+    shell: true,
   });
+
+  // Structured audit log — one JSON line per spawn for post-hoc review
+  // (daemon logs are the source of truth; we do not persist these to the DB).
+  const auditEntry: EnvCommandAuditEntry = {
+    event: 'agor.env_command.spawn',
+    timestamp: new Date().toISOString(),
+    worktree_id: worktree.worktree_id,
+    worktree_name: worktree.name,
+    command_type: commandType,
+    command: redactCommandForAudit(command),
+    triggered_by_user_id: triggeredBy?.user_id,
+    triggered_by_email: triggeredBy?.email,
+    as_unix_user: asUser,
+    unix_user_mode: unixUserMode,
+  };
+  console.log(`AUDIT ${JSON.stringify(auditEntry)}`);
 
   // Spawn the command
   // When not impersonating (simple mode), buildSpawnArgs returns the raw command string,

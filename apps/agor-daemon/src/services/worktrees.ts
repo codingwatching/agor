@@ -10,7 +10,7 @@ import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { ENVIRONMENT, isWorktreeRbacEnabled, PAGINATION } from '@agor/core/config';
+import { ENVIRONMENT, isWorktreeRbacEnabled, loadConfig, PAGINATION } from '@agor/core/config';
 import { type Database, WorktreeRepository, type WorktreeWithZoneAndSessions } from '@agor/core/db';
 import type { Application } from '@agor/core/feathers';
 import type {
@@ -27,6 +27,7 @@ import { spawnEnvironmentCommand } from '@agor/core/unix';
 import { getNextRunTime, validateCron } from '@agor/core/utils/cron';
 import { isAllowedHealthCheckUrl } from '@agor/core/utils/url';
 import { DrizzleService } from '../adapters/drizzle';
+import { ensureCanTriggerManagedEnv } from '../utils/authorization.js';
 import { resolveGitImpersonationForWorktree } from '../utils/git-impersonation.js';
 import { generateSessionToken, getDaemonUrl, spawnExecutor } from '../utils/spawn-executor.js';
 import type { InternalEnrichmentParams } from './sessions';
@@ -116,6 +117,32 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
   }
 
   /**
+   * Enforce `execution.managed_envs_minimum_role` on env command triggers.
+   * Canonical enforcement point — runs for REST, WebSocket, *and* MCP callers
+   * since all trigger paths reach this service class.
+   */
+  private async ensureCanTriggerEnv(
+    params: WorktreeParams | undefined,
+    action: string
+  ): Promise<void> {
+    const config = await loadConfig();
+    ensureCanTriggerManagedEnv(config.execution?.managed_envs_minimum_role, params, action);
+  }
+
+  /**
+   * Extract caller identity for audit logging. Internal/daemon-initiated
+   * calls (no params.provider, no user) return undefined which the audit
+   * entry records explicitly.
+   */
+  private extractTriggeredBy(
+    params: WorktreeParams | undefined
+  ): { user_id?: string; email?: string } | undefined {
+    const user = (params as AuthenticatedParams | undefined)?.user;
+    if (!user) return undefined;
+    return { user_id: user.user_id, email: user.email };
+  }
+
+  /**
    * Get board-objects service (lazy-loaded to prevent circular dependencies)
    * FIX: Cache service reference instead of calling this.app.service() repeatedly
    */
@@ -187,6 +214,48 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
       );
       return { x: 100 + Math.random() * 200, y: 100 + Math.random() * 200 };
     }
+  }
+
+  /**
+   * Apply config-driven defaults before insert.
+   *
+   * Reads `worktrees.others_can_default` and `worktrees.others_fs_access_default`
+   * so admins can set org-wide defaults in config.yaml. Explicit values on the
+   * input always win; defaults fill in only when the caller omits the field.
+   */
+  private async applyWorktreeCreateDefaults(data: Partial<Worktree>): Promise<Partial<Worktree>> {
+    const config = await loadConfig();
+    const defaults = config.worktrees;
+    if (!defaults) return data;
+
+    const withDefaults: Partial<Worktree> = { ...data };
+    if (defaults.others_can_default !== undefined && withDefaults.others_can === undefined) {
+      withDefaults.others_can = defaults.others_can_default;
+    }
+    if (
+      defaults.others_fs_access_default !== undefined &&
+      withDefaults.others_fs_access === undefined
+    ) {
+      withDefaults.others_fs_access = defaults.others_fs_access_default;
+    }
+    return withDefaults;
+  }
+
+  /**
+   * Override create to inject config-driven worktree defaults.
+   */
+  async create(
+    data: Partial<Worktree> | Partial<Worktree>[],
+    params?: WorktreeParams
+  ): Promise<Worktree | Worktree[]> {
+    if (Array.isArray(data)) {
+      const withDefaults = await Promise.all(
+        data.map((item) => this.applyWorktreeCreateDefaults(item))
+      );
+      return super.create(withDefaults, params) as Promise<Worktree[]>;
+    }
+    const withDefaults = await this.applyWorktreeCreateDefaults(data);
+    return super.create(withDefaults, params) as Promise<Worktree>;
   }
 
   /**
@@ -871,6 +940,7 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
     id: WorktreeID,
     params?: WorktreeParams
   ): Promise<WorktreeWithZoneAndSessions> {
+    await this.ensureCanTriggerEnv(params, 'start worktree environments');
     const worktree = await this.get(id, params);
 
     // Validate static start command exists
@@ -925,6 +995,7 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
         db: this.db,
         commandType: 'start',
         stdio: 'pipe',
+        triggeredBy: this.extractTriggeredBy(params),
       });
 
       // Collect stdout/stderr for error reporting (last ~100 lines)
@@ -1022,6 +1093,7 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
     id: WorktreeID,
     params?: WorktreeParams
   ): Promise<WorktreeWithZoneAndSessions> {
+    await this.ensureCanTriggerEnv(params, 'stop worktree environments');
     const worktree = await this.get(id, params);
 
     // Set status to 'stopping'
@@ -1047,6 +1119,7 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
           worktree,
           db: this.db,
           commandType: 'stop',
+          triggeredBy: this.extractTriggeredBy(params),
         });
 
         await new Promise<void>((resolve, reject) => {
@@ -1139,6 +1212,7 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
     id: WorktreeID,
     params?: WorktreeParams
   ): Promise<WorktreeWithZoneAndSessions> {
+    await this.ensureCanTriggerEnv(params, 'nuke worktree environments');
     const worktree = await this.get(id, params);
 
     // Require nuke_command to be configured
@@ -1167,6 +1241,7 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
         worktree,
         db: this.db,
         commandType: 'nuke',
+        triggeredBy: this.extractTriggeredBy(params),
       });
 
       await new Promise<void>((resolve, reject) => {
@@ -1372,6 +1447,7 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
     error?: string;
     truncated?: boolean;
   }> {
+    await this.ensureCanTriggerEnv(params, 'fetch worktree environment logs');
     const worktree = await this.get(id, params);
 
     // Check if static logs command is configured
@@ -1396,6 +1472,7 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
         db: this.db,
         commandType: 'logs',
         stdio: 'pipe', // Need to capture output for logs
+        triggeredBy: this.extractTriggeredBy(params),
       });
 
       const result = await new Promise<{
