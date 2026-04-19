@@ -310,6 +310,18 @@ export interface AgorExecutionSettings {
   /** Maximum session token uses (default: 1 = single-use, -1 = unlimited) */
   session_token_max_uses?: number;
 
+  /**
+   * MCP session token expiration in ms (default: 86400000 = 24 hours).
+   *
+   * Applies to the internal MCP tokens minted for each Agor session
+   * (aud: `agor:mcp:internal`). Every issued token now carries an `exp`
+   * claim; this value controls the lifetime.
+   *
+   * Does NOT affect the (separate) executor-side `session_token_*` settings,
+   * which gate the short-lived JWT issued to spawned subprocesses.
+   */
+  mcp_token_expiration_ms?: number;
+
   /** Sync web passwords to Unix user passwords (default: true). When enabled, passwords are synced on user creation/update. */
   sync_unix_passwords?: boolean;
 

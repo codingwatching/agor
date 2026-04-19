@@ -766,4 +766,23 @@ export class SessionRepository implements BaseRepository<Session, Partial<Sessio
       return sessions.map((session) => ({ ...session, last_message: '' }));
     }
   }
+
+  /**
+   * Check whether a session with the given id exists. Used by the MCP-token
+   * validation path to reject tokens whose session has been deleted.
+   */
+  async exists(sessionId: string): Promise<boolean> {
+    try {
+      const row = (await select(this.db)
+        .from(sessions)
+        .where(eq(sessions.session_id, sessionId))
+        .one()) as { session_id?: string } | null | undefined;
+      return row != null;
+    } catch (error) {
+      throw new RepositoryError(
+        `Failed to check session existence: ${error instanceof Error ? error.message : String(error)}`,
+        error
+      );
+    }
+  }
 }

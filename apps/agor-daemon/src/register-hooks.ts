@@ -131,6 +131,41 @@ export function isPromptFlowPatchOnly(data: unknown): boolean {
 }
 
 /**
+ * Authorization predicate for emitting an MCP token on `GET /sessions/:id`.
+ *
+ * The token binds `uid = session.created_by` and lets the bearer act AS the
+ * creator on the MCP channel. It must therefore only be handed to callers
+ * who are ALREADY allowed to act as that creator:
+ *
+ *   - the creator themselves, provided they are still `member+` (viewers
+ *     never receive a token — see docs: "Viewers never receive an
+ *     mcp_token")
+ *   - a superadmin (ops access)
+ *   - the executor's service identity (spawns the child that uses the
+ *     token; see `createServiceToken` in utils/spawn-executor.ts)
+ *
+ * A plain `member+` with `view` permission on the worktree is NOT enough —
+ * giving them the token would let them impersonate the creator, sidestepping
+ * the `session`-tier "own sessions only" rule enforced elsewhere.
+ *
+ * Note: `service` is not part of the user-facing role hierarchy (see
+ * `ROLE_RANK` in `@agor/core/types/user.ts`), so `hasMinimumRole('service',
+ * ...)` returns false — we check for it by exact-string match instead.
+ */
+export function canReceiveMcpTokenForSession(params: {
+  callerUserId: string | undefined;
+  callerRole: string | undefined;
+  sessionCreatedBy: string | null | undefined;
+}): boolean {
+  const { callerUserId, callerRole, sessionCreatedBy } = params;
+  const isSuperadmin = hasMinimumRole(callerRole, ROLES.SUPERADMIN);
+  const isServiceExecutor = callerRole === 'service';
+  const isCreatorMember =
+    !!callerUserId && callerUserId === sessionCreatedBy && hasMinimumRole(callerRole, ROLES.MEMBER);
+  return isCreatorMember || isSuperadmin || isServiceExecutor;
+}
+
+/**
  * Extended Params with route ID parameter (needed by artifact routes in hooks).
  */
 interface RouteParams extends Params {
@@ -1564,8 +1599,21 @@ export function registerHooks(ctx: RegisterHooksContext): void {
             return context;
           }
 
-          const { generateSessionToken } = await import('./mcp/tokens.js');
           const session = context.result as Session;
+          const callerUser = (context.params as AuthenticatedParams).user;
+
+          // Rationale for the narrow gate lives on canReceiveMcpTokenForSession.
+          if (
+            !canReceiveMcpTokenForSession({
+              callerUserId: callerUser?.user_id,
+              callerRole: callerUser?.role,
+              sessionCreatedBy: session.created_by,
+            })
+          ) {
+            return context;
+          }
+
+          const { generateSessionToken } = await import('./mcp/tokens.js');
           const userId = session.created_by || 'anonymous';
 
           const jwtSecret = app.settings.authentication?.secret;
@@ -1574,17 +1622,16 @@ export function registerHooks(ctx: RegisterHooksContext): void {
             return context;
           }
 
-          const mcpToken = generateSessionToken(
-            userId as import('@agor/core/types').UserID,
+          const mcpToken = await generateSessionToken(
+            app,
             session.session_id,
-            jwtSecret
+            userId as import('@agor/core/types').UserID
           );
 
-          console.log(
-            `🔄 Regenerated MCP token for session ${session.session_id.substring(0, 8)}: ${mcpToken.substring(0, 16)}...`
-          );
+          console.log(`🔄 Regenerated MCP token for session ${session.session_id.substring(0, 8)}`);
 
-          // Add token to result (not stored in DB, regenerated on-demand)
+          // Add token to result (not stored in DB, regenerated on-demand with
+          // a fresh `jti` and `exp`)
           context.result = { ...session, mcp_token: mcpToken };
 
           return context;
@@ -1597,7 +1644,13 @@ export function registerHooks(ctx: RegisterHooksContext): void {
             return context;
           }
 
-          // Generate MCP session token for this session (deterministic JWT)
+          // Gate MCP token issuance on member+ role (see `after: get` note).
+          const callerRole = (context.params as AuthenticatedParams).user?.role;
+          if (!hasMinimumRole(callerRole, ROLES.MEMBER)) {
+            return context;
+          }
+
+          // Mint MCP token for this session (jti + exp + gen embedded)
           const { generateSessionToken } = await import('./mcp/tokens.js');
           const session = context.result as Session;
           const userId = session.created_by || 'anonymous';
@@ -1609,19 +1662,13 @@ export function registerHooks(ctx: RegisterHooksContext): void {
             return context;
           }
 
-          const mcpToken = generateSessionToken(
-            userId as import('@agor/core/types').UserID,
+          const mcpToken = await generateSessionToken(
+            app,
             session.session_id,
-            jwtSecret
+            userId as import('@agor/core/types').UserID
           );
 
-          console.log(
-            `🎫 MCP token for session ${session.session_id.substring(0, 8)}: ${mcpToken.substring(0, 16)}...`
-          );
-
-          // No need to store token in database - it's deterministic!
-          // Token can be regenerated on demand using same inputs.
-          console.log(`✨ Using deterministic MCP token (no DB storage needed)`);
+          console.log(`🎫 MCP token issued for session ${session.session_id.substring(0, 8)}`);
 
           // Note: We no longer auto-attach global MCP servers to sessions.
           // Instead, getMcpServersForSession() will automatically provide ALL

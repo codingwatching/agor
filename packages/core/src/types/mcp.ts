@@ -265,3 +265,17 @@ export type MCPServersConfig = Record<
     env?: Record<string, string>;
   }
 >;
+
+// ============================================================================
+// MCP Session Tokens (daemon ↔ MCP server channel)
+// ============================================================================
+
+/**
+ * JWT `aud` claim for MCP session tokens. Enforced by `jsonwebtoken.verify`.
+ */
+export const MCP_TOKEN_AUDIENCE = 'agor:mcp:internal';
+
+/**
+ * JWT `iss` claim for MCP session tokens (post-rollout tokens only).
+ */
+export const MCP_TOKEN_ISSUER = 'agor';

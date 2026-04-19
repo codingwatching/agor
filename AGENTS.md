@@ -371,6 +371,9 @@ execution:
   session_token_expiration_ms: number # default: 86400000 (24h)
   session_token_max_uses: number # default: 1, -1 = unlimited
 
+  # MCP session tokens (daemon ↔ MCP server channel)
+  mcp_token_expiration_ms: number            # default: 86400000 (24h)
+
   # Password sync (strict mode)
   sync_unix_passwords: boolean # default: true
 

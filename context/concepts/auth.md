@@ -13,7 +13,7 @@
 
 1. **No resource isolation** - Any authenticated user can access, modify, or delete any other user's sessions, tasks, worktrees, and boards. User attribution is tracked but not enforced.
 
-2. **Shared API keys** - API keys configured at the daemon level are visible to all authenticated users. MCP tokens are stored unencrypted in the database.
+2. **Shared API keys** - API keys configured at the daemon level are visible to all authenticated users. (MCP tokens are *not* stored — they are re-minted on demand and bounded by a short `exp`; see the "MCP Session Tokens" section below.)
 
 3. **No rate limiting or quotas** - Users can spawn unlimited sessions, make unlimited API calls, and potentially exhaust API credits or system resources.
 
@@ -477,6 +477,82 @@ Will require:
 - OAuth configuration
 - CASL permission system
 - Team/board sharing
+
+---
+
+## MCP Session Tokens
+
+MCP session tokens authorise the internal daemon ↔ MCP-server channel
+(audience `agor:mcp:internal`). Every call the MCP server makes against the
+daemon carries a token issued to one session.
+
+### Claims
+
+```json
+{
+  "sub": "<session_id>",           // session the token is bound to
+  "uid": "<user_id>",              // user the token was minted for
+  "aud": "agor:mcp:internal",
+  "iss": "agor",
+  "iat": 1736553600,               // issued-at (unix seconds)
+  "exp": 1736640000,               // expiry (unix seconds) — enforced by jwt.verify
+  "jti": "<uuidv7>"                // per-issuance id, for log correlation
+}
+```
+
+### Issuance
+
+Tokens are minted on demand — there is no long-lived token stored in the DB.
+`GET /sessions/:id` and `POST /sessions` both re-mint fresh tokens via
+`generateSessionToken(app, sessionId, userId)`; each call produces a new
+`jti`/`iat`/`exp`.
+
+Default lifetime: **24 hours** (`execution.mcp_token_expiration_ms`).
+
+### No revocation mechanics
+
+There is intentionally **no revocation**: no per-`jti` ledger, no
+session-generation counter. Tokens are short-lived, re-minted fresh on every
+`GET /sessions/:id` / `POST /sessions`, and MCP is internal-only (loopback) —
+so the authorised blast radius of a leak is already bounded by `exp`. The
+validation path still rejects tokens whose session has been **deleted**
+(by looking up `sessions.session_id`), which covers the one case where a
+token can outlive its subject before `exp`.
+
+If/when MCP is opened externally, auth will be redesigned from scratch
+(OAuth / API keys) rather than extending this.
+
+### Access gating
+
+An MCP token binds `uid = session.created_by` and lets the bearer act AS the
+creator on the MCP channel. It is therefore only issued to callers who are
+already allowed to act as that creator:
+
+- **`GET /sessions/:id`** — the creator themselves (provided they are still
+  `member+`), a superadmin, or the executor's service identity
+  (`role: 'service'`). A `member+` with only `view` permission on the
+  worktree does **not** receive a token — handing one out would let them
+  impersonate the creator on the MCP channel, sidestepping the
+  `session`-tier "own sessions only" rule enforced elsewhere. This predicate
+  is extracted as `canReceiveMcpTokenForSession` in `register-hooks.ts` and
+  unit-tested.
+- **`POST /sessions`** — the caller is the creator by construction, gated
+  at `member+`.
+- **Viewers** never receive an `mcp_token` on either path.
+
+### Pre-rollout tokens
+
+Tokens minted before this rollout carry no `jti`/`exp` and are rejected
+outright. In practice this only matters during a daemon restart — restarting
+the daemon kills all in-flight prompts, and the next prompt invocation
+re-mints a fresh token on the way out, so there is no disruption worth
+papering over.
+
+### Related files
+
+- `apps/agor-daemon/src/mcp/tokens.ts` — module implementation
+- `apps/agor-daemon/src/mcp/tokens.test.ts` — unit tests
+- `apps/agor-daemon/src/register-hooks.ts` — issuance gate (`canReceiveMcpTokenForSession`: creator/superadmin/service)
 
 ---
 

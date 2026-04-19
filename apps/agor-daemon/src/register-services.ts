@@ -153,6 +153,13 @@ export async function registerServices(ctx: RegisterServicesContext): Promise<Re
   const appRecord = app as unknown as Record<string, unknown>;
   appRecord.sessionTokenService = sessionTokenService;
 
+  // Initialize MCP token module.
+  const { initMcpTokens } = await import('./mcp/tokens.js');
+  initMcpTokens({
+    db,
+    expirationMs: config.execution?.mcp_token_expiration_ms,
+  });
+
   // ============================================================================
   // Core services: sessions, tasks, messages
   // ============================================================================
