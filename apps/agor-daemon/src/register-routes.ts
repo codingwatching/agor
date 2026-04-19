@@ -1924,9 +1924,10 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     app,
     '/repos/:id/import-agor-yml',
     {
-      async create(data: { worktree_id?: string } | undefined, params: RouteParams) {
+      async create(data: { worktree_id: string }, params: RouteParams) {
         const id = params.route?.id;
         if (!id) throw new Error('Repo ID required');
+        if (!data?.worktree_id) throw new Error('worktree_id is required');
         return reposService.importFromAgorYml(id, data, params);
       },
     },
@@ -1940,14 +1941,18 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     app,
     '/repos/:id/export-agor-yml',
     {
-      async create(data: { worktree_id?: string } | undefined, params: RouteParams) {
+      async create(data: { worktree_id: string }, params: RouteParams) {
         const id = params.route?.id;
         if (!id) throw new Error('Repo ID required');
+        if (!data?.worktree_id) throw new Error('worktree_id is required');
         return reposService.exportToAgorYml(id, data, params);
       },
     },
     {
-      create: { role: ROLES.MEMBER, action: 'export .agor.yml' },
+      // Admin-only, matching Import and repo.environment edit. Export writes a
+      // file to the worktree working tree, so even though the content is
+      // derivable, the side effect warrants the same permission bar as import.
+      create: { role: ROLES.ADMIN, action: 'export .agor.yml' },
     },
     requireAuth
   );
@@ -2150,6 +2155,28 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     {
       // Service-layer enforcement via managed_envs_minimum_role
       create: { role: ROLES.VIEWER, action: 'nuke worktree environments' },
+    },
+    requireAuth
+  );
+
+  registerAuthenticatedRoute(
+    app,
+    '/worktrees/:id/render-environment',
+    {
+      async create(data: unknown, params: RouteParams) {
+        const id = params.route?.id;
+        if (!id) throw new Error('Worktree ID required');
+        return worktreesService.renderEnvironment(
+          id as import('@agor/core/types').WorktreeID,
+          data as { variant?: string } | undefined,
+          params
+        );
+      },
+    },
+    {
+      // Baseline trigger gate via managed_envs_minimum_role; variant changes
+      // are additionally admin-gated inside the service method.
+      create: { role: ROLES.VIEWER, action: 'render worktree environment' },
     },
     requireAuth
   );

@@ -141,12 +141,12 @@ export interface ReposServiceImpl extends Service<Repo, Partial<Repo>, FeathersP
   removeWorktree(id: string, name: string, params?: FeathersParams): Promise<Repo>;
   importFromAgorYml(
     id: string,
-    data: { worktree_id?: string } | undefined,
+    data: { worktree_id: string },
     params?: FeathersParams
   ): Promise<Repo>;
   exportToAgorYml(
     id: string,
-    data: { worktree_id?: string } | undefined,
+    data: { worktree_id: string },
     params?: FeathersParams
   ): Promise<{ path: string }>;
 }
@@ -206,6 +206,11 @@ export interface WorktreesServiceImpl extends Service<Worktree, Partial<Worktree
   stopEnvironment(id: WorktreeID, params?: FeathersParams): Promise<Worktree>;
   restartEnvironment(id: WorktreeID, params?: FeathersParams): Promise<Worktree>;
   nukeEnvironment(id: WorktreeID, params?: FeathersParams): Promise<Worktree>;
+  renderEnvironment(
+    id: WorktreeID,
+    data: { variant?: string } | undefined,
+    params?: FeathersParams
+  ): Promise<Worktree>;
   checkHealth(id: WorktreeID, params?: FeathersParams): Promise<Worktree>;
   getLogs(
     id: WorktreeID,

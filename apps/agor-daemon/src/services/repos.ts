@@ -37,7 +37,7 @@ import type {
   AuthenticatedParams,
   QueryParams,
   Repo,
-  RepoEnvironmentConfig,
+  RepoEnvironment,
   RepoSlug,
   UserID,
   UUID,
@@ -285,12 +285,12 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
     const defaultBranch = await getDefaultBranch(repoPath);
 
     const agorYmlPath = path.join(repoPath, '.agor.yml');
-    let environmentConfig: RepoEnvironmentConfig | undefined;
+    let environment: RepoEnvironment | undefined;
 
     try {
       const parsed = parseAgorYml(agorYmlPath);
       if (parsed) {
-        environmentConfig = parsed;
+        environment = parsed;
         console.log(`✅ Loaded environment config from .agor.yml for ${slug}`);
       }
     } catch (error) {
@@ -311,7 +311,7 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
         remote_url: remoteUrl,
         local_path: repoPath,
         default_branch: defaultBranch,
-        environment_config: environmentConfig,
+        environment,
       },
       params
     )) as Repo;
@@ -744,26 +744,22 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
   /**
    * Resolve the `.agor.yml` location for an import/export request.
    *
-   * If `worktree_id` is provided, the file is read from / written to that
-   * worktree's working directory. Otherwise, fall back to the repo's base path.
+   * Always reads from / writes to the given worktree's working directory:
+   * `.agor.yml` is a branch-scoped file, so every import/export must name
+   * which branch (worktree) it targets. Reading from the repo's base path
+   * would silently cross branch boundaries and is never what the caller
+   * wants.
    *
-   * This lets admins curate per-branch environment configs (checked in on the
-   * branch) without touching the source-of-truth repo path, and without any
-   * automatic re-ingestion on subsequent operations — the caller explicitly
-   * opts in to this scope.
+   * Routes through the worktrees service so RBAC hooks (loadWorktree +
+   * ensureCanView) fire against the caller's params — calling the repository
+   * directly would bypass worktree-level permission checks and let a user
+   * with repo access read/write a worktree path they cannot see.
    */
   private async resolveAgorYmlPath(
     repo: Repo,
-    worktreeId: string | undefined,
+    worktreeId: string,
     params?: RepoParams
   ): Promise<string> {
-    if (!worktreeId) {
-      return path.join(repo.local_path, '.agor.yml');
-    }
-    // Route through the worktrees service so the RBAC hooks (loadWorktree +
-    // ensureCanView) fire against the caller's params. Calling the repository
-    // directly would bypass worktree-level permission checks and let a user
-    // with repo access read/write a worktree path they cannot see.
     const worktreesService = this.app.service('worktrees');
     const worktree = (await worktreesService.get(worktreeId, params)) as Worktree;
     if (worktree.repo_id !== repo.repo_id) {
@@ -775,51 +771,73 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
   /**
    * Custom method: Import environment config from .agor.yml
    *
-   * Accepts an optional `worktree_id` in `data` to read from the current
-   * worktree's working directory instead of the repo's base path. This is
-   * a one-shot manual import — the repo is NOT re-ingested automatically on
+   * Requires `worktree_id` in `data` — `.agor.yml` is branch-scoped, so the
+   * caller must name which worktree's working copy to read. This is a
+   * one-shot manual import — the repo is NOT re-ingested automatically on
    * subsequent operations.
    */
   async importFromAgorYml(
     id: string,
-    data: { worktree_id?: string } | undefined,
+    data: { worktree_id: string },
     params?: RepoParams
   ): Promise<Repo> {
+    if (!data?.worktree_id) {
+      throw new Error('worktree_id is required to import .agor.yml');
+    }
     const repo = await this.get(id, params);
-    const agorYmlPath = await this.resolveAgorYmlPath(repo, data?.worktree_id, params);
+    const agorYmlPath = await this.resolveAgorYmlPath(repo, data.worktree_id, params);
 
-    // Parse .agor.yml
-    const config = parseAgorYml(agorYmlPath);
+    // Parse .agor.yml (returns v2 RepoEnvironment; v1 is wrapped automatically).
+    // `template_overrides:` at any level throws — it is DB-only.
+    const environment = parseAgorYml(agorYmlPath);
 
-    if (!config) {
+    if (!environment) {
       throw new Error('.agor.yml not found or has no environment configuration');
     }
 
-    // Update repo with imported config
-    return this.patch(id, { environment_config: config }, params) as Promise<Repo>;
+    // Preserve any existing DB-only template_overrides across import — the
+    // file never contains them, so a naive patch would otherwise wipe them.
+    const patch: Partial<Repo> = { environment };
+    if (repo.environment?.template_overrides) {
+      patch.environment = {
+        ...environment,
+        template_overrides: repo.environment.template_overrides,
+      };
+    }
+
+    return this.patch(id, patch, params) as Promise<Repo>;
   }
 
   /**
    * Custom method: Export environment config to .agor.yml
    *
-   * Accepts an optional `worktree_id` in `data` to write into the current
-   * worktree's working directory (so admins can commit the file on a branch).
+   * Requires `worktree_id` in `data` — `.agor.yml` is branch-scoped, so the
+   * caller must name which worktree's working copy to write into (admins then
+   * commit the file on that branch).
+   *
+   * `template_overrides` are DB-only and are stripped by `writeAgorYml` — the
+   * file always reflects the shared, committable variant definitions only.
    */
   async exportToAgorYml(
     id: string,
-    data: { worktree_id?: string } | undefined,
+    data: { worktree_id: string },
     params?: RepoParams
   ): Promise<{ path: string }> {
+    if (!data?.worktree_id) {
+      throw new Error('worktree_id is required to export .agor.yml');
+    }
     const repo = await this.get(id, params);
 
-    if (!repo.environment_config) {
+    const envToWrite = repo.environment ?? undefined;
+    if (!envToWrite && !repo.environment_config) {
       throw new Error('Repository has no environment configuration to export');
     }
 
-    const agorYmlPath = await this.resolveAgorYmlPath(repo, data?.worktree_id, params);
+    const agorYmlPath = await this.resolveAgorYmlPath(repo, data.worktree_id, params);
 
-    // Write .agor.yml
-    writeAgorYml(agorYmlPath, repo.environment_config);
+    // Prefer v2 source of truth; fall back to legacy v1 view if somehow the
+    // v2 wrapper wasn't materialized (writeAgorYml handles both).
+    writeAgorYml(agorYmlPath, envToWrite ?? repo.environment_config!);
 
     return { path: agorYmlPath };
   }

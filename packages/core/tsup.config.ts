@@ -18,6 +18,7 @@ export default defineConfig({
     'templates/handlebars-helpers': 'src/templates/handlebars-helpers.ts', // Handlebars helpers
     'templates/session-context': 'src/templates/session-context.ts', // Agor system prompt rendering
     'environment/variable-resolver': 'src/environment/variable-resolver.ts', // Environment variable resolution
+    'environment/render-snapshot': 'src/environment/render-snapshot.ts', // v2 worktree env snapshot rendering
     'utils/errors': 'src/utils/errors.ts', // Error handling and formatting utilities
     'utils/url': 'src/utils/url.ts', // Shared URL validation helpers
     'utils/permission-mode-mapper': 'src/utils/permission-mode-mapper.ts', // Permission mode mapping for cross-agent compatibility
@@ -40,6 +41,7 @@ export default defineConfig({
     'unix/index': 'src/unix/index.ts', // Unix group management utilities for worktree isolation
     'mcp/index': 'src/mcp/index.ts', // MCP template resolution utilities
     'gateway/index': 'src/gateway/index.ts', // Gateway platform connectors (Slack, etc.)
+    'yaml/index': 'src/yaml/index.ts', // Browser-safe js-yaml re-export
   },
   format: ['cjs', 'esm'],
   dts: true,
