@@ -22,9 +22,12 @@ interface UseSessionActionsResult {
   deleteSession: (sessionId: SessionID) => Promise<boolean>;
   archiveSession: (sessionId: SessionID) => Promise<Session | null>;
   unarchiveSession: (sessionId: SessionID) => Promise<Session | null>;
-  forkSession: (sessionId: SessionID, prompt: string) => Promise<Session | null>;
-  btwForkSession: (sessionId: SessionID, prompt: string) => Promise<Session | null>;
-  spawnSession: (sessionId: SessionID, config: Partial<SpawnConfig>) => Promise<Session | null>;
+  // Throw on failure (do NOT return null) so callers can preserve the user's
+  // typed prompt in the compose box. See SessionPanel.handleFork / handleBtwSend
+  // and ForkSpawnModal.handleOk for the preserved-on-failure invariants.
+  forkSession: (sessionId: SessionID, prompt: string) => Promise<Session>;
+  btwForkSession: (sessionId: SessionID, prompt: string) => Promise<Session>;
+  spawnSession: (sessionId: SessionID, config: Partial<SpawnConfig>) => Promise<Session>;
   creating: boolean;
   error: string | null;
 }
@@ -100,10 +103,10 @@ export function useSessionActions(client: AgorClient | null): UseSessionActionsR
     }
   };
 
-  const forkSession = async (sessionId: SessionID, prompt: string): Promise<Session | null> => {
+  const forkSession = async (sessionId: SessionID, prompt: string): Promise<Session> => {
     if (!client) {
       setError('Client not connected');
-      return null;
+      throw new Error('Client not connected');
     }
 
     try {
@@ -128,16 +131,18 @@ export function useSessionActions(client: AgorClient | null): UseSessionActionsR
       const message = err instanceof Error ? err.message : 'Failed to fork session';
       setError(message);
       console.error('Failed to fork session:', err);
-      return null;
+      // Re-throw so callers (and modals) can distinguish failure from success
+      // and keep the user's typed prompt from being silently discarded.
+      throw err instanceof Error ? err : new Error(message);
     } finally {
       setCreating(false);
     }
   };
 
-  const btwForkSession = async (sessionId: SessionID, prompt: string): Promise<Session | null> => {
+  const btwForkSession = async (sessionId: SessionID, prompt: string): Promise<Session> => {
     if (!client) {
       setError('Client not connected');
-      return null;
+      throw new Error('Client not connected');
     }
 
     try {
@@ -166,7 +171,7 @@ export function useSessionActions(client: AgorClient | null): UseSessionActionsR
       const message = err instanceof Error ? err.message : 'Failed to create btw fork';
       setError(message);
       console.error('Failed to create btw fork:', err);
-      return null;
+      throw err instanceof Error ? err : new Error(message);
     } finally {
       setCreating(false);
     }
@@ -175,10 +180,10 @@ export function useSessionActions(client: AgorClient | null): UseSessionActionsR
   const spawnSession = async (
     sessionId: SessionID,
     config: Partial<SpawnConfig>
-  ): Promise<Session | null> => {
+  ): Promise<Session> => {
     if (!client) {
       setError('Client not connected');
-      return null;
+      throw new Error('Client not connected');
     }
 
     try {
@@ -202,7 +207,7 @@ export function useSessionActions(client: AgorClient | null): UseSessionActionsR
       const message = err instanceof Error ? err.message : 'Failed to spawn session';
       setError(message);
       console.error('Failed to spawn session:', err);
-      return null;
+      throw err instanceof Error ? err : new Error(message);
     } finally {
       setCreating(false);
     }
