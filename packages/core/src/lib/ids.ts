@@ -13,7 +13,9 @@
  */
 
 import { v7 as uuidv7 } from 'uuid';
-import { toShortId } from '../types/id';
+import { findByShortIdPrefix, toShortId, URL_SHORT_ID_LENGTH } from '../types/id';
+
+export { findByShortIdPrefix, URL_SHORT_ID_LENGTH };
 
 // ============================================================================
 // Types
@@ -283,14 +285,7 @@ export class IdResolutionError extends Error {
  * // => Error: Ambiguous ID prefix
  */
 export function resolveShortId<T extends { id: UUID }>(prefix: IDPrefix, entities: T[]): T {
-  // Normalize prefix (remove hyphens, lowercase)
-  const cleanPrefix = prefix.replace(/-/g, '').toLowerCase();
-
-  // Find all entities whose IDs start with this prefix
-  const matches = entities.filter((e) => {
-    const cleanId = e.id.replace(/-/g, '').toLowerCase();
-    return cleanId.startsWith(cleanPrefix);
-  });
+  const matches = findByShortIdPrefix(prefix, entities);
 
   if (matches.length === 0) {
     throw new IdResolutionError(
@@ -421,6 +416,8 @@ export default {
   formatIdForDisplay,
   expandPrefix,
   resolveShortId,
+  findByShortIdPrefix,
   findMinimumPrefixLength,
   isUniquePrefix,
+  URL_SHORT_ID_LENGTH,
 };
