@@ -1,6 +1,6 @@
 import { ENV_VAR_SCOPES_V05, type EnvVarMetadata, type EnvVarScope } from '@agor-live/client';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
-import { Button, Input, Select, Space, Table, Typography } from 'antd';
+import { Button, Input, Select, Space, Table, Tooltip, Typography } from 'antd';
 import { useState } from 'react';
 import { Tag } from './Tag';
 
@@ -52,6 +52,11 @@ const SCOPE_COLOR: Record<EnvVarScope, string> = {
   artifact_feature: 'default',
   executor: 'default',
 };
+
+const SCOPE_OPTIONS = ENV_VAR_SCOPES_V05.map((s) => ({
+  value: s,
+  label: SCOPE_LABEL[s],
+}));
 
 export const EnvVarEditor: React.FC<EnvVarEditorProps> = ({
   envVars,
@@ -125,27 +130,26 @@ export const EnvVarEditor: React.FC<EnvVarEditorProps> = ({
       title: 'Variable Name',
       dataIndex: 'key',
       key: 'key',
-      width: '25%',
+      width: '30%',
+      ellipsis: true,
       render: (key: string) => <code>{key}</code>,
     },
     {
       title: 'Scope',
       dataIndex: 'scope',
       key: 'scope',
-      width: '20%',
+      width: 140,
       render: (scope: EnvVarScope, record: Row) => {
         if (onScopeChange) {
           return (
             <Select
               value={scope}
               size="small"
-              style={{ minWidth: 120 }}
+              style={{ width: '100%', minWidth: 0 }}
+              popupMatchSelectWidth={false}
               disabled={disabled || loading[record.key]}
               onChange={(next) => handleScopeChange(record.key, next)}
-              options={ENV_VAR_SCOPES_V05.map((s) => ({
-                value: s,
-                label: SCOPE_LABEL[s],
-              }))}
+              options={SCOPE_OPTIONS}
             />
           );
         }
@@ -156,7 +160,6 @@ export const EnvVarEditor: React.FC<EnvVarEditorProps> = ({
       title: 'Value',
       dataIndex: 'isSet',
       key: 'value',
-      width: '30%',
       render: (isSet: boolean, record: Row) => {
         const isEditing = editingKey === record.key;
 
@@ -170,6 +173,7 @@ export const EnvVarEditor: React.FC<EnvVarEditorProps> = ({
                 onPressEnter={() => handleUpdate(record.key, record.scope)}
                 autoFocus
                 disabled={disabled}
+                style={{ flex: 1, minWidth: 180 }}
               />
               <Button
                 type="primary"
@@ -209,17 +213,21 @@ export const EnvVarEditor: React.FC<EnvVarEditorProps> = ({
     {
       title: 'Actions',
       key: 'actions',
-      width: '25%',
+      width: 72,
+      align: 'center' as const,
       render: (_: unknown, record: Row) => (
-        <Button
-          danger
-          icon={<DeleteOutlined />}
-          onClick={() => handleDeleteClick(record.key)}
-          loading={loading[record.key]}
-          disabled={disabled}
-        >
-          Delete
-        </Button>
+        <Tooltip title="Delete">
+          <Button
+            danger
+            type="text"
+            size="small"
+            icon={<DeleteOutlined />}
+            onClick={() => handleDeleteClick(record.key)}
+            loading={loading[record.key]}
+            disabled={disabled}
+            aria-label={`Delete ${record.key}`}
+          />
+        </Tooltip>
       ),
     },
   ];
@@ -274,12 +282,9 @@ export const EnvVarEditor: React.FC<EnvVarEditorProps> = ({
           <Select<EnvVarScope>
             value={newScope}
             onChange={setNewScope}
-            style={{ width: 130 }}
+            style={{ width: 140 }}
             disabled={disabled}
-            options={ENV_VAR_SCOPES_V05.map((s) => ({
-              value: s,
-              label: SCOPE_LABEL[s],
-            }))}
+            options={SCOPE_OPTIONS}
           />
           <Input.Password
             placeholder="Value"
