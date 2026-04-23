@@ -15,6 +15,7 @@ import {
   UsersRepository,
 } from '@agor/core/db';
 import { type Application, Forbidden } from '@agor/core/feathers';
+import { resolveModelConfig } from '@agor/core/models';
 import type {
   AuthenticatedParams,
   MCPServerID,
@@ -436,14 +437,7 @@ export class SessionsService extends DrizzleService<Session, Partial<Session>, S
                 : {}),
             };
 
-            if (toolDefaults.modelConfig) {
-              modelConfig = {
-                mode: toolDefaults.modelConfig.mode || 'alias',
-                model: toolDefaults.modelConfig.model || '',
-                updated_at: new Date().toISOString(),
-                effort: toolDefaults.modelConfig.effort,
-              };
-            }
+            modelConfig = resolveModelConfig(toolDefaults.modelConfig) ?? modelConfig;
           }
         } catch (error) {
           // If we can't fetch user preferences, fall back to parent settings
@@ -473,14 +467,7 @@ export class SessionsService extends DrizzleService<Session, Partial<Session>, S
       };
     }
 
-    if (data.modelConfig) {
-      modelConfig = {
-        mode: data.modelConfig.mode || 'alias',
-        model: data.modelConfig.model || '',
-        updated_at: new Date().toISOString(),
-        effort: data.modelConfig.effort,
-      };
-    }
+    modelConfig = resolveModelConfig(data.modelConfig) ?? modelConfig;
 
     // Build callback configuration
     // callback_session_id is the single source of truth for where to deliver callbacks.
