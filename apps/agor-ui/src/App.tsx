@@ -1,7 +1,9 @@
 import type {
   Artifact,
   Board,
+  CreateLocalRepoRequest,
   CreateMCPServerInput,
+  CreateRepoRequest,
   CreateUserInput,
   GatewayChannel,
   PermissionMode,
@@ -91,7 +93,7 @@ function DeviceRouter() {
 function AppContent() {
   const { token } = theme.useToken();
   const { getCurrentThemeConfig } = useTheme();
-  const { showSuccess, showError, showLoading, destroy } = useThemedMessage();
+  const { showSuccess, showError, showWarning, showLoading, destroy } = useThemedMessage();
   const navigate = useNavigate();
 
   // Fetch daemon auth and instance configuration
@@ -728,19 +730,88 @@ function AppContent() {
   };
 
   // Handle repo CRUD
-  const handleCreateRepo = async (data: { url: string; slug: string; default_branch: string }) => {
-    if (!client) return;
-    // Use the custom clone endpoint: POST /repos/clone
-    // This returns { status: 'pending' } immediately - actual clone happens async in executor
-    await client.service('repos/clone').create({
-      url: data.url,
-      slug: data.slug,
-      default_branch: data.default_branch,
-    });
+  const handleCreateRepo = async (data: CreateRepoRequest) => {
+    if (!client) {
+      showError('Not connected to daemon — cannot clone repository');
+      return;
+    }
+
+    // POST /repos/clone returns { status: 'pending' } immediately; the actual
+    // clone runs asynchronously in the executor. Show a persistent loading
+    // toast and wire one-shot listeners to resolve it on success or failure,
+    // with a safety timeout so the toast doesn't linger if events get lost.
+    const toastKey = `clone-repo-${data.slug}`;
+    const CLONE_TIMEOUT_MS = 120_000;
+    showLoading(`Cloning ${data.slug}...`, { key: toastKey });
+
+    const reposService = client.service('repos');
+    let settled = false;
+
+    const cleanup = () => {
+      reposService.removeListener('created', handleCreated);
+      client.io.off('repo:cloneError', handleCloneError);
+      clearTimeout(timeoutHandle);
+    };
+    const handleCreated = (repo: Repo) => {
+      if (settled || repo.slug !== data.slug) return;
+      settled = true;
+      showSuccess(`Cloned ${data.slug}`, { key: toastKey });
+      cleanup();
+    };
+    const handleCloneError = (payload: { slug?: string; url?: string; error?: string }) => {
+      if (settled) return;
+      if (payload.slug !== data.slug && payload.url !== data.url) return;
+      settled = true;
+      showError(`Failed to clone ${data.slug}: ${payload.error ?? 'unknown error'}`, {
+        key: toastKey,
+      });
+      cleanup();
+    };
+    const timeoutHandle = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      showError(`Clone of ${data.slug} timed out after 2 minutes. Check daemon logs.`, {
+        key: toastKey,
+      });
+      cleanup();
+    }, CLONE_TIMEOUT_MS);
+
+    reposService.on('created', handleCreated);
+    client.io.on('repo:cloneError', handleCloneError);
+
+    try {
+      const result = (await client.service('repos/clone').create({
+        url: data.url,
+        slug: data.slug,
+        default_branch: data.default_branch,
+      })) as { status?: 'pending' | 'exists'; slug?: string };
+
+      // Daemon short-circuits with `status: 'exists'` when a repo with this
+      // slug is already registered — no `repos.created` event will fire, so
+      // resolve the loading toast here instead of waiting for the timeout.
+      if (result?.status === 'exists' && !settled) {
+        settled = true;
+        showWarning(`Repository "${data.slug}" is already added`, { key: toastKey });
+        cleanup();
+      }
+    } catch (error) {
+      if (!settled) {
+        settled = true;
+        showError(
+          `Failed to clone repository: ${error instanceof Error ? error.message : String(error)}`,
+          { key: toastKey }
+        );
+        cleanup();
+      }
+      throw error;
+    }
   };
 
-  const handleCreateLocalRepo = async (data: { path: string; slug?: string }) => {
-    if (!client) return;
+  const handleCreateLocalRepo = async (data: CreateLocalRepoRequest) => {
+    if (!client) {
+      showError('Not connected to daemon — cannot add local repository');
+      return;
+    }
     try {
       showLoading('Adding local repository...', { key: 'add-local-repo' });
 

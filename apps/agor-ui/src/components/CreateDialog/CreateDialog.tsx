@@ -1,4 +1,4 @@
-import type { Board, Repo } from '@agor-live/client';
+import type { Board, CreateLocalRepoRequest, CreateRepoRequest, Repo } from '@agor-live/client';
 import {
   AppstoreOutlined,
   BranchesOutlined,
@@ -54,8 +54,8 @@ export interface CreateDialogProps {
   defaultTab?: ActiveTab;
   onCreateWorktree: (config: WorktreeTabConfig) => void;
   onCreateBoard: (board: Partial<Board>) => void;
-  onCreateRepo: (data: { url: string; slug: string; default_branch: string }) => void;
-  onCreateLocalRepo: (data: { path: string; slug?: string }) => void;
+  onCreateRepo: (data: CreateRepoRequest) => void | Promise<void>;
+  onCreateLocalRepo: (data: CreateLocalRepoRequest) => void | Promise<void>;
   onCreateAssistant: (result: AssistantTabResult) => void;
 }
 
@@ -126,7 +126,10 @@ export const CreateDialog: React.FC<CreateDialogProps> = ({
             if (result.mode === 'local' && result.local) {
               onCreateLocalRepo(result.local);
             } else if (result.remote) {
-              onCreateRepo(result.remote);
+              // Fire-and-forget: handleCreateRepo in App.tsx already surfaces
+              // errors via a toast. Swallow here to avoid unhandled-rejection
+              // noise from its re-throw.
+              Promise.resolve(onCreateRepo(result.remote)).catch(() => {});
             }
             onClose();
           }
