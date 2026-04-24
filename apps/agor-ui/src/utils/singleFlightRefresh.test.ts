@@ -14,8 +14,12 @@ vi.mock('./tokenRefresh', async () => {
 });
 
 import {
+  isRefreshUnrecoverable,
+  RefreshUnrecoverableError,
   refreshAndReauthenticate,
   refreshTokensSingleFlight,
+  resetRefreshFailureState,
+  TOKENS_REFRESH_UNRECOVERABLE_EVENT,
   TOKENS_REFRESHED_EVENT,
 } from './singleFlightRefresh';
 import { getStoredRefreshToken, refreshAndStoreTokens } from './tokenRefresh';
@@ -38,6 +42,9 @@ function makeClient(): AgorClient {
 beforeEach(() => {
   mockRefresh.mockReset();
   mockGetRefreshToken.mockReset();
+  // The unrecoverable latch is a module-level singleton — reset between
+  // tests so order-dependent state doesn't leak.
+  resetRefreshFailureState();
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -120,6 +127,75 @@ describe('refreshTokensSingleFlight', () => {
     } finally {
       window.removeEventListener(TOKENS_REFRESHED_EVENT, listener);
     }
+  });
+
+  it('throws RefreshUnrecoverableError on the first definite failure, latches, and fast-fails subsequent callers', async () => {
+    // Simulate a Feathers `NotAuthenticated` from /authentication/refresh:
+    // the refresh token has expired/been revoked.
+    const authErr = Object.assign(new Error('jwt expired'), {
+      name: 'NotAuthenticated',
+      code: 401,
+    });
+    mockRefresh.mockRejectedValueOnce(authErr);
+
+    const client = makeClient();
+    const unrecoverableListener = vi.fn();
+    window.addEventListener(TOKENS_REFRESH_UNRECOVERABLE_EVENT, unrecoverableListener);
+    try {
+      // First call must reject with RefreshUnrecoverableError (not the raw
+      // auth error) so callers can use a single `instanceof` check on every
+      // failure — first or fast-failed. The original error is attached as
+      // `cause` for diagnostics.
+      const firstErr = await refreshTokensSingleFlight(client, 'rt').catch((e) => e);
+      expect(firstErr).toBeInstanceOf(RefreshUnrecoverableError);
+      expect((firstErr as RefreshUnrecoverableError).cause).toBe(authErr);
+      expect(isRefreshUnrecoverable()).toBe(true);
+      expect(unrecoverableListener).toHaveBeenCalledTimes(1);
+
+      // Second call MUST NOT hit the network — this is the loop-breaker.
+      await expect(refreshTokensSingleFlight(client, 'rt')).rejects.toBeInstanceOf(
+        RefreshUnrecoverableError
+      );
+      expect(mockRefresh).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener(TOKENS_REFRESH_UNRECOVERABLE_EVENT, unrecoverableListener);
+    }
+  });
+
+  it('does NOT latch on transient (non-auth) failures', async () => {
+    // Network blip / 5xx — the refresh token may still be good.
+    const transient = Object.assign(new Error('server exploded'), { code: 500 });
+    mockRefresh.mockRejectedValueOnce(transient);
+
+    const unrecoverableListener = vi.fn();
+    window.addEventListener(TOKENS_REFRESH_UNRECOVERABLE_EVENT, unrecoverableListener);
+    try {
+      await expect(refreshTokensSingleFlight(makeClient(), 'rt')).rejects.toBe(transient);
+      expect(isRefreshUnrecoverable()).toBe(false);
+      expect(unrecoverableListener).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(TOKENS_REFRESH_UNRECOVERABLE_EVENT, unrecoverableListener);
+    }
+  });
+
+  it('clears the unrecoverable latch on the next successful refresh', async () => {
+    const authErr = Object.assign(new Error('jwt expired'), {
+      name: 'NotAuthenticated',
+      code: 401,
+    });
+    mockRefresh.mockRejectedValueOnce(authErr).mockResolvedValueOnce(makeResult('fresh'));
+
+    const client = makeClient();
+    await expect(refreshTokensSingleFlight(client, 'rt')).rejects.toBeInstanceOf(
+      RefreshUnrecoverableError
+    );
+    expect(isRefreshUnrecoverable()).toBe(true);
+
+    // Caller explicitly resets (e.g. user logged back in) before retrying.
+    resetRefreshFailureState();
+    const recovered = await refreshTokensSingleFlight(client, 'rt');
+    expect(recovered.accessToken).toBe('fresh');
+    expect(isRefreshUnrecoverable()).toBe(false);
   });
 });
 

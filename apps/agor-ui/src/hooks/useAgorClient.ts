@@ -9,7 +9,13 @@ import type { AgorClient } from '@agor-live/client';
 import { createClient } from '@agor-live/client';
 import { useEffect, useRef, useState } from 'react';
 import { getDaemonUrl } from '../config/daemon';
-import { refreshAndReauthenticate } from '../utils/singleFlightRefresh';
+import { isDefiniteAuthFailure } from '../utils/authErrors';
+import {
+  RefreshUnrecoverableError,
+  refreshAndReauthenticate,
+  TOKENS_REFRESHED_EVENT,
+} from '../utils/singleFlightRefresh';
+import type { RefreshResult } from '../utils/tokenRefresh';
 
 interface UseAgorClientResult {
   client: AgorClient | null;
@@ -38,14 +44,70 @@ export function useAgorClient(options: UseAgorClientOptions = {}): UseAgorClient
   const [error, setError] = useState<string | null>(null);
   const clientRef = useRef<AgorClient | null>(null);
 
+  // Keep the latest access token in a ref so the long-lived socket effect
+  // can read it without taking it as a dependency. Before this split, every
+  // token refresh (every ~14 min at the 15m TTL) changed `accessToken` →
+  // the effect re-ran → the socket was torn down and recreated from scratch,
+  // which reset real-time subscriptions and explicitly flipped
+  // `connected: false` at connect() start — a UI flicker that no disconnect
+  // grace period could catch. The effect now rebuilds only when the
+  // *presence* of a token flips (login/logout) or when url/allowAnonymous
+  // changes; in-place refreshes just re-authenticate the existing socket.
+  const accessTokenRef = useRef(accessToken);
+  accessTokenRef.current = accessToken;
+  const hasToken = !!accessToken;
+
   useEffect(() => {
     let mounted = true;
     let client: AgorClient | null = null;
     let hasConnectedOnce = false; // Track if we've ever connected successfully
 
+    // Bookkeeping for the manual reconnect path used on 'io server disconnect'.
+    // socket.io does NOT auto-reconnect for that reason, so we kick it
+    // ourselves — but without backoff+cap the loop can run at network speed
+    // if the server keeps closing the socket (e.g. auth failures, crash loop,
+    // config mismatch). Reset on any successful connect.
+    let manualReconnectAttempts = 0;
+    let manualReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    const MAX_MANUAL_RECONNECT_ATTEMPTS = 10;
+    const clearManualReconnectTimer = () => {
+      if (manualReconnectTimer !== null) {
+        clearTimeout(manualReconnectTimer);
+        manualReconnectTimer = null;
+      }
+    };
+
+    // Grace period before flipping `connected` to false on a disconnect.
+    // Most reconnects (tsx watch reload, brief network blip, JWT refresh
+    // reauth) finish well under 1s. Flipping `connected` immediately makes
+    // every `useConnectionDisabled` consumer disable — buttons, forms,
+    // inline inputs — producing a UI flicker. Instead, fire `connecting:true`
+    // immediately for the navbar status tag, and only flip `connected` if
+    // the reconnect hasn't finished within DISCONNECT_GRACE_MS. If we
+    // reconnect inside the window, consumers never see a disabled frame.
+    const DISCONNECT_GRACE_MS = 1500;
+    let disconnectGraceTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearDisconnectGrace = () => {
+      if (disconnectGraceTimer !== null) {
+        clearTimeout(disconnectGraceTimer);
+        disconnectGraceTimer = null;
+      }
+    };
+    const scheduleDisconnectedFlip = () => {
+      if (disconnectGraceTimer !== null) return; // already pending
+      disconnectGraceTimer = setTimeout(() => {
+        disconnectGraceTimer = null;
+        if (!mounted) return;
+        setConnected(false);
+      }, DISCONNECT_GRACE_MS);
+    };
+
     async function connect() {
-      // Don't create client if no access token and anonymous not allowed
-      if (!accessToken && !allowAnonymous) {
+      // Don't create client if no access token and anonymous not allowed.
+      // `hasToken` is the effect-level snapshot (also a dep, so a later
+      // login rebuilds the effect); we still read the value from the ref
+      // below in case it rotated during the async connect path.
+      if (!hasToken && !allowAnonymous) {
         setConnecting(false);
         setConnected(false);
         setError(null);
@@ -93,14 +155,7 @@ export function useAgorClient(options: UseAgorClientOptions = {}): UseAgorClient
               try {
                 await next();
               } catch (err) {
-                const errorObject = err as
-                  | { name?: string; code?: number; className?: string }
-                  | undefined;
-                const isAuthError =
-                  errorObject?.name === 'NotAuthenticated' ||
-                  errorObject?.code === 401 ||
-                  errorObject?.className === 'not-authenticated';
-                if (!isAuthError) throw err;
+                if (!isDefiniteAuthFailure(err)) throw err;
 
                 // Guard against infinite retry if the retry also 401s.
                 const currentParams = (context.params ?? {}) as Record<string, unknown>;
@@ -161,15 +216,24 @@ export function useAgorClient(options: UseAgorClientOptions = {}): UseAgorClient
       client.io.on('connect', async () => {
         if (mounted) {
           hasConnectedOnce = true; // Mark that we've successfully connected
+          // Reset manual-reconnect backoff now that we're connected again.
+          manualReconnectAttempts = 0;
+          clearManualReconnectTimer();
+          // Cancel any pending "flip to disconnected" — we made it back in
+          // time, so consumers never saw a disabled frame.
+          clearDisconnectGrace();
 
-          // Re-authenticate on reconnection (e.g., after daemon restart or network recovery)
+          // Re-authenticate on reconnection (e.g., after daemon restart or
+          // network recovery). Read the token from the ref to pick up any
+          // refresh that happened while we were disconnected.
+          const currentAccessToken = accessTokenRef.current;
           try {
-            if (accessToken) {
+            if (currentAccessToken) {
               // Try to authenticate with access token first
               try {
                 await client.authenticate({
                   strategy: 'jwt',
-                  accessToken,
+                  accessToken: currentAccessToken,
                 });
                 setConnected(true);
                 setConnecting(false);
@@ -186,14 +250,32 @@ export function useAgorClient(options: UseAgorClientOptions = {}): UseAgorClient
                     setConnected(true);
                     setConnecting(false);
                     setError(null);
-
-                    // Trigger useAuth to reload (in case it's not in sync)
-                    window.dispatchEvent(new Event('storage'));
                     return;
                   }
+                  // refreshResult === null means no refresh token stored —
+                  // treat as terminal (nothing to retry with).
                 } catch (refreshErr) {
-                  console.error('❌ Refresh token also failed:', refreshErr);
-                  // Fall through to error handling
+                  console.error('❌ Refresh failed on reconnect:', refreshErr);
+                  // Only flip to the terminal "session expired" state on
+                  // definite auth failure. Transient errors (5xx, network)
+                  // should keep `connecting: true` so the normal socket
+                  // reconnect can retry later — otherwise a daemon restart
+                  // that briefly 5xxs the refresh endpoint would strand
+                  // the UI in a hard "Session expired" state even though
+                  // the tokens may still be valid. useAuth's unrecoverable
+                  // listener has already cleared tokens on the auth path.
+                  if (
+                    refreshErr instanceof RefreshUnrecoverableError ||
+                    isDefiniteAuthFailure(refreshErr)
+                  ) {
+                    setConnecting(false);
+                    setConnected(false);
+                    setError('Session expired. Please log in again.');
+                    return;
+                  }
+                  setConnected(false);
+                  setConnecting(true);
+                  return;
                 }
               }
             } else if (allowAnonymous) {
@@ -222,7 +304,15 @@ export function useAgorClient(options: UseAgorClientOptions = {}): UseAgorClient
 
       client.io.on('disconnect', (reason) => {
         if (!mounted) return;
-        setConnected(false);
+        // If we've never been connected (initial-load failure), flip
+        // immediately — no "reconnect" to wait for. Otherwise defer the
+        // flip via the grace timer so quick reconnects don't flicker the
+        // UI; the navbar still shows "Reconnecting" via connecting=true.
+        if (hasConnectedOnce) {
+          scheduleDisconnectedFlip();
+        } else {
+          setConnected(false);
+        }
 
         // Reason matters here. Per socket.io docs:
         //   - 'io server disconnect' fires when the server explicitly closed
@@ -238,8 +328,30 @@ export function useAgorClient(options: UseAgorClientOptions = {}): UseAgorClient
         // "Reconnecting" immediately rather than flashing "Disconnected" for
         // the gap before the first connect_error fires.
         if (reason === 'io server disconnect') {
+          // Manual reconnect with exponential backoff + cap. Previously we
+          // called `client.io.connect()` immediately on every disconnect;
+          // when the server repeatedly closed the socket (auth rejection,
+          // crash loop, server-side kick) this created a tight reconnect
+          // loop at network speed and a page refresh was the only way out.
+          if (manualReconnectAttempts >= MAX_MANUAL_RECONNECT_ATTEMPTS) {
+            setConnecting(false);
+            // Give-up path — flip connected immediately; the grace period
+            // is only for quick reconnects we expect to recover from.
+            clearDisconnectGrace();
+            setConnected(false);
+            setError('Lost connection to daemon after multiple attempts. Please reload the page.');
+            return;
+          }
           setConnecting(true);
-          client?.io.connect();
+          const attempt = manualReconnectAttempts++;
+          // 500ms, 1s, 2s, 4s, 8s, 16s, 30s cap.
+          const delay = Math.min(500 * 2 ** attempt, 30_000);
+          clearManualReconnectTimer();
+          manualReconnectTimer = setTimeout(() => {
+            manualReconnectTimer = null;
+            if (!mounted) return;
+            client?.io.connect();
+          }, delay);
         } else if (
           reason === 'transport close' ||
           reason === 'transport error' ||
@@ -301,13 +413,16 @@ export function useAgorClient(options: UseAgorClientOptions = {}): UseAgorClient
         return; // Exit early, don't try to authenticate
       }
 
-      // Authenticate with JWT or anonymous
+      // Authenticate with JWT or anonymous. Pull the token from the ref
+      // so if a refresh landed while we were establishing the socket, we
+      // use the fresh one.
+      const initialAccessToken = accessTokenRef.current;
       try {
-        if (accessToken) {
+        if (initialAccessToken) {
           // Authenticate with JWT token
           await client.authenticate({
             strategy: 'jwt',
-            accessToken,
+            accessToken: initialAccessToken,
           });
         } else if (allowAnonymous) {
           // Authenticate anonymously
@@ -318,7 +433,7 @@ export function useAgorClient(options: UseAgorClientOptions = {}): UseAgorClient
       } catch (_err) {
         if (mounted) {
           setError(
-            accessToken
+            initialAccessToken
               ? 'Authentication failed. Please log in again.'
               : 'Anonymous authentication failed. Check daemon configuration.'
           );
@@ -338,9 +453,33 @@ export function useAgorClient(options: UseAgorClientOptions = {}): UseAgorClient
 
     connect();
 
+    // In-place reauth on token refresh. When singleFlightRefresh rotates
+    // the access token, it dispatches TOKENS_REFRESHED_EVENT. Instead of
+    // rebuilding the entire socket (which would flicker the UI and reset
+    // every real-time subscription), we just call client.authenticate with
+    // the new token on the existing socket. If the socket happens to be
+    // disconnected at the moment of refresh, skip — the connect handler
+    // will pick up the fresh token from the ref when the socket reconnects.
+    const handleTokensRefreshed = (event: Event) => {
+      if (!mounted) return;
+      const detail = (event as CustomEvent<RefreshResult>).detail;
+      if (!detail || !client) return;
+      if (!client.io.connected) return;
+      client.authenticate({ strategy: 'jwt', accessToken: detail.accessToken }).catch((err) => {
+        // Best-effort — if this fails, the next service call will 401
+        // and the around-hook will take the standard refresh-and-retry
+        // path. Log so the cause isn't invisible.
+        console.error('In-place re-authentication failed after token refresh:', err);
+      });
+    };
+    window.addEventListener(TOKENS_REFRESHED_EVENT, handleTokensRefreshed);
+
     // Cleanup on unmount
     return () => {
       mounted = false;
+      clearManualReconnectTimer();
+      clearDisconnectGrace();
+      window.removeEventListener(TOKENS_REFRESHED_EVENT, handleTokensRefreshed);
       if (client?.io) {
         // Remove all listeners to prevent memory leaks
         client.io.removeAllListeners();
@@ -355,7 +494,11 @@ export function useAgorClient(options: UseAgorClientOptions = {}): UseAgorClient
         delete (window as unknown as { __agorClient?: AgorClient }).__agorClient;
       }
     };
-  }, [url, accessToken, allowAnonymous]);
+    // The dep list deliberately uses `hasToken` (presence), not the token
+    // value itself: see the accessTokenRef comment above. Rebuilds happen
+    // only on login/logout and url/allowAnonymous changes; token refreshes
+    // are absorbed in-place by the handler above.
+  }, [url, hasToken, allowAnonymous]);
 
   /**
    * Manually retry connection
