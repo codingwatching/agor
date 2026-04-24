@@ -36,6 +36,7 @@ import {
   useAuth,
   useAuthConfig,
   useBoardActions,
+  useServerVersion,
   useSessionActions,
 } from './hooks';
 import { StreamdownDemoPage } from './pages/StreamdownDemoPage';
@@ -129,6 +130,13 @@ function AppContent() {
     accessToken: authenticated ? accessToken : null,
     allowAnonymous: authConfig?.allowAnonymous ?? false,
   });
+
+  // Track FE/BE drift: capture the daemon's build SHA on first load (via
+  // /health) and flip outOfSync when the daemon later reports a different
+  // SHA on socket reconnect. Surfaced through ConnectionContext →
+  // ConnectionStatus (amber tag with a refresh tooltip) and AboutTab (debug
+  // rows). Mounted exactly once so all consumers share the same baseline.
+  const { capturedSha, currentSha, outOfSync } = useServerVersion(client);
 
   // Fetch data (only when connected and authenticated)
   // Skip data fetch if user needs to change password - the ForcePasswordChangeModal will handle that
@@ -1201,7 +1209,7 @@ function AppContent() {
   // Render main app
   return (
     <ServicesConfigContext.Provider value={servicesConfig}>
-      <ConnectionProvider value={{ connected, connecting }}>
+      <ConnectionProvider value={{ connected, connecting, outOfSync, capturedSha, currentSha }}>
         {/* Force Password Change Modal - shown when user.must_change_password is true */}
         <ForcePasswordChangeModal
           open={!!currentUser?.must_change_password}

@@ -241,6 +241,9 @@ cp -r "$REPO_ROOT/apps/agor-cli/dist/"* "$DIST_STAGE/cli/"
 
 echo "  → Copying daemon..."
 mkdir -p "$DIST_STAGE/daemon"
+# .build-info (sha + builtAt) is stamped into apps/agor-daemon/dist by the
+# daemon's own build script (apps/agor-daemon/scripts/stamp-build-info.mjs)
+# and gets carried along by this cp -r. loadBuildInfo() reads it at boot.
 cp -r "$REPO_ROOT/apps/agor-daemon/dist/"* "$DIST_STAGE/daemon/"
 
 echo "  → Copying executor..."

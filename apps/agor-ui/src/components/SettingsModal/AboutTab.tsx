@@ -6,6 +6,8 @@ import type { AgorClient, UnixUserMode } from '@agor-live/client';
 import { Card, Descriptions, Space, Tag, Tooltip, Typography } from 'antd';
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { getDaemonUrl } from '../../config/daemon';
+import { useConnectionState } from '../../contexts/ConnectionContext';
+import { isOutOfSync } from '../../hooks/useServerVersion';
 
 // Lazy load particles
 const ParticleBackground = lazy(() =>
@@ -27,6 +29,10 @@ interface WindowWithAgorConfig extends Window {
 
 interface HealthInfo {
   version?: string;
+  /** Build SHA from /health (canonical version signal — see setup/build-info.ts). */
+  buildSha?: string;
+  /** ISO timestamp from /health, may be null when SHA came from env or git. */
+  builtAt?: string | null;
   database?:
     | string
     | {
@@ -71,6 +77,9 @@ export const AboutTab: React.FC<AboutTabProps> = ({
   const daemonUrl = getDaemonUrl();
   const [detectionMethod, setDetectionMethod] = useState<string>('');
   const [healthInfo, setHealthInfo] = useState<HealthInfo | null>(null);
+  // SHA captured at tab-load time (resets on hard reload). Provider-owned in
+  // App.tsx via useServerVersion so this and the banner stay in lockstep.
+  const { capturedSha } = useConnectionState();
 
   useEffect(() => {
     // Determine which detection method was used
@@ -129,6 +138,26 @@ export const AboutTab: React.FC<AboutTabProps> = ({
               )}
               {healthInfo?.version && (
                 <Descriptions.Item label="Version">{healthInfo.version}</Descriptions.Item>
+              )}
+              {healthInfo?.buildSha && (
+                <Descriptions.Item label="Daemon Build">
+                  <code>{healthInfo.buildSha}</code>
+                  {healthInfo.builtAt && (
+                    <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+                      built {healthInfo.builtAt}
+                    </Typography.Text>
+                  )}
+                </Descriptions.Item>
+              )}
+              {capturedSha && (
+                <Descriptions.Item label="Tab Captured">
+                  <code>{capturedSha}</code>
+                  {isOutOfSync(capturedSha, healthInfo?.buildSha) && (
+                    <Typography.Text type="warning" style={{ marginLeft: 8 }}>
+                      ⚠️ out of sync — refresh to load the latest UI
+                    </Typography.Text>
+                  )}
+                </Descriptions.Item>
               )}
               {healthInfo?.encryption && (
                 <Descriptions.Item label="Encryption">

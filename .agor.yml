@@ -21,6 +21,9 @@ environment:
   variants:
     sqlite:
       description: Single-user dev with SQLite. No RBAC. Fastest to boot.
+      # AGOR_BUILD_SHA / AGOR_BUILT_AT are injected by Agor's
+      # spawnEnvironmentCommand from the host-side worktree gitdir; no need to
+      # capture them here. See packages/core/src/unix/environment-command-spawn.ts.
       start: >-
         DAEMON_PORT={{add 3000 worktree.unique_id}}
         UI_PORT={{add 5000 worktree.unique_id}}
