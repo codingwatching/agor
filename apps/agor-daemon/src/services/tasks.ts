@@ -298,7 +298,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
                   `🔄 [TasksService] Triggering callback target queue processing for ${targetSessionId.substring(0, 8)} (callback queued)`
                 );
                 // Pass empty params to avoid leaking child's auth context to target
-                // The queue processor will reconstruct target auth from queued message metadata
+                // The queue processor will reconstruct target auth from queued task metadata
                 await sessionsService.triggerQueueProcessing(targetSessionId, {});
               }
             } catch (error) {
@@ -354,7 +354,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
             await this.injectBtwResultMessage(task, session, params);
           }
 
-          // IMPORTANT: Now that session is idle, process any queued messages (including callbacks)
+          // IMPORTANT: Now that session is idle, process any queued tasks (including callbacks)
           // This handles the case where callbacks were queued while this session was running
           const sessionsService = this.app.service('sessions') as unknown as SessionsService;
           if (sessionsService.triggerQueueProcessing) {
@@ -415,7 +415,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
               : '';
       }
       if (!promptText) {
-        promptText = task.description || btwSession.title || '(no prompt)';
+        promptText = task.full_prompt?.substring(0, 120) || btwSession.title || '(no prompt)';
       }
 
       // Extract the last assistant response
@@ -552,9 +552,9 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
         targetSession.callback_config?.include_original_prompt ??
         false;
 
-      // Get spawn prompt from task description (only if enabled)
+      // Get spawn prompt from task (truncated to 120 chars for the callback template).
       const spawnPrompt = includeOriginalPrompt
-        ? task.description || '(no prompt available)'
+        ? task.full_prompt?.substring(0, 120) || '(no prompt available)'
         : undefined;
 
       // Fetch last assistant message from child session (if callback config allows)
@@ -636,9 +636,6 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
       const customTemplate = targetSession.callback_config?.template;
       const callbackMessage = renderChildCompletionCallback(context, customTemplate);
 
-      // Queue message to target session with special metadata
-      const messageRepo = new MessagesRepository(this.db);
-
       // Validate target session has a creator for authentication
       if (!targetSession.created_by) {
         console.warn(
@@ -647,26 +644,40 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
         return;
       }
 
-      // Create queued message with Agor callback metadata
-      // IMPORTANT: queued_by_user_id = the person who set up the callback (task attribution),
-      // NOT the target session owner. Execution still runs as the target session's Unix user.
-      // Falls back to target session creator for backward compat (legacy sessions without callback_created_by).
+      // Create QUEUED task on the target session carrying the callback prompt.
+      // The metadata bag survives the queue → run transition: spawnTaskExecutor
+      // re-stamps `is_agor_callback` and `source` onto the synthesized
+      // user-message row so the UI's callback styling (MessageBlock.tsx) holds.
+      //
+      // IMPORTANT: queued_by_user_id = the person who set up the callback
+      // (task attribution), NOT the target session owner. Execution still runs
+      // as the target session's Unix user. Falls back to target session creator
+      // for backward compat (legacy sessions without callback_created_by).
       const callbackCreator =
         childSession.callback_config?.callback_created_by ?? targetSession.created_by;
-      await messageRepo.createQueued(targetSessionId, callbackMessage, {
-        is_agor_callback: true,
-        source: 'agor',
-        child_session_id: childSession.session_id,
-        child_task_id: task.task_id,
-        queued_by_user_id: callbackCreator,
+      const callbackTask = await this.taskRepo.createPending({
+        session_id: targetSessionId,
+        full_prompt: callbackMessage,
+        created_by: callbackCreator,
+        status: TaskStatus.QUEUED,
+        metadata: {
+          is_agor_callback: true,
+          source: 'agor',
+          child_session_id: childSession.session_id,
+          child_task_id: task.task_id,
+          queued_by_user_id: callbackCreator,
+        },
       });
 
+      // Emit so reactive-session subscribers see the new queued task.
+      this.emit?.('queued', callbackTask);
+
       console.log(
-        `🔔 Queued callback to ${targetSessionId.substring(0, 8)} from child ${childSession.session_id.substring(0, 8)}`
+        `🔔 Queued callback task ${callbackTask.task_id.substring(0, 8)} on session ${targetSessionId.substring(0, 8)} from child ${childSession.session_id.substring(0, 8)}`
       );
 
-      // NOTE: Queue processing is handled automatically via task completion hook
-      // When target session becomes idle, it will process all queued messages including this callback
+      // NOTE: Queue processing is handled automatically via task completion hook.
+      // When target session becomes idle, it will drain queued tasks including this callback.
     } catch (error) {
       console.error(
         `❌ [TasksService] Failed to queue callback to ${targetSessionId} for session ${childSession.session_id}:`,

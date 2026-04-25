@@ -208,6 +208,7 @@ export const tasks = pgTable(
     completed_at: t.timestamp('completed_at'),
     status: text('status', {
       enum: [
+        'queued',
         'created',
         'running',
         'stopping',
@@ -220,6 +221,9 @@ export const tasks = pgTable(
       ],
     }).notNull(),
 
+    // Queue position (lower drains first); only populated for status='queued'
+    queue_position: integer('queue_position'),
+
     // User attribution
     created_by: varchar('created_by', { length: 36 }).notNull().default('anonymous'),
 
@@ -229,7 +233,6 @@ export const tasks = pgTable(
     data: t
       .json<unknown>('data')
       .$type<{
-        description: string;
         full_prompt: string;
 
         message_range: Task['message_range'];
@@ -257,6 +260,9 @@ export const tasks = pgTable(
 
         report?: Task['report'];
         permission_request?: Task['permission_request'];
+
+        // Generic metadata (e.g., is_agor_callback, source, child_session_id)
+        metadata?: Task['metadata'];
       }>()
       .notNull(),
   },
@@ -264,6 +270,13 @@ export const tasks = pgTable(
     sessionIdx: index('tasks_session_idx').on(table.session_id),
     statusIdx: index('tasks_status_idx').on(table.status),
     createdIdx: index('tasks_created_idx').on(table.created_at),
+    queueIdx: index('tasks_queue_idx').on(table.session_id, table.status, table.queue_position),
+    // Partial unique index — defense-in-depth for `tasks.createPending` race
+    // serialization. Only QUEUED rows are constrained; CREATED/RUNNING/done
+    // rows have NULL queue_position and are unaffected.
+    queuedPositionUnique: uniqueIndex('tasks_queued_position_unique')
+      .on(table.session_id, table.queue_position)
+      .where(sql`${table.status} = 'queued'`),
   })
 );
 
@@ -340,9 +353,9 @@ export const messages = pgTable(
     // Parent tool use ID (for nested tool calls - e.g., Task tool spawning Read/Grep)
     parent_tool_use_id: text('parent_tool_use_id'),
 
-    // Message queueing fields
-    status: text('status', { enum: ['queued'] }), // 'queued' or null (normal message)
-    queue_position: integer('queue_position'), // Position in queue (1, 2, 3, ...)
+    // NOTE: queueing moved off `messages` and onto `tasks.status='queued'` as
+    // of migration sqlite/0040 (postgres/0030). The legacy `status` and
+    // `queue_position` columns are gone — see `tasks.queue_position` instead.
 
     // Full data (JSON blob)
     data: t
@@ -359,7 +372,6 @@ export const messages = pgTable(
     sessionIdx: index('messages_session_id_idx').on(table.session_id),
     taskIdx: index('messages_task_id_idx').on(table.task_id),
     sessionIndexIdx: index('messages_session_index_idx').on(table.session_id, table.index),
-    queueIdx: index('messages_queue_idx').on(table.session_id, table.status, table.queue_position),
   })
 );
 

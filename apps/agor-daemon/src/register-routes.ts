@@ -737,6 +737,270 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     }
   }
 
+  /**
+   * spawnTaskExecutor — sole transition point for `tasks.status` going from
+   * `created` / `queued` → `running`.
+   *
+   * Both the IDLE branch of POST /sessions/:id/prompt and the queued-task
+   * drainer call this helper. Centralising the transition guarantees that:
+   *
+   *   - `message_range.start_index`, `git_state.{ref,sha}_at_start`, and
+   *     `started_at` are recomputed against fresh state right before the
+   *     executor is spawned (sentinels on the stored row are only ever
+   *     visible while `status='queued'`).
+   *   - The initial user-message row is written by the daemon synchronously,
+   *     before the executor process is forked. Without this, any crash
+   *     during executor startup loses the prompt from the chat transcript
+   *     even though `tasks.full_prompt` still has the text. Gated by
+   *     `config.execution.daemon_writes_user_message` (kill switch — see
+   *     §5.E of `docs/never-lose-prompt-design.md`).
+   *   - `task.metadata.is_agor_callback` / `task.metadata.source` are
+   *     re-stamped onto the new message so the UI's callback styling
+   *     (`MessageBlock.tsx`) survives the queue → run transition.
+   *   - Spawn failures synthesise a `type:'system'` error message so the
+   *     chat surfaces *why* the assistant didn't respond, instead of silently
+   *     leaving a ghost task in FAILED with no transcript trace.
+   *
+   * The session.tasks list is appended here too, so callers don't have to
+   * remember to do it themselves.
+   */
+  async function spawnTaskExecutor(
+    task: Task,
+    options: {
+      permissionMode?: import('@agor/core/types').PermissionMode;
+      stream?: boolean;
+      messageSource?: MessageSource;
+    },
+    params: RouteParams
+  ): Promise<Task> {
+    const session = await sessionsService.get(task.session_id, params);
+
+    // Recompute message_range.start_index against the live message count.
+    const messageStartIndex = await sessionsRepository.countMessages(task.session_id);
+    const startTimestamp = new Date().toISOString();
+
+    // Recapture git state — the sentinels stored on a queued row are
+    // intentionally invalid; this is the moment we pin real values.
+    const { captureGitStateViaShell } = await import('./utils/git-shell-capture.js');
+    let gitStateAtStart = 'unknown';
+    let refAtStart = 'unknown';
+    if (session.worktree_id) {
+      try {
+        const worktree = await app.service('worktrees').get(session.worktree_id, params);
+        const gitState = await captureGitStateViaShell(worktree.path);
+        gitStateAtStart = gitState.sha;
+        refAtStart = gitState.ref;
+        if (gitStateAtStart === 'unknown') {
+          console.warn(
+            `[Git State] captureGitStateViaShell returned 'unknown' for worktree ${worktree.path} (ref: ${refAtStart})`
+          );
+        }
+      } catch (error) {
+        console.warn(
+          `[Git State] Failed to get git state for worktree ${session.worktree_id}:`,
+          error
+        );
+      }
+    }
+
+    // Patch task: queued/created → running, with real ranges. queue_position
+    // is cleared here so a draining task is no longer considered queued.
+    const updatedTask = (await app.service('tasks').patch(
+      task.task_id,
+      {
+        status: TaskStatus.RUNNING,
+        started_at: startTimestamp,
+        queue_position: undefined,
+        message_range: {
+          start_index: messageStartIndex,
+          end_index: messageStartIndex + 1,
+          start_timestamp: startTimestamp,
+          end_timestamp: startTimestamp,
+        },
+        git_state: {
+          ref_at_start: refAtStart,
+          sha_at_start: gitStateAtStart,
+        },
+      },
+      params
+    )) as Task;
+
+    // Alt D — write the user-message row before spawning. Gated by kill switch.
+    // The executor's createUserMessage has a skip-if-exists guard so a duplicate
+    // write is harmless if the daemon path is enabled.
+    if (config.execution?.daemon_writes_user_message !== false) {
+      try {
+        const isCallback = task.metadata?.is_agor_callback === true;
+        const messageMetadata: Message['metadata'] = {};
+        if (isCallback) {
+          messageMetadata.is_agor_callback = true;
+        }
+        // Prefer task.metadata.source (set when the task was queued) over
+        // the request's messageSource — the latter applies only to the
+        // current draining tick, the former to where the prompt originated.
+        const source = task.metadata?.source ?? options.messageSource;
+        if (source) {
+          messageMetadata.source = source;
+        }
+
+        const userMessage: Message = {
+          message_id: generateId() as UUID,
+          session_id: task.session_id,
+          // Callback messages are typed `system` so the UI shows the special
+          // Agor-callback styling. Normal prompts stay `user`.
+          type: isCallback ? 'system' : 'user',
+          role: 'user' as Message['role'],
+          index: messageStartIndex,
+          timestamp: startTimestamp,
+          content_preview: task.full_prompt.substring(0, 200),
+          content: task.full_prompt,
+          task_id: task.task_id,
+          metadata: Object.keys(messageMetadata).length > 0 ? messageMetadata : undefined,
+        };
+        await app.service('messages').create(userMessage, params);
+      } catch (msgErr) {
+        // Don't fail the spawn — the executor's createUserMessage fallback
+        // (with skip-if-exists) will write the row when it connects.
+        console.warn(
+          `⚠️  [Daemon] Failed to write initial user-message row for task ${task.task_id.substring(0, 8)} (executor will retry):`,
+          msgErr
+        );
+      }
+    }
+
+    // Flip session to RUNNING and append to session.tasks. Done here so both
+    // callers (idle prompt and queue drain) get this for free.
+    //
+    // The session-status flip used to fall out of `TasksService.create` when
+    // the IDLE path created a task with `status: RUNNING` directly. Now the
+    // IDLE path creates `status: CREATED` and we patch to RUNNING here, which
+    // `TasksService.patch` does NOT mirror onto the session. Without this
+    // explicit patch, `session.status` stays IDLE while a task is RUNNING,
+    // causing the queue gate in the prompt route to wave subsequent prompts
+    // through instead of queuing them.
+    await app.service('sessions').patch(
+      task.session_id,
+      {
+        status: SessionStatus.RUNNING,
+        ready_for_prompt: false,
+        tasks: [...session.tasks, task.task_id],
+      },
+      params
+    );
+
+    // Build prompter context — preserved from the previous inline impl.
+    let promptForExecutor = task.full_prompt;
+    const prompterUserId = params.user?.user_id;
+    if (prompterUserId && prompterUserId !== session.created_by) {
+      try {
+        const prompterUserRepo = new UsersRepository(db);
+        const prompterUser = await prompterUserRepo.findById(prompterUserId);
+        if (prompterUser) {
+          const prompterName = sanitizeUserField(prompterUser.name || prompterUser.email);
+          const prompterEmail = sanitizeUserField(prompterUser.email);
+          promptForExecutor = `[Prompted by: ${prompterName} (${prompterEmail})]\n\n${task.full_prompt}`;
+        }
+      } catch (err) {
+        console.warn(
+          `[Prompt] Failed to look up prompter user ${prompterUserId.substring(0, 8)}:`,
+          err
+        );
+      }
+    }
+
+    const useStreaming = options.stream !== false;
+    const sessionId = task.session_id;
+    const taskId = task.task_id;
+
+    // Background spawn + failure handling. Returning the patched Task to the
+    // caller before this resolves matches the previous behavior — the HTTP
+    // response should not block on the executor process being live.
+    setImmediate(async () => {
+      try {
+        console.log(
+          `🚀 [Daemon] Routing ${session.agentic_tool} to Feathers/WebSocket executor (task ${taskId.substring(0, 8)})`
+        );
+
+        await sessionsService.executeTask(
+          sessionId,
+          {
+            taskId,
+            prompt: promptForExecutor,
+            permissionMode: options.permissionMode,
+            stream: useStreaming,
+            messageSource: options.messageSource,
+          },
+          params
+        );
+
+        console.log(
+          `✅ [Daemon] Executor spawned for session ${sessionId.substring(0, 8)}, waiting for task completion`
+        );
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(
+          `❌ [Daemon] Executor spawn failed for session=${sessionId.substring(0, 8)} task=${taskId.substring(0, 8)} agent=${session.agentic_tool} unix_username=${session.unix_username ?? 'null'}: ${errorMessage}`,
+          error
+        );
+        await safePatch(
+          'tasks',
+          taskId,
+          {
+            status: TaskStatus.FAILED,
+            completed_at: new Date().toISOString(),
+            error_message: errorMessage,
+          },
+          'Task',
+          params
+        );
+
+        // Synthesize a system message so the chat surfaces *why* the agent
+        // didn't respond. Without this the transcript shows only the user
+        // prompt and silence even though the task list reads FAILED.
+        try {
+          // Recompute the next index instead of trusting `messageStartIndex
+          // + 1` — the daemon-write user-message above is wrapped in a
+          // try/catch and may have been swallowed, leaving a gap at
+          // `messageStartIndex`. countMessages always reports the live row
+          // count, so it lands the system error at the true tail whether
+          // the user-message row exists or not (no gap, no collision).
+          const sysIndex = await sessionsRepository.countMessages(sessionId);
+          const errorContent = `⚠️ The agent failed to start.\n\n${errorMessage}`;
+          const sysMessage: Message = {
+            message_id: generateId() as UUID,
+            session_id: sessionId,
+            type: 'system',
+            role: 'assistant' as Message['role'],
+            index: sysIndex,
+            timestamp: new Date().toISOString(),
+            content_preview: errorContent.substring(0, 200),
+            content: errorContent,
+            task_id: taskId,
+            metadata: { is_meta: true },
+          };
+          await app.service('messages').create(sysMessage, params);
+        } catch (sysErr) {
+          console.warn(
+            '[Daemon] Failed to write system error message after spawn failure:',
+            sysErr
+          );
+        }
+
+        try {
+          app.service('tasks').emit('failed', {
+            task_id: taskId,
+            session_id: sessionId,
+            error_message: errorMessage,
+          });
+        } catch (emitErr) {
+          console.warn('[Daemon] Failed to emit tasks:failed event:', emitErr);
+        }
+      }
+    });
+
+    return updatedTask;
+  }
+
   // ============================================================================
   // Prompt endpoint
   // ============================================================================
@@ -810,261 +1074,85 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
           throw new Error('Cannot send prompt: session is currently stopping');
         }
 
-        // Queue guard
-        const isInternalCall = !params.provider;
-        if (!((data as Record<string, unknown>)._fromQueue && isInternalCall)) {
-          const queueCheckRepo = new MessagesRepository(db);
-          const queuedItems = await queueCheckRepo.findQueued(id as SessionID);
-          const hasQueuedItems = queuedItems.length > 0;
+        // The route is one path: always materialize a Task. Whether it runs
+        // immediately or gets queued is the *response*, not a different code
+        // path. Sentinels and queue-position assignment live in
+        // `taskRepo.createPending` so callers don't reassemble them by hand.
+        const taskRepo = new TaskRepository(db);
+        const queuedTasks = await taskRepo.findQueued(id as SessionID);
+        const shouldQueue = session.status !== SessionStatus.IDLE || queuedTasks.length > 0;
+        const createdBy = params.user?.user_id ?? 'anonymous';
 
-          if (session.status !== SessionStatus.IDLE || hasQueuedItems) {
-            const queuedMessage = await queueCheckRepo.createQueued(id as SessionID, data.prompt, {
-              queued_by_user_id: params.user?.user_id,
+        if (shouldQueue) {
+          const queuedTask = await taskRepo.createPending({
+            session_id: id as SessionID,
+            full_prompt: data.prompt,
+            created_by: createdBy,
+            status: TaskStatus.QUEUED,
+            metadata: {
+              ...(params.user?.user_id ? { queued_by_user_id: params.user.user_id } : {}),
+              ...(messageSource ? { source: messageSource } : {}),
+            },
+          });
+
+          console.log(
+            `📬 [Prompt] Auto-queued task for session ${id.substring(0, 8)} at position ${queuedTask.queue_position} ` +
+              `(session status: ${session.status}, existing queue items: ${queuedTasks.length})`
+          );
+
+          app.service('tasks').emit('queued', queuedTask);
+
+          if (session.status === SessionStatus.IDLE) {
+            setImmediate(async () => {
+              try {
+                await sessionsService.triggerQueueProcessing(id as SessionID, params);
+              } catch (error) {
+                console.error(
+                  `❌ [Prompt] Failed to trigger queue processing after auto-queue:`,
+                  error
+                );
+              }
             });
-
-            console.log(
-              `📬 [Prompt] Auto-queued message for session ${id.substring(0, 8)} at position ${queuedMessage.queue_position} ` +
-                `(session status: ${session.status}, existing queue items: ${queuedItems.length})`
-            );
-
-            app.service('messages').emit('queued', queuedMessage);
-
-            if (session.status === SessionStatus.IDLE) {
-              setImmediate(async () => {
-                try {
-                  await sessionsService.triggerQueueProcessing(id as SessionID, params);
-                } catch (error) {
-                  console.error(
-                    `❌ [Prompt] Failed to trigger queue processing after auto-queue:`,
-                    error
-                  );
-                }
-              });
-            }
-
-            return {
-              success: true,
-              queued: true,
-              message: queuedMessage,
-              queue_position: queuedMessage.queue_position,
-            };
           }
+
+          // Uniform response: the entity is always a Task. Caller inspects
+          // `task.status` (`'queued'` here) and `task.queue_position` to know
+          // what happened.
+          return queuedTask;
         }
 
         console.log(`   Session agent: ${session.agentic_tool}`);
         console.log(
           `   Session permission_config.mode: ${session.permission_config?.mode || 'not set'}`
         );
-        const messageStartIndex = await sessionsRepository.countMessages(id as string);
-        const startTimestamp = new Date().toISOString();
 
-        // Get current git state
-        const { captureGitStateViaShell } = await import('./utils/git-shell-capture.js');
-        let gitStateAtStart = 'unknown';
-        let refAtStart = 'unknown';
-        if (session.worktree_id) {
-          try {
-            const worktreesService = app.service('worktrees');
-            const worktree = await worktreesService.get(session.worktree_id, params);
-            console.log(
-              `[Git State] Capturing git state at task start for worktree ${worktree.path}`
-            );
-            const gitState = await captureGitStateViaShell(worktree.path);
-            gitStateAtStart = gitState.sha;
-            refAtStart = gitState.ref;
-            if (gitStateAtStart === 'unknown') {
-              console.warn(
-                `[Git State] captureGitStateViaShell returned 'unknown' for worktree ${worktree.path} (ref: ${refAtStart})`
-              );
-            }
-          } catch (error) {
-            console.warn(
-              `[Git State] Failed to get git state for worktree ${session.worktree_id}:`,
-              error
-            );
-          }
-        }
-
-        // Create task
-        const task = await tasksService.create(
-          {
-            session_id: id as SessionID,
-            status: TaskStatus.RUNNING,
-            started_at: new Date().toISOString(),
-            description: data.prompt.substring(0, 120),
-            full_prompt: data.prompt,
-            message_range: {
-              start_index: messageStartIndex,
-              end_index: messageStartIndex + 1,
-              start_timestamp: startTimestamp,
-              end_timestamp: startTimestamp,
-            },
-            tool_use_count: 0,
-            git_state: {
-              ref_at_start: refAtStart,
-              sha_at_start: gitStateAtStart,
-            },
-          },
-          params
-        );
-
-        await app.service('sessions').patch(
-          id,
-          {
-            tasks: [...session.tasks, task.task_id],
-          },
-          params
-        );
-
-        // Streaming callbacks (legacy, kept for reference)
-        const _streamingCallbacks = {
-          onStreamStart: (messageId: string, metadata: Record<string, unknown>) => {
-            console.debug(
-              `📡 [${new Date().toISOString()}] Streaming start: ${messageId.substring(0, 8)}`
-            );
-            app.service('messages').emit('streaming:start', {
-              message_id: messageId,
-              ...metadata,
-            });
-          },
-          onStreamChunk: (messageId: string, chunk: string) => {
-            app.service('messages').emit('streaming:chunk', {
-              message_id: messageId,
-              session_id: id,
-              chunk,
-            });
-          },
-          onStreamEnd: (messageId: string) => {
-            console.debug(
-              `📡 [${new Date().toISOString()}] Streaming end: ${messageId.substring(0, 8)}`
-            );
-            app.service('messages').emit('streaming:end', {
-              message_id: messageId,
-              session_id: id,
-            });
-          },
-          onStreamError: (messageId: string, error: Error) => {
-            console.error(`❌ Streaming error for message ${messageId.substring(0, 8)}:`, error);
-            app.service('messages').emit('streaming:error', {
-              message_id: messageId,
-              session_id: id,
-              error: error.message,
-            });
-          },
-          onThinkingStart: (messageId: string, metadata: Record<string, unknown>) => {
-            console.debug(
-              `📡 [${new Date().toISOString()}] Thinking start: ${messageId.substring(0, 8)}`
-            );
-            app.service('messages').emit('thinking:start', {
-              message_id: messageId,
-              ...metadata,
-            });
-          },
-          onThinkingChunk: (messageId: string, chunk: string) => {
-            app.service('messages').emit('thinking:chunk', {
-              message_id: messageId,
-              session_id: id,
-              chunk,
-            });
-          },
-          onThinkingEnd: (messageId: string) => {
-            console.debug(
-              `📡 [${new Date().toISOString()}] Thinking end: ${messageId.substring(0, 8)}`
-            );
-            app.service('messages').emit('thinking:end', {
-              message_id: messageId,
-              session_id: id,
-            });
-          },
-        };
-
-        // Execute prompt in background
-        const useStreaming = data.stream !== false;
-
-        // Build prompt for executor, adding prompter context when prompter differs from session owner
-        let promptForExecutor = data.prompt;
-        const prompterUserId = params.user?.user_id;
-        if (prompterUserId && prompterUserId !== session.created_by) {
-          try {
-            const prompterUserRepo = new UsersRepository(db);
-            const prompterUser = await prompterUserRepo.findById(prompterUserId);
-            if (prompterUser) {
-              const prompterName = sanitizeUserField(prompterUser.name || prompterUser.email);
-              const prompterEmail = sanitizeUserField(prompterUser.email);
-              promptForExecutor = `[Prompted by: ${prompterName} (${prompterEmail})]\n\n${data.prompt}`;
-            }
-          } catch (err) {
-            console.warn(
-              `[Prompt] Failed to look up prompter user ${prompterUserId.substring(0, 8)}:`,
-              err
-            );
-          }
-        }
-
-        // Route through executor architecture
-        setImmediate(async () => {
-          try {
-            console.log(
-              `🚀 [Daemon] Routing ${session.agentic_tool} to Feathers/WebSocket executor`
-            );
-
-            await sessionsService.executeTask(
-              id,
-              {
-                taskId: task.task_id,
-                prompt: promptForExecutor,
-                permissionMode: data.permissionMode,
-                stream: useStreaming,
-                messageSource,
-              },
-              params
-            );
-
-            console.log(
-              `✅ [Daemon] Executor spawned for session ${id.substring(0, 8)}, waiting for task completion`
-            );
-          } catch (error) {
-            // Structured error with full context so silent fork/prompt failures
-            // are traceable in logs. Previously these failures left the task
-            // marked FAILED with no error_message and the session sitting idle
-            // — the user saw no feedback at all.
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            console.error(
-              `❌ [Daemon] Executor spawn failed for session=${id.substring(0, 8)} task=${task.task_id.substring(0, 8)} agent=${session.agentic_tool} unix_username=${session.unix_username ?? 'null'}: ${errorMessage}`,
-              error
-            );
-            await safePatch(
-              'tasks',
-              task.task_id,
-              {
-                status: TaskStatus.FAILED,
-                completed_at: new Date().toISOString(),
-                error_message: errorMessage,
-              },
-              'Task',
-              params
-            );
-            // Surface the failure to subscribed clients so the UI can show
-            // a toast / inline error instead of letting the session sit idle
-            // with a ghost task.
-            try {
-              app.service('tasks').emit('failed', {
-                task_id: task.task_id,
-                session_id: id,
-                error_message: errorMessage,
-              });
-            } catch (emitErr) {
-              console.warn('[Daemon] Failed to emit tasks:failed event:', emitErr);
-            }
-          }
+        // Idle path: create a CREATED task, then hand off to spawnTaskExecutor
+        // which is the sole place that populates message_range / git_state,
+        // writes the user-message row, and spawns the executor. Both this
+        // path and processNextQueuedTask go through that helper so behavior
+        // stays in lockstep.
+        const task = await taskRepo.createPending({
+          session_id: id as SessionID,
+          full_prompt: data.prompt,
+          created_by: createdBy,
+          status: TaskStatus.CREATED,
+          metadata: messageSource ? { source: messageSource } : undefined,
         });
+        // Bypassing the service means no native 'created' emit; do it here
+        // so reactive clients see the new task before the executor spawns.
+        app.service('tasks').emit('created', task);
 
-        return {
-          success: true,
-          taskId: task.task_id,
-          status: TaskStatus.RUNNING,
-          streaming: useStreaming,
-        };
+        const runningTask = await spawnTaskExecutor(
+          task,
+          {
+            permissionMode: data.permissionMode,
+            stream: data.stream !== false,
+            messageSource,
+          },
+          params
+        );
+
+        return runningTask;
       },
     },
     {
@@ -1378,11 +1466,14 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
           console.warn(
             `⚠️  [Stop] No active tasks for session ${id.substring(0, 8)}, resetting to IDLE${stopReason ? ` (reason: ${stopReason})` : ''}`
           );
+          // ready_for_prompt: true so the post-patch hook drains any QUEUED tasks.
+          // Stop is "skip current", not "wipe everything" — queued prompts represent
+          // user intent and should still execute.
           await app.service('sessions').patch(
             id,
             {
               status: SessionStatus.IDLE,
-              ready_for_prompt: false,
+              ready_for_prompt: true,
             },
             params
           );
@@ -1421,11 +1512,14 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
         }
 
         try {
+          // ready_for_prompt: true so the post-patch hook drains any QUEUED tasks.
+          // Stop is "skip current", not "wipe everything" — queued prompts represent
+          // user intent and should still execute.
           await app.service('sessions').patch(
             id,
             {
               status: SessionStatus.IDLE,
-              ready_for_prompt: false,
+              ready_for_prompt: true,
             },
             params
           );
@@ -1443,43 +1537,25 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
   );
 
   // ============================================================================
-  // Queue management
+  // Queue listing — task-centric (was message-centric pre-never-lose-prompt).
+  // The queue is the set of tasks with status='queued', ranked by
+  // queue_position. Each queued task carries the full prompt + metadata; on
+  // drain it transitions queued → running via spawnTaskExecutor.
+  //
+  // Enqueueing goes through `POST /sessions/:id/prompt` — the daemon decides
+  // run-vs-queue based on session state and reports it back via `task.status`.
   // ============================================================================
 
   registerAuthenticatedRoute(
     app,
-    '/sessions/:id/messages/queue',
+    '/sessions/:id/tasks/queue',
     {
-      async create(data: { prompt: string }, params: RouteParams) {
-        const sessionId = params.route?.id;
-        if (!sessionId) throw new Error('Session ID required');
-        if (!data.prompt) throw new Error('Prompt required');
-
-        const _session = await sessionsService.get(sessionId, params);
-
-        const messageRepo = new MessagesRepository(db);
-        const queuedMessage = await messageRepo.createQueued(sessionId as SessionID, data.prompt, {
-          queued_by_user_id: params.user?.user_id,
-        });
-
-        console.log(
-          `📬 Queued message for session ${sessionId.substring(0, 8)} at position ${queuedMessage.queue_position}`
-        );
-
-        app.service('messages').emit('queued', queuedMessage);
-
-        return {
-          success: true,
-          message: queuedMessage,
-        };
-      },
-
       async find(params: RouteParams) {
         const sessionId = params.route?.id;
         if (!sessionId) throw new Error('Session ID required');
 
-        const messageRepo = new MessagesRepository(db);
-        const queued = await messageRepo.findQueued(sessionId as SessionID);
+        const taskQueueRepo = new TaskRepository(db);
+        const queued = await taskQueueRepo.findQueued(sessionId as SessionID);
 
         return {
           total: queued.length,
@@ -1489,20 +1565,16 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
       // biome-ignore lint/suspicious/noExplicitAny: Service type not compatible with Express
     } as any,
     {
-      create: { role: ROLES.MEMBER, action: 'queue messages' },
       find: { role: ROLES.MEMBER, action: 'view queue' },
     },
     requireAuth
   );
 
-  // Queue processing implementation
+  // Queue processing implementation — task-centric.
   const queueProcessingLocks = new Map<SessionID, Promise<void>>();
   const queueRetryScheduled = new Set<SessionID>();
 
-  async function processNextQueuedMessage(
-    sessionId: SessionID,
-    params: RouteParams
-  ): Promise<void> {
+  async function processNextQueuedTask(sessionId: SessionID, params: RouteParams): Promise<void> {
     const existingLock = queueProcessingLocks.get(sessionId);
     if (existingLock) {
       console.log(
@@ -1514,7 +1586,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
         setImmediate(async () => {
           queueRetryScheduled.delete(sessionId);
           try {
-            await processNextQueuedMessage(sessionId, params);
+            await processNextQueuedTask(sessionId, params);
           } catch (error) {
             console.error(
               `❌ [Queue] Retry failed for session ${sessionId.substring(0, 8)}:`,
@@ -1526,7 +1598,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
       return;
     }
 
-    const processingPromise = processNextQueuedMessageInternal(sessionId, params);
+    const processingPromise = processNextQueuedTaskInternal(sessionId, params);
 
     queueProcessingLocks.set(
       sessionId,
@@ -1542,23 +1614,23 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     }
   }
 
-  async function processNextQueuedMessageInternal(
+  async function processNextQueuedTaskInternal(
     sessionId: SessionID,
     params: RouteParams
   ): Promise<void> {
-    const messageRepo = new MessagesRepository(db);
-    const nextMessage = await messageRepo.getNextQueued(sessionId);
+    const taskRepo = new TaskRepository(db);
+    const nextTask = await taskRepo.getNextQueued(sessionId);
 
-    if (!nextMessage) {
-      console.log(`📭 No queued messages for session ${sessionId.substring(0, 8)}`);
+    if (!nextTask) {
+      console.log(`📭 No queued tasks for session ${sessionId.substring(0, 8)}`);
       return;
     }
 
-    const userId = nextMessage.metadata?.queued_by_user_id as string | undefined;
+    const userId = nextTask.metadata?.queued_by_user_id;
     const userRepo = new UsersRepository(db);
     const queuedByUser = userId ? await userRepo.findById(userId) : undefined;
 
-    const messageParams: RouteParams = queuedByUser
+    const taskParams: RouteParams = queuedByUser
       ? ({
           ...params,
           user: queuedByUser,
@@ -1566,72 +1638,52 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
       : params;
 
     console.log(
-      `📬 Processing queued message ${nextMessage.message_id.substring(0, 8)} ` +
+      `📬 Processing queued task ${nextTask.task_id.substring(0, 8)} ` +
+        `(position ${nextTask.queue_position}) ` +
         `with user context: ${queuedByUser ? queuedByUser.user_id.substring(0, 8) : 'none'}`
     );
 
-    const session = await sessionsService.get(sessionId, messageParams);
+    const session = await sessionsService.get(sessionId, taskParams);
 
     if (session.status !== SessionStatus.IDLE) {
       console.log(
-        `⏸️  [Queue] Session ${sessionId.substring(0, 8)} is ${session.status}, message ${nextMessage.message_id.substring(0, 8)} waiting in queue ` +
+        `⏸️  [Queue] Session ${sessionId.substring(0, 8)} is ${session.status}, task ${nextTask.task_id.substring(0, 8)} waiting in queue ` +
           `(will be processed when session becomes IDLE via patch hook)`
       );
       return;
     }
 
-    console.log(
-      `📬 Processing queued message ${nextMessage.message_id.substring(0, 8)} (position ${nextMessage.queue_position})`
-    );
-
-    const prompt = nextMessage.content as string;
-
-    const messagesServiceInst = app.service('messages') as unknown as MessagesServiceImpl;
-    try {
-      const stillExists = await messagesServiceInst.get(nextMessage.message_id, messageParams);
-      if (!stillExists || stillExists.status !== 'queued') {
-        console.log(
-          `⚠️  Queued message ${nextMessage.message_id.substring(0, 8)} was deleted or modified, skipping`
-        );
-        return;
-      }
-    } catch (_error) {
-      console.log(
-        `⚠️  Queued message ${nextMessage.message_id.substring(0, 8)} no longer exists, skipping`
-      );
+    // Re-read the task — defend against the case where it was already drained
+    // by a concurrent caller, or removed by an admin via DELETE /tasks/:id.
+    const stillQueued = await taskRepo.findById(nextTask.task_id);
+    if (!stillQueued || stillQueued.status !== TaskStatus.QUEUED) {
+      console.log(`⚠️  Queued task ${nextTask.task_id.substring(0, 8)} no longer queued, skipping`);
       return;
     }
 
-    await messagesServiceInst.remove(nextMessage.message_id, messageParams);
-
-    const promptService = app.service('/sessions/:id/prompt') as {
-      create: (
-        data: { prompt: string; stream?: boolean; _fromQueue?: boolean },
-        params: RouteParams
-      ) => Promise<unknown>;
-    };
-
-    await promptService.create(
+    // spawnTaskExecutor handles the QUEUED → RUNNING transition (recomputes
+    // message_range/git_state, writes the user-message row, appends to
+    // session.tasks, spawns the executor). We pass the messageSource from
+    // task.metadata so callback styling survives the queue → run hop.
+    const source = nextTask.metadata?.source;
+    await spawnTaskExecutor(
+      stillQueued,
       {
-        prompt,
         stream: true,
-        _fromQueue: true,
+        messageSource: source,
       },
-      {
-        ...messageParams,
-        route: { id: sessionId },
-      }
+      taskParams
     );
 
-    console.log(`✅ Queued message triggered for session ${sessionId.substring(0, 8)}`);
+    console.log(`✅ Queued task drained for session ${sessionId.substring(0, 8)}`);
   }
 
-  // Inject queue processor into sessions service
+  // Inject queue processor into sessions service.
   sessionsService.setQueueProcessor(async (sessionId: SessionID, params?: RouteParams) => {
     try {
-      await processNextQueuedMessage(sessionId, params || {});
+      await processNextQueuedTask(sessionId, params || {});
     } catch (error) {
-      console.error(`❌ [Sessions] Failed to process queued message:`, error);
+      console.error(`❌ [Sessions] Failed to process queued task:`, error);
     }
   });
 

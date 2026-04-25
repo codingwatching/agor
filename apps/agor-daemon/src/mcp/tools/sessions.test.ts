@@ -341,7 +341,8 @@ describe('agor_sessions_spawn', () => {
         },
       },
       '/sessions/:id/prompt': {
-        create: async () => ({ taskId: 't1', status: 'running' }),
+        // Returns a Task-shaped object — the route returns the entity directly.
+        create: async () => ({ task_id: 't1', status: 'running' }),
       },
     });
 
@@ -375,7 +376,8 @@ describe('agor_sessions_spawn', () => {
         },
       },
       '/sessions/:id/prompt': {
-        create: async () => ({ taskId: 't1', status: 'running' }),
+        // Returns a Task-shaped object — the route returns the entity directly.
+        create: async () => ({ task_id: 't1', status: 'running' }),
       },
     });
 
@@ -426,7 +428,8 @@ describe('agor_sessions_prompt (subsession mode)', () => {
         },
       },
       '/sessions/:id/prompt': {
-        create: async () => ({ taskId: 't1', status: 'running' }),
+        // Returns a Task-shaped object — the route returns the entity directly.
+        create: async () => ({ task_id: 't1', status: 'running' }),
       },
     });
 

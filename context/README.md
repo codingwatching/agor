@@ -36,7 +36,7 @@ This directory contains modular knowledge files that document Agor's concepts, a
 - **[database-migrations.md](concepts/database-migrations.md)** - Drizzle migration workflow plus `agor db status/migrate`
 - **[environment-logs.md](concepts/environment-logs.md)** - Worktree environment controls, log viewer, and MCP hooks
 - **[mcp-session-tools.md](concepts/mcp-session-tools.md)** - `agor_sessions_*` MCP tools for continuing, forking, and editing sessions
-- **[message-queueing.md](concepts/message-queueing.md)** - Line-up prompts with queued message status and processing rules
+- **[task-queueing.md](concepts/task-queueing.md)** - Task-level prompt queueing: uniform Task response, sentinel/drain lifecycle
 - **[opencode-integration.md](concepts/opencode-integration.md)** - Server-mode OpenCode agent integration
 - **[per-user-api-keys.md](concepts/per-user-api-keys.md)** - Encrypted Anthropic/OpenAI/Gemini key storage with reusable UI component
 - **[scheduler.md](concepts/scheduler.md)** - Worktree-scoped cron scheduler that spawns autonomous sessions
@@ -98,7 +98,6 @@ Historical documentation and completed research preserved for reference:
 - **[auto-generated-api-docs.md](archives/auto-generated-api-docs.md)** - Feathers Swagger evaluation and rollout plan
 - **[compaction-events.md](archives/compaction-events.md)** - Implemented compaction event stream capture (Jan 2025)
 - **[conversation-autocomplete.md](archives/conversation-autocomplete.md)** - Full UX spec for the `@` autocomplete experience
-- **[database-migrations.md](archives/database-migrations.md)** - Launch-blocker write-up for adopting Drizzle migrations
 - **[environment-logs-and-mcp.md](archives/environment-logs-and-mcp.md)** - Process control + log access blueprint
 - **[gemini-integration-research.md](archives/gemini-integration-research.md)** - Gemini CLI SDK discovery process, API analysis, and integration decisions (completed Oct 2025)
 - **[launch-prep.md](archives/launch-prep.md)** - v0.4.0 release checklist and launch validation

@@ -1,8 +1,10 @@
 // src/types/task.ts
 import type { SessionID, TaskID } from './id';
+import type { MessageSource } from './message';
 import type { ReportPath, ReportTemplate } from './report';
 
 export const TaskStatus = {
+  QUEUED: 'queued', // Task created but not yet running (waiting for executor to drain queue)
   CREATED: 'created',
   RUNNING: 'running',
   STOPPING: 'stopping', // Stop requested, waiting for SDK to halt
@@ -15,6 +17,32 @@ export const TaskStatus = {
 } as const;
 
 export type TaskStatus = (typeof TaskStatus)[keyof typeof TaskStatus];
+
+/**
+ * Structured metadata attached to a task. All fields are optional, but the
+ * ones that are present are load-bearing — typing them here prevents drift
+ * between the daemon (which writes them) and the UI/services that read them.
+ *
+ * - `is_agor_callback`: marks a task whose prompt was synthesized by the
+ *   callback machinery (child session finished → parent gets a system
+ *   message). Drives both auth attribution and UI styling.
+ * - `source`: where the prompt entered the system. Copied onto the
+ *   user-message row so message-level provenance survives the queue → run
+ *   transition.
+ * - `queued_by_user_id`: who scheduled the task (distinct from
+ *   `task.created_by` for callback tasks, where `created_by` is the
+ *   callback owner and `queued_by_user_id` is set to the same value but
+ *   the field carries semantic intent rather than ownership).
+ * - `child_session_id` / `child_task_id`: lineage breadcrumbs for callback
+ *   tasks — the child session/task whose completion produced this prompt.
+ */
+export interface TaskMetadata {
+  is_agor_callback?: boolean;
+  source?: MessageSource;
+  queued_by_user_id?: string;
+  child_session_id?: SessionID;
+  child_task_id?: TaskID;
+}
 
 /**
  * A task reached a terminal state *on its own* (finished or hit an error),
@@ -38,10 +66,22 @@ export interface Task {
   /** Original user prompt (can be multi-line) */
   full_prompt: string;
 
-  /** Optional: LLM-generated short summary */
-  description?: string;
-
   status: TaskStatus;
+
+  /**
+   * Queue position when status is QUEUED. Lower values drain first.
+   * Undefined for non-queued tasks.
+   */
+  queue_position?: number;
+
+  /**
+   * Structured metadata for the task. Fields here are load-bearing for
+   * auth, lineage, and UI styling — see the per-field comments. When a
+   * QUEUED task transitions to RUNNING and a user-message row is written,
+   * `is_agor_callback` and `source` are copied onto the new message.metadata
+   * so the UI styling for callbacks survives the queue → run hop.
+   */
+  metadata?: TaskMetadata;
 
   // Message range
   message_range: {
