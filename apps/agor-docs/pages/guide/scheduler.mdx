@@ -15,7 +15,13 @@ Agor is built to orchestrate autonomous teammates. The scheduler turns every wor
 
 Think of it as an always-on teammate: “Every morning, look at the last 24 hours of activity, write up a report, and post it in #agor,” or “Every Friday, tidy the Superset worktrees; if the PR merged, stop the Docker environment and archive the worktree record.”
 
-![Configure schedule modal showing cron builder, agent selection, and prompt template inputs](/screenshots/configure_schedule.png)
+<img
+  src="/screenshots/scheduler-modal.png"
+  alt="Configure Schedule modal — Enable Schedule toggle, cron builder with humanized preview ('At 12:00 AM, every day (UTC)'), Agent Selection card picker showing all five SDK runtimes (Claude Code, Codex, Gemini, OpenCode BETA, Copilot BETA), collapsible Advanced Agent Settings, and a Prompt Template field with 'Boot up, read HEARTBEAT.md and execute a heartbeat'"
+  style={{ maxWidth: '600px', borderRadius: '8px' }}
+/>
+
+_The scheduler dovetails with [Assistants](/guide/assistants) — a daily cron firing `read HEARTBEAT.md and execute a heartbeat` is exactly how a persistent assistant ticks._
 
 ## How Scheduled Runs Work
 
@@ -103,7 +109,8 @@ Because MCP is just JSON-RPC, you can bring any service into the loop—Agor’s
 
 ## Related Reading
 
-- [Architecture Guide](./architecture#scheduler-service) – deeper dive into the daemon’s background workers.
-- [Agent SDK Comparison](./sdk-comparison) – choose the right agent for scheduled tasks.
-- Context exploration: `context/explorations/scheduler.md`
-- Concepts: `context/concepts/worktrees.md`, `context/concepts/mcp-integration.md`
+- [Assistants](/guide/assistants) — Long-lived agents whose **heartbeats** are powered by the scheduler. If you want a persistent AI companion, start there.
+- [Worktrees](/guide/worktrees) — The container a schedule attaches to.
+- [Agor MCP Server](/guide/internal-mcp) — What scheduled agents can reach out to (boards, sessions, users, etc.).
+- [Architecture: Scheduler service](/guide/architecture#scheduler-service) — Deeper dive into the daemon's background workers.
+- [SDK Comparison](/guide/sdk-comparison) — Choose the right agent for scheduled tasks.
