@@ -427,19 +427,27 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
           audience: 'https://agor.dev',
         });
 
+        // Return the full user object — matches what POST /authentication
+        // returns via the FeathersJS auth service. Stripping fields here
+        // (previously: only user_id/email/name/emoji/role) silently dropped
+        // `must_change_password` after every token refresh, breaking the
+        // forced-password-change UI guard in App.tsx and showing the user a
+        // black page with "Failed to load data — Password change required."
+        // instead of the change-password modal. `usersService.get` already
+        // omits secrets (password hash, raw API keys, raw env var values)
+        // via rowToUser — see services/users.ts.
         return {
           accessToken,
           refreshToken: newRefreshToken,
-          user: {
-            user_id: user.user_id,
-            email: user.email,
-            name: user.name,
-            emoji: user.emoji,
-            role: user.role,
-          },
+          user,
         };
       } catch (_error) {
-        throw new Error('Invalid or expired refresh token');
+        // Must throw NotAuthenticated (not plain Error) so the UI's
+        // isDefiniteAuthFailure classifier (apps/agor-ui/src/utils/authErrors.ts)
+        // recognizes a dead refresh token as a 401-class failure and clears
+        // session state. A plain Error has no status/name and gets treated as
+        // transient, leading the single-flight refresh loop to keep retrying.
+        throw new NotAuthenticated('Invalid or expired refresh token');
       }
     },
   });
