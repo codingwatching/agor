@@ -1047,10 +1047,34 @@ async function registerMCPServices(
    *     which need to return the token-validation result in the same HTTP
    *     response. Bounded by {@link AWAIT_TOKEN_TIMEOUT_MS}.
    */
+  /**
+   * Human-readable enumeration of every discovery strategy
+   * `resolveMCPOAuthDiscovery` walks. Kept in sync with the cascade in
+   * `@agor/core/tools/mcp/oauth-mcp-transport.ts` so error messages don't
+   * drift when strategies are added or reordered.
+   */
+  const DISCOVERY_CASCADE_TRIED =
+    'Tried: (1) WWW-Authenticate resource_metadata hint, ' +
+    '(2) /.well-known/oauth-protected-resource (RFC 9728), ' +
+    '(3) /.well-known/oauth-authorization-server at MCP origin (RFC 8414), ' +
+    '(4) /.well-known/openid-configuration at MCP origin (OIDC).';
+
   type StartTwoPhaseOAuthOptions = {
     mcpUrl: string;
     wwwAuthenticate: string;
-    resourceMetadataUrl: string;
+    /**
+     * RFC 9728 Protected Resource Metadata URL. Set when discovery hit the
+     * standard MCP spec path. Mutually exclusive with
+     * `prefetchedAuthServerMetadata` — exactly one must be provided.
+     */
+    resourceMetadataUrl?: string;
+    /**
+     * Pre-discovered Authorization Server metadata, set when discovery hit the
+     * AS-direct fallback (`<mcp-origin>/.well-known/oauth-authorization-server`).
+     * Mutually exclusive with `resourceMetadataUrl` — exactly one must be
+     * provided.
+     */
+    prefetchedAuthServerMetadata?: import('@agor/core/tools/mcp/oauth-mcp-transport').AuthorizationServerMetadata;
     mcpServerId?: string;
     userId?: string;
     oauthMode?: 'per_user' | 'shared';
@@ -1097,12 +1121,27 @@ async function registerMCPServices(
     const baseUrl = await requirePublicBaseUrl();
     const redirectUri = new URL('/mcp-servers/oauth-callback', baseUrl).toString();
 
+    const hasRfc9728 = !!opts.resourceMetadataUrl;
+    const hasAsDirect = !!opts.prefetchedAuthServerMetadata;
+    if (hasRfc9728 === hasAsDirect) {
+      // Both set → ambiguous; neither set → no path forward.
+      throw new Error(
+        'startTwoPhaseMCPOAuthFlow requires exactly one of resourceMetadataUrl ' +
+          '(RFC 9728) or prefetchedAuthServerMetadata (AS-direct discovery), ' +
+          `received resourceMetadataUrl=${hasRfc9728}, prefetchedAuthServerMetadata=${hasAsDirect}.`
+      );
+    }
+
     const context = await startMCPOAuthFlow(opts.wwwAuthenticate, opts.clientId, redirectUri, {
       authorizationUrlOverride: opts.authorizationUrlOverride,
       tokenUrlOverride: opts.tokenUrlOverride,
       clientSecret: opts.clientSecret,
       scope: opts.scope,
       resourceMetadataUrl: opts.resourceMetadataUrl,
+      prefetchedAuthServerMetadata: opts.prefetchedAuthServerMetadata,
+      // Cache key for AS-direct path: use the MCP URL itself (origin matches
+      // what `getCachedOAuth21Token` looks up later).
+      cacheKey: opts.prefetchedAuthServerMetadata ? opts.mcpUrl : undefined,
     });
 
     let tokenPromise: Promise<OAuthTokenResponse> | undefined;
@@ -1361,18 +1400,27 @@ async function registerMCPServices(
         });
 
         let metadataUrl: string | null = null;
+        let prefetchedAuthServerMetadata:
+          | import('@agor/core/tools/mcp/oauth-mcp-transport').AuthorizationServerMetadata
+          | null = null;
+        let discoverySource: string | null = null;
         if (probeResponse.status === 401) {
-          const { resolveResourceMetadataUrl } = await import(
+          const { resolveMCPOAuthDiscovery } = await import(
             '@agor/core/tools/mcp/oauth-mcp-transport'
           );
-          const resolved = await resolveResourceMetadataUrl(wwwAuthenticate, data.mcp_url);
-          if (resolved) {
-            metadataUrl = resolved.metadataUrl;
-            console.log(`[OAuth Test] Resolved metadata URL (${resolved.source}):`, metadataUrl);
+          const discovery = await resolveMCPOAuthDiscovery(wwwAuthenticate, data.mcp_url);
+          if (discovery?.kind === 'resource-metadata') {
+            metadataUrl = discovery.metadataUrl;
+            discoverySource = `RFC 9728 ${discovery.source}`;
+            console.log(`[OAuth Test] Resolved metadata URL (${discovery.source}):`, metadataUrl);
+          } else if (discovery?.kind === 'authorization-server') {
+            prefetchedAuthServerMetadata = discovery.authServerMetadata;
+            discoverySource = `AS-direct (${discovery.discoveredAt})`;
+            console.log('[OAuth Test] Resolved AS metadata directly at:', discovery.discoveredAt);
           }
         }
 
-        if (probeResponse.status === 401 && metadataUrl) {
+        if (probeResponse.status === 401 && (metadataUrl || prefetchedAuthServerMetadata)) {
           console.log('[OAuth Test] OAuth 2.1 auto-discovery detected');
 
           if (data.start_browser_flow) {
@@ -1392,7 +1440,8 @@ async function registerMCPServices(
                 started = await startTwoPhaseMCPOAuthFlowAndAwaitToken({
                   mcpUrl: data.mcp_url,
                   wwwAuthenticate: wwwAuthenticate || '',
-                  resourceMetadataUrl: metadataUrl,
+                  resourceMetadataUrl: metadataUrl ?? undefined,
+                  prefetchedAuthServerMetadata: prefetchedAuthServerMetadata ?? undefined,
                   mcpServerId: data.mcp_server_id,
                   userId: (params as AuthenticatedParams)?.user?.user_id,
                   // Test endpoint mirrors the previous saveOAuth21TokenToDB
@@ -1441,13 +1490,37 @@ async function registerMCPServices(
 
           // Just validate metadata without browser flow
           try {
-            const metadataResponse = await fetch(metadataUrl);
+            // AS-direct path: we already have AS metadata, no resource metadata
+            // to fetch. Short-circuit with what we discovered.
+            if (prefetchedAuthServerMetadata) {
+              return {
+                success: true,
+                oauthType: 'oauth2.1',
+                message: prefetchedAuthServerMetadata.registration_endpoint
+                  ? `OAuth 2.1 auto-discovery successful via ${discoverySource} (DCR supported). Click "Start OAuth Flow" to authenticate.`
+                  : `OAuth 2.1 auto-discovery successful via ${discoverySource}. Click "Start OAuth Flow" to authenticate.`,
+                authServerMetadata: {
+                  authorizationEndpoint: prefetchedAuthServerMetadata.authorization_endpoint,
+                  tokenEndpoint: prefetchedAuthServerMetadata.token_endpoint,
+                  registrationEndpoint: prefetchedAuthServerMetadata.registration_endpoint,
+                },
+                supportsDynamicClientRegistration:
+                  !!prefetchedAuthServerMetadata.registration_endpoint,
+                requiresBrowserFlow: true,
+                discoverySource,
+              };
+            }
+
+            // RFC 9728 path: fetch resource metadata to get the AS URL.
+            // (Above guard ensures `metadataUrl` is set when we reach here.)
+            const rfc9728Url = metadataUrl as string;
+            const metadataResponse = await fetch(rfc9728Url);
             if (!metadataResponse.ok) {
               return {
                 success: false,
                 error: `OAuth resource metadata endpoint returned ${metadataResponse.status}`,
                 oauthType: 'oauth2.1',
-                metadataUrl,
+                metadataUrl: rfc9728Url,
                 requiresBrowserFlow: true,
               };
             }
@@ -1461,36 +1534,33 @@ async function registerMCPServices(
                 success: false,
                 error: 'OAuth resource metadata missing authorization_servers',
                 oauthType: 'oauth2.1',
-                metadataUrl,
+                metadataUrl: rfc9728Url,
                 metadata,
               };
             }
 
             const authServerUrl = metadata.authorization_servers[0];
+            // Reuse core's fetchAuthorizationServerMetadata so we get RFC 8414
+            // path-aware insertion + OIDC path-append fallback. The previous
+            // hand-rolled `${authServerUrl}${wellKnownPath}` loop only worked
+            // for root-issuer servers and silently mis-reported "no metadata"
+            // for path-bearing issuers.
+            const { fetchAuthorizationServerMetadata } = await import(
+              '@agor/core/tools/mcp/oauth-mcp-transport'
+            );
             let authServerMetadata: {
               authorization_endpoint?: string;
               token_endpoint?: string;
               registration_endpoint?: string;
             } | null = null;
-
-            for (const wellKnownPath of [
-              '/.well-known/oauth-authorization-server',
-              '/.well-known/openid-configuration',
-            ]) {
-              try {
-                const authMetaResponse = await fetch(`${authServerUrl}${wellKnownPath}`);
-                if (authMetaResponse.ok) {
-                  authServerMetadata = (await authMetaResponse.json()) as {
-                    authorization_endpoint?: string;
-                    token_endpoint?: string;
-                    registration_endpoint?: string;
-                  };
-                  console.log('[OAuth Test] Auth server metadata:', authServerMetadata);
-                  break;
-                }
-              } catch {
-                /* Try next */
-              }
+            try {
+              authServerMetadata = await fetchAuthorizationServerMetadata(authServerUrl);
+              console.log('[OAuth Test] Auth server metadata:', authServerMetadata);
+            } catch (asMetaError) {
+              console.log(
+                '[OAuth Test] Auth server metadata unavailable:',
+                asMetaError instanceof Error ? asMetaError.message : String(asMetaError)
+              );
             }
 
             return {
@@ -1499,7 +1569,7 @@ async function registerMCPServices(
               message: authServerMetadata?.registration_endpoint
                 ? 'OAuth 2.1 auto-discovery successful (DCR supported). Click "Start OAuth Flow" to authenticate.'
                 : 'OAuth 2.1 auto-discovery successful. Click "Start OAuth Flow" to authenticate.',
-              metadataUrl,
+              metadataUrl: rfc9728Url,
               authorizationServers: metadata.authorization_servers,
               scopesSupported: metadata.scopes_supported,
               authServerMetadata: authServerMetadata
@@ -1517,7 +1587,7 @@ async function registerMCPServices(
               success: false,
               error: `Failed to fetch OAuth metadata: ${metadataError instanceof Error ? metadataError.message : String(metadataError)}`,
               oauthType: 'oauth2.1',
-              metadataUrl,
+              metadataUrl: metadataUrl ?? undefined,
             };
           }
         }
@@ -1596,13 +1666,17 @@ async function registerMCPServices(
 
           return {
             success: false,
-            error: `Server requires authentication (401) but no OAuth 2.1 auto-discovery headers found.`,
+            error:
+              'Server requires authentication (401) but OAuth 2.1 auto-discovery failed at every step.',
             oauthType: 'unknown',
             mcpStatus: probeResponse.status,
             wwwAuthenticate: wwwAuthenticate || '<not present>',
             responseHeaders: allHeaders,
             responseBody: responseBody.substring(0, 500),
-            hint: 'The server may require: (1) OAuth 2.1 setup on server side, (2) Client Credentials with explicit token URL, or (3) Different auth method.',
+            hint:
+              `${DISCOVERY_CASCADE_TRIED} ` +
+              'None returned valid metadata. Options: (a) provide Client Credentials with explicit token URL, ' +
+              '(b) ask the MCP server operator to publish OAuth metadata, or (c) configure manual OAuth URLs in the server settings.',
           };
         }
 
@@ -1663,15 +1737,14 @@ async function registerMCPServices(
         }
 
         const wwwAuthenticate = probeResponse.headers.get('www-authenticate') || '';
-        const { resolveResourceMetadataUrl } = await import(
+        const { resolveMCPOAuthDiscovery } = await import(
           '@agor/core/tools/mcp/oauth-mcp-transport'
         );
-        const resolved = await resolveResourceMetadataUrl(wwwAuthenticate, data.mcp_url);
-        if (!resolved) {
+        const discovery = await resolveMCPOAuthDiscovery(wwwAuthenticate, data.mcp_url);
+        if (!discovery) {
           return {
             success: false,
-            error:
-              'Server returned 401 but does not advertise OAuth metadata. No resource_metadata in WWW-Authenticate header and no .well-known/oauth-protected-resource endpoint found.',
+            error: `Server returned 401 but does not advertise OAuth metadata. ${DISCOVERY_CASCADE_TRIED} None succeeded.`,
           };
         }
 
@@ -1683,7 +1756,10 @@ async function registerMCPServices(
           result = await startTwoPhaseMCPOAuthFlow({
             mcpUrl: data.mcp_url,
             wwwAuthenticate,
-            resourceMetadataUrl: resolved.metadataUrl,
+            resourceMetadataUrl:
+              discovery.kind === 'resource-metadata' ? discovery.metadataUrl : undefined,
+            prefetchedAuthServerMetadata:
+              discovery.kind === 'authorization-server' ? discovery.authServerMetadata : undefined,
             mcpServerId: data.mcp_server_id,
             userId,
             oauthMode,
@@ -2126,11 +2202,11 @@ async function registerMCPServices(
             });
             const wwwAuthenticate = probeResponse.headers.get('www-authenticate');
             if (probeResponse.status !== 401) return undefined;
-            const { resolveResourceMetadataUrl } = await import(
+            const { resolveMCPOAuthDiscovery } = await import(
               '@agor/core/tools/mcp/oauth-mcp-transport'
             );
-            const resolved = await resolveResourceMetadataUrl(wwwAuthenticate, mcpUrl);
-            if (!resolved) return undefined;
+            const discovery = await resolveMCPOAuthDiscovery(wwwAuthenticate, mcpUrl);
+            if (!discovery) return undefined;
 
             // Route through the daemon's two-phase flow (callback → daemon's
             // public URL) instead of the legacy 127.0.0.1 callback server, so
@@ -2139,7 +2215,12 @@ async function registerMCPServices(
             const started = await startTwoPhaseMCPOAuthFlowAndAwaitToken({
               mcpUrl,
               wwwAuthenticate: wwwAuthenticate || '',
-              resourceMetadataUrl: resolved.metadataUrl,
+              resourceMetadataUrl:
+                discovery.kind === 'resource-metadata' ? discovery.metadataUrl : undefined,
+              prefetchedAuthServerMetadata:
+                discovery.kind === 'authorization-server'
+                  ? discovery.authServerMetadata
+                  : undefined,
               mcpServerId: serverId,
               userId: params?.user?.user_id,
               // Discover writes the token via the shared MCP server row when
