@@ -23,6 +23,7 @@ import {
   theme,
 } from 'antd';
 import { useState } from 'react';
+import { useConnectionDisabled } from '../../contexts/ConnectionContext';
 import { BoardSwitcher } from '../BoardSwitcher';
 import { BrandLogo } from '../BrandLogo';
 import { ConnectionStatus } from '../ConnectionStatus';
@@ -137,6 +138,10 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   instanceDescription,
 }) => {
   const { token } = theme.useToken();
+  // Single source of truth for "is the daemon usable right now?". Captures
+  // disconnected, the 1.5s reconnect grace window, and out-of-sync. Don't
+  // gate off raw `connected` — it stays true through the grace window.
+  const mutationDisabled = useConnectionDisabled();
   const userEmoji = user?.emoji || '👤';
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
 
@@ -234,6 +239,13 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
             </Tag>
           ))}
         <Divider orientation="vertical" style={{ height: 32, margin: '0 8px' }} />
+        {/* Disconnected pattern: navbar elements that lead to server-fetching
+            or mutating surfaces are *disabled* (not hidden) via
+            useConnectionDisabled (covers disconnect + reconnect grace window
+            + out-of-sync). Local-only navigation (BoardSwitcher,
+            RecentBoardPills, theme, external doc link, presence display)
+            stays fully alive — those never depend on the daemon.
+            See docs/disconnected-state-design.md. */}
         {currentBoardId && boards.length > 0 && (
           <>
             <div style={{ minWidth: 200 }}>
@@ -257,6 +269,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
               type="text"
               icon={<UnorderedListOutlined style={{ fontSize: token.fontSizeLG }} />}
               onClick={onMenuClick}
+              disabled={mutationDisabled}
             />
           </Tooltip>
         )}
@@ -273,6 +286,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
                 type="text"
                 icon={<CommentOutlined style={{ fontSize: token.fontSizeLG }} />}
                 onClick={onCommentsClick}
+                disabled={mutationDisabled}
               />
             </Tooltip>
           </Badge>
@@ -306,6 +320,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
               type="text"
               icon={<ApiOutlined style={{ fontSize: token.fontSizeLG }} />}
               onClick={onEventStreamClick}
+              disabled={mutationDisabled}
             />
           </Tooltip>
         )}
@@ -324,6 +339,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
             type="text"
             icon={<SettingOutlined style={{ fontSize: token.fontSizeLG }} />}
             onClick={onSettingsClick}
+            disabled={mutationDisabled}
           />
         </Tooltip>
         <Dropdown
@@ -332,9 +348,14 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
           trigger={['click']}
           open={userDropdownOpen}
           onOpenChange={setUserDropdownOpen}
+          disabled={mutationDisabled}
         >
           <Tooltip title={user?.name || 'User menu'} placement="bottom">
-            <Button type="text" icon={<UserOutlined style={{ fontSize: token.fontSizeLG }} />} />
+            <Button
+              type="text"
+              icon={<UserOutlined style={{ fontSize: token.fontSizeLG }} />}
+              disabled={mutationDisabled}
+            />
           </Tooltip>
         </Dropdown>
       </Space>

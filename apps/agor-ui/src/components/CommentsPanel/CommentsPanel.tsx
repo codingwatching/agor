@@ -33,6 +33,7 @@ import {
   theme,
 } from 'antd';
 import React, { useEffect, useMemo, useState } from 'react';
+import { useMutationGate } from '../../contexts/ConnectionContext';
 import { AgorAvatar } from '../AgorAvatar';
 import { AutocompleteTextarea } from '../AutocompleteTextarea';
 import { AgorEmojiPicker } from '../EmojiPickerInput';
@@ -558,6 +559,31 @@ export const CommentsPanel: React.FC<CommentsPanelProps> = ({
   const [filter, setFilter] = useState<FilterMode>('active');
   const [commentInputValue, setCommentInputValue] = useState('');
 
+  // Chokepoint: every comment mutation flows through these wrapped callbacks
+  // so we can short-circuit during disconnect / reconnect-grace / out-of-sync
+  // without sprinkling `disabled` checks across every nested button. The bottom
+  // send button still also flips `disabled` for visible feedback; threaded
+  // action buttons rely on the navbar/footer connection indicator.
+  const mutationGate = useMutationGate();
+  // Wrap a callback so it no-ops when the mutation gate is closed. Preserves
+  // `undefined` when the underlying optional callback wasn't supplied.
+  function guarded<Args extends unknown[]>(fn: (...args: Args) => void): (...args: Args) => void;
+  function guarded<Args extends unknown[]>(
+    fn: ((...args: Args) => void) | undefined
+  ): ((...args: Args) => void) | undefined;
+  function guarded<Args extends unknown[]>(fn: ((...args: Args) => void) | undefined) {
+    if (!fn) return undefined;
+    return (...args: Args) => {
+      if (!mutationGate.canMutate) return;
+      fn(...args);
+    };
+  }
+  const sendComment = guarded(onSendComment);
+  const replyComment = guarded(onReplyComment);
+  const resolveComment = guarded(onResolveComment);
+  const toggleReaction = guarded(onToggleReaction);
+  const deleteComment = guarded(onDeleteComment);
+
   // Get current user's name and email for mention detection
   const currentUser = currentUserId ? userById.get(currentUserId) : undefined;
   const currentUserName = currentUser?.name;
@@ -857,10 +883,10 @@ export const CommentsPanel: React.FC<CommentsPanelProps> = ({
                         replies={repliesByParent[thread.comment_id] || []}
                         userById={userById}
                         currentUserId={currentUserId}
-                        onReply={onReplyComment}
-                        onResolve={onResolveComment}
-                        onToggleReaction={onToggleReaction}
-                        onDelete={onDeleteComment}
+                        onReply={replyComment}
+                        onResolve={resolveComment}
+                        onToggleReaction={toggleReaction}
+                        onDelete={deleteComment}
                         isHighlighted={isHighlighted}
                         scrollRef={commentRefs.current[thread.comment_id]}
                         client={client}
@@ -892,30 +918,39 @@ export const CommentsPanel: React.FC<CommentsPanelProps> = ({
             onKeyPress={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                if (commentInputValue.trim()) {
-                  onSendComment(commentInputValue);
+                if (commentInputValue.trim() && mutationGate.canMutate) {
+                  sendComment(commentInputValue);
                   setCommentInputValue('');
                 }
               }
             }}
-            placeholder="Add a comment... (type @ for autocomplete)"
+            placeholder={
+              mutationGate.canMutate
+                ? 'Add a comment... (type @ for autocomplete)'
+                : (mutationGate.message ?? 'Add a comment...')
+            }
             autoSize={{ minRows: 1, maxRows: 4 }}
             client={client}
             sessionId={null}
             userById={userById}
           />
         </div>
-        <Button
-          type="primary"
-          icon={<SendOutlined />}
-          onClick={() => {
-            if (commentInputValue.trim()) {
-              onSendComment(commentInputValue);
-              setCommentInputValue('');
-            }
-          }}
-          disabled={!commentInputValue.trim()}
-        />
+        <Tooltip
+          title={mutationGate.canMutate ? '' : (mutationGate.message ?? '')}
+          placement="topRight"
+        >
+          <Button
+            type="primary"
+            icon={<SendOutlined />}
+            onClick={() => {
+              if (commentInputValue.trim()) {
+                sendComment(commentInputValue);
+                setCommentInputValue('');
+              }
+            }}
+            disabled={!commentInputValue.trim() || !mutationGate.canMutate}
+          />
+        </Tooltip>
       </div>
     </div>
   );
