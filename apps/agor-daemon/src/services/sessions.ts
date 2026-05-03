@@ -16,6 +16,7 @@ import {
 } from '@agor/core/db';
 import { type Application, Forbidden } from '@agor/core/feathers';
 import { resolveModelConfig } from '@agor/core/models';
+import { resolveSessionDefaults } from '@agor/core/sessions';
 import type {
   AuthenticatedParams,
   MCPServerID,
@@ -412,39 +413,35 @@ export class SessionsService extends DrizzleService<Session, Partial<Session>, S
     let permissionConfig = inherited.permission_config;
     let modelConfig = inherited.model_config;
 
-    // If spawning a different tool and no explicit overrides, fetch user preferences
+    // If spawning a different tool and no explicit overrides, fall through to
+    // the helper for the target tool. The parent's permission_config is
+    // meaningless for a different agent — e.g. a Claude session's `acceptEdits`
+    // mode means nothing for a Codex spawn, and Codex reads its own
+    // `permission_config.codex` sub-config that the parent doesn't carry.
+    // Always adopt the helper's resolved values (user defaults > system
+    // fallback) instead of partially keeping the parent's, so cross-agent
+    // permission-mode mapping and Codex sub-config defaults flow through.
     if (!isSameTool && !data.permissionMode && !data.modelConfig) {
       const userId = parent.created_by;
       if (userId && this.app) {
         try {
           const user = await this.app.service('users').get(userId, params);
-          const toolDefaults = user?.default_agentic_config?.[targetTool];
-
-          if (toolDefaults) {
-            // Use user's preferred settings for this tool
-            permissionConfig = {
-              mode: toolDefaults.permissionMode,
-              ...(targetTool === 'codex' &&
-              toolDefaults.codexSandboxMode &&
-              toolDefaults.codexApprovalPolicy
-                ? {
-                    codex: {
-                      sandboxMode: toolDefaults.codexSandboxMode,
-                      approvalPolicy: toolDefaults.codexApprovalPolicy,
-                      networkAccess: toolDefaults.codexNetworkAccess,
-                    },
-                  }
-                : {}),
-            };
-
-            modelConfig = resolveModelConfig(toolDefaults.modelConfig) ?? modelConfig;
-          }
+          const userResolved = resolveSessionDefaults({ agenticTool: targetTool, user });
+          permissionConfig = userResolved.permission_config;
+          // model_config: prefer user default, but if user has no model
+          // pinned, keep the parent's so cross-tool spawns inherit the
+          // family-level "use the smart model" choice rather than nothing.
+          modelConfig = userResolved.model_config ?? modelConfig;
         } catch (error) {
-          // If we can't fetch user preferences, fall back to parent settings
+          // If we can't fetch user preferences, fall back to the helper with
+          // no user (system defaults) — still better than parent's stale
+          // cross-agent config.
           console.warn(
-            'Could not fetch user preferences for spawned session, using parent settings:',
+            'Could not fetch user preferences for spawned session, using system defaults:',
             error
           );
+          const sysResolved = resolveSessionDefaults({ agenticTool: targetTool });
+          permissionConfig = sysResolved.permission_config;
         }
       }
     }

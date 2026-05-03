@@ -22,7 +22,7 @@ import {
   hasConnector,
   parseGitHubThreadId,
 } from '@agor/core/gateway';
-import { resolveModelConfig } from '@agor/core/models';
+import { resolveSessionDefaults } from '@agor/core/sessions';
 import type {
   AgenticToolName,
   ChannelType,
@@ -35,7 +35,7 @@ import type {
   User,
   UserID,
 } from '@agor/core/types';
-import { getDefaultPermissionMode, SessionStatus } from '@agor/core/types';
+import { SessionStatus } from '@agor/core/types';
 
 /**
  * Inbound message data (platform → session)
@@ -515,15 +515,32 @@ export class GatewayService {
     let created = false;
     let mcpAuthWarning: string | undefined;
 
-    // Resolve agentic config: channel config > user defaults > system defaults
+    // Resolve agentic config: channel config > user defaults > system defaults.
+    // Channel-level agentic_config maps to the helper's `overrides` (it's the
+    // gateway's analogue of an MCP tool's explicit args). Codex sub-config and
+    // MCP server lists are first-class fields on `GatewayAgenticConfig`, so
+    // thread them all through the helper — otherwise the executor's per-tool
+    // settings (which Codex reads from `permission_config.codex`, not `mode`)
+    // get silently dropped.
     const agenticConfig = channel.agentic_config;
     const agenticTool: AgenticToolName = (agenticConfig?.agent as AgenticToolName) ?? 'claude-code';
-    const userDefaults = user.default_agentic_config?.[agenticTool];
-    const permissionMode =
-      agenticConfig?.permissionMode ??
-      userDefaults?.permissionMode ??
-      getDefaultPermissionMode(agenticTool);
-    const modelConfig = agenticConfig?.modelConfig ?? userDefaults?.modelConfig;
+    const {
+      permission_config: gatewayPermissionConfig,
+      model_config: gatewayModelConfig,
+      mcp_server_ids: gatewayMcpServerIds,
+    } = resolveSessionDefaults({
+      agenticTool,
+      user,
+      overrides: {
+        permissionMode: agenticConfig?.permissionMode,
+        modelConfig: agenticConfig?.modelConfig,
+        codexSandboxMode: agenticConfig?.codexSandboxMode,
+        codexApprovalPolicy: agenticConfig?.codexApprovalPolicy,
+        codexNetworkAccess: agenticConfig?.codexNetworkAccess,
+        mcpServerIds: agenticConfig?.mcpServerIds,
+      },
+    });
+    const permissionMode = gatewayPermissionConfig.mode;
 
     if (existingMapping) {
       // Existing thread → existing session
@@ -596,8 +613,8 @@ export class GatewayService {
         unix_username: user.unix_username ?? null,
         status: SessionStatus.IDLE,
         agentic_tool: agenticTool,
-        permission_config: { mode: permissionMode },
-        model_config: resolveModelConfig(modelConfig),
+        permission_config: gatewayPermissionConfig,
+        model_config: gatewayModelConfig,
         tasks: [],
         // Denormalized gateway metadata (immutable snapshot at creation time)
         // Avoids N+1 lookups when rendering board cards
@@ -610,17 +627,18 @@ export class GatewayService {
       created = true;
 
       // Attach MCP servers from channel agentic config (reuses sessions service logic)
-      const mcpServerIds = agenticConfig?.mcpServerIds;
-      if (mcpServerIds && mcpServerIds.length > 0) {
+      // gatewayMcpServerIds came out of resolveSessionDefaults, so user-default
+      // inheritance is already applied (channel config > user defaults > []).
+      if (gatewayMcpServerIds.length > 0) {
         await sessionsService.setMCPServers(
           session.session_id as SessionID,
-          mcpServerIds,
+          gatewayMcpServerIds,
           'gateway'
         );
 
         // Check which MCP servers are not authenticated for this user
         const unauthedMcpNames: string[] = [];
-        for (const serverId of mcpServerIds) {
+        for (const serverId of gatewayMcpServerIds) {
           try {
             const server = await this.mcpServerRepo.findById(serverId);
             if (server?.auth?.type === 'oauth') {
