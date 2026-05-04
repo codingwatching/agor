@@ -77,6 +77,7 @@ import { createThreadSessionMapService } from './services/thread-session-map.js'
 import { createUsersService } from './services/users.js';
 import { setupWorktreeOwnersService } from './services/worktree-owners.js';
 import { createWorktreesService } from './services/worktrees.js';
+import { userRoomName } from './setup/socketio.js';
 import { escapeHtml } from './utils/html.js';
 import {
   computeFileHash,
@@ -1284,10 +1285,29 @@ async function registerMCPServices(
             mcp_server_id: pendingFlow.mcpServerId,
             oauth_mode: pendingFlow.oauthMode || 'per_user',
           };
-          if (pendingFlow.socketId) {
+          // Targeting precedence:
+          //   1. `per_user` mode + `userId` known — emit to the user's room so
+          //      every tab the user owns updates (including the tab that
+          //      kicked off the flow, which already auto-joined the room on
+          //      connect/login). Targeting only the originating socket would
+          //      leave that user's other tabs stuck on the pre-auth state.
+          //   2. `shared` mode — broadcast: shared tokens live on the server
+          //      record itself, every tab on every user needs to refetch.
+          //   3. Originating socket — defensive fallback for the unusual case
+          //      where we have a `socketId` but no `userId` (shouldn't happen
+          //      for normal flows but keeps single-tab UX working).
+          //   4. Otherwise log + skip; the UI will catch up on its next
+          //      `mcp-servers` fetch.
+          if (oauthEvent.oauth_mode === 'per_user' && pendingFlow.userId) {
+            app.io.to(userRoomName(pendingFlow.userId)).emit('oauth:completed', oauthEvent);
+          } else if (oauthEvent.oauth_mode === 'shared') {
+            app.io.emit('oauth:completed', oauthEvent);
+          } else if (pendingFlow.socketId) {
             app.io.to(pendingFlow.socketId).emit('oauth:completed', oauthEvent);
           } else {
-            app.io.emit('oauth:completed', oauthEvent);
+            console.warn(
+              `[OAuth Callback] per_user flow ${state} has no userId or socketId — skipping oauth:completed emit (UI will catch up on next mcp-servers find)`
+            );
           }
         }
 

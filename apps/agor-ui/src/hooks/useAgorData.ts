@@ -840,22 +840,43 @@ export function useAgorData(
     // Listen for OAuth completion events to update per-user token state in real-time.
     // Only update the per-user set when oauth_mode is 'per_user' (or unset, which defaults
     // to per_user). Shared-mode completions update the server record itself and don't need
-    // per-user tracking. This also prevents stale data when the event is broadcast globally
-    // (fallback path when socketId is absent).
-    const handleOAuthCompleted = (event: {
+    // per-user tracking — and shared events ARE broadcast to all sockets on purpose, since
+    // every tab needs to refetch. Per-user events are scoped to the originating socket or
+    // the user's per-user room on the daemon side (see register-services.ts oauth callback),
+    // so we never receive another user's per_user completion here.
+    const handleOAuthCompleted = async (event: {
       state: string;
       success: boolean;
       mcp_server_id?: string;
       oauth_mode?: string;
     }) => {
+      if (!event.success || !event.mcp_server_id) return;
       const mode = event.oauth_mode || 'per_user';
-      if (event.success && event.mcp_server_id && mode === 'per_user') {
+      if (mode === 'per_user') {
         setUserAuthenticatedMcpServerIds((prev) => {
           if (prev.has(event.mcp_server_id!)) return prev;
           const next = new Set(prev);
           next.add(event.mcp_server_id!);
           return next;
         });
+      }
+
+      // Refetch the server so the daemon's `injectPerUserOAuthTokens` find-hook
+      // re-hydrates `auth.oauth_access_token` / `oauth_token_expires_at` from the
+      // freshly-persisted token row. Without this, `mcpServerById` keeps the stale
+      // (often-expired) auth fields and `mcpServerNeedsAuth` keeps returning true —
+      // chip stays orange and the above-prompt auth banner stays up until the user
+      // reloads. The hook is registered for both `find` and `get` (see
+      // `apps/agor-daemon/src/register-hooks.ts`), so a single `get` is enough.
+      try {
+        const fresh = (await client.service('mcp-servers').get(event.mcp_server_id)) as MCPServer;
+        setMcpServerById((prev) => {
+          const next = new Map(prev);
+          next.set(fresh.mcp_server_id, fresh);
+          return next;
+        });
+      } catch (err) {
+        console.warn('[OAuth] Failed to refetch MCP server after re-auth:', err);
       }
     };
     client.io.on('oauth:completed', handleOAuthCompleted);
