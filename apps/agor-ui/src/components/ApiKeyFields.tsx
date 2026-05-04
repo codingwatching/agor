@@ -79,6 +79,13 @@ export const TOOL_FIELD_CONFIGS: Record<AgenticToolName, AgenticToolFieldConfig[
       placeholder: 'sk-proj-...',
       docUrl: 'https://platform.openai.com/api-keys',
     },
+    {
+      field: 'OPENAI_BASE_URL',
+      label: 'OpenAI Base URL',
+      description: '(optional — gateway / proxy / self-hosted)',
+      placeholder: 'https://api.openai.com/v1',
+      type: 'text',
+    },
   ],
   gemini: [
     {
@@ -126,6 +133,15 @@ export interface ApiKeyFieldsProps {
    * Pro/Max subscription token and is meaningless at global scope).
    */
   fields?: AgenticToolFieldConfig[];
+  /**
+   * Plaintext values for non-secret fields the requester is allowed to see
+   * (server returns this only for the field's owner; see
+   * `AGENTIC_TOOLS_PUBLIC_FIELDS` on the daemon side). When a value is
+   * present and the field is `type: 'text'`, the saved value is rendered
+   * back to the user instead of just a "Set" tag — useful for base URLs
+   * where the exact path matters.
+   */
+  publicValues?: Record<string, string>;
 }
 
 export const ApiKeyFields: React.FC<ApiKeyFieldsProps> = ({
@@ -136,6 +152,7 @@ export const ApiKeyFields: React.FC<ApiKeyFieldsProps> = ({
   saving = {},
   disabled = false,
   fields,
+  publicValues,
 }) => {
   const { token } = theme.useToken();
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
@@ -154,6 +171,10 @@ export const ApiKeyFields: React.FC<ApiKeyFieldsProps> = ({
     const { field, label, description, placeholder, docUrl, helper, type = 'password' } = config;
     const isSet = !!fieldStatus[field];
     const InputComponent = type === 'password' ? Input.Password : Input;
+    // Non-secret fields (`type: 'text'`, e.g. base URLs) get their saved
+    // value echoed back to the owner so they can verify the exact value
+    // without clearing and retyping. Secret fields never show plaintext.
+    const visibleSavedValue = type === 'text' && isSet ? publicValues?.[field] : undefined;
 
     return (
       <div key={field} style={{ marginBottom: token.marginLG }}>
@@ -188,15 +209,22 @@ export const ApiKeyFields: React.FC<ApiKeyFieldsProps> = ({
           </Space>
 
           {isSet ? (
-            <Button
-              danger
-              icon={<DeleteOutlined />}
-              onClick={() => onClear(field)}
-              loading={saving[field]}
-              disabled={disabled}
-            >
-              Clear
-            </Button>
+            <Space wrap size="small" style={{ width: '100%' }}>
+              {visibleSavedValue && (
+                <Text code copyable style={{ fontSize: token.fontSizeSM, wordBreak: 'break-all' }}>
+                  {visibleSavedValue}
+                </Text>
+              )}
+              <Button
+                danger
+                icon={<DeleteOutlined />}
+                onClick={() => onClear(field)}
+                loading={saving[field]}
+                disabled={disabled}
+              >
+                Clear
+              </Button>
+            </Space>
           ) : (
             <Space.Compact style={{ width: '100%' }}>
               <InputComponent
@@ -248,6 +276,13 @@ export const ApiKeyFields: React.FC<ApiKeyFieldsProps> = ({
             <Text type="secondary" style={{ fontSize: token.fontSizeSM }}>
               Override only when routing Claude Code through an internal gateway, proxy, or regional
               endpoint. Leave empty to use Anthropic's default API.
+            </Text>
+          )}
+          {field === 'OPENAI_BASE_URL' && (
+            <Text type="secondary" style={{ fontSize: token.fontSizeSM }}>
+              Point Codex at any OpenAI-compatible endpoint (internal gateway, corporate proxy, or a
+              localhost server like vLLM / Ollama / LM Studio). Leave empty to use OpenAI's default
+              API. The OpenAI API Key above is sent as the bearer token.
             </Text>
           )}
           {field === 'COPILOT_GITHUB_TOKEN' && (
