@@ -271,24 +271,33 @@ export function OnboardingWizard({
   const usernameSlug = getUsernameSlug(user);
   const effectiveFrameworkUrl = frameworkRepoUrl || FRAMEWORK_REPO_URL;
 
+  // Claude Code accepts either an Anthropic API key or a Pro/Max subscription
+  // OAuth token (from `claude setup-token`). Either is a valid credential.
+  // Per-tool credentials live under `agentic_tools[tool][envVarName]` (boolean
+  // presence flags on the public DTO).
+  const claudeFields = user?.agentic_tools?.['claude-code'];
+  const codexFields = user?.agentic_tools?.codex;
+  const geminiFields = user?.agentic_tools?.gemini;
+  const copilotFields = user?.agentic_tools?.copilot;
   const hasAnthropicKey = !!(
-    user?.api_keys?.ANTHROPIC_API_KEY ||
+    claudeFields?.ANTHROPIC_API_KEY ||
+    claudeFields?.CLAUDE_CODE_OAUTH_TOKEN ||
     user?.env_vars?.ANTHROPIC_API_KEY ||
     systemCredentials?.ANTHROPIC_API_KEY
   );
   const hasOpenAIKey = !!(
-    user?.api_keys?.OPENAI_API_KEY ||
+    codexFields?.OPENAI_API_KEY ||
     user?.env_vars?.OPENAI_API_KEY ||
     systemCredentials?.OPENAI_API_KEY
   );
   const hasGeminiKey = !!(
-    user?.api_keys?.GEMINI_API_KEY ||
+    geminiFields?.GEMINI_API_KEY ||
     user?.env_vars?.GEMINI_API_KEY ||
     systemCredentials?.GEMINI_API_KEY
   );
 
   const hasCopilotToken = !!(
-    user?.api_keys?.COPILOT_GITHUB_TOKEN ||
+    copilotFields?.COPILOT_GITHUB_TOKEN ||
     user?.env_vars?.COPILOT_GITHUB_TOKEN ||
     (systemCredentials as Record<string, unknown>)?.COPILOT_GITHUB_TOKEN
   );
@@ -737,9 +746,20 @@ export function OnboardingWizard({
     setLoading(true);
 
     try {
+      // Persist into the per-tool credential bucket. Field name = env var name
+      // = ANTHROPIC_API_KEY / OPENAI_API_KEY / etc., as `apiKeyNameForAgent`
+      // returns. The `selectedAgent` IS the bucket — except for `opencode`,
+      // which is a multi-provider tool with no canonical credential of its
+      // own (`OpencodeConfig` has no fields). The onboarding fallback for
+      // opencode collects an Anthropic key, so we route it to claude-code's
+      // bucket where it's modeled, surfaced in settings, and resolvable.
       const keyName = apiKeyNameForAgent(selectedAgent);
+      const targetTool: AgenticToolName =
+        selectedAgent === 'opencode' ? 'claude-code' : selectedAgent;
       onUpdateUser(user.user_id, {
-        api_keys: { [keyName]: apiKey.trim() },
+        agentic_tools: {
+          [targetTool]: { [keyName]: apiKey.trim() },
+        } as UpdateUserInput['agentic_tools'],
       });
       setLoading(false);
       setCurrentStep('launch');

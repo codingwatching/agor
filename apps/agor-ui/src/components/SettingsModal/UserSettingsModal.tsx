@@ -11,7 +11,6 @@ import { hasMinimumRole, ROLES } from '@agor-live/client';
 import {
   ApiOutlined,
   CloseOutlined,
-  KeyOutlined,
   RobotOutlined,
   SettingOutlined,
   SoundOutlined,
@@ -19,6 +18,7 @@ import {
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import {
+  Alert,
   Button,
   Checkbox,
   Flex,
@@ -30,6 +30,7 @@ import {
   Select,
   Space,
   Switch,
+  Tabs,
   Tag,
   Typography,
   theme,
@@ -42,7 +43,7 @@ import {
   getClearedFormValues,
   getFormValuesFromConfig,
 } from '../AgenticToolConfigForm';
-import { ApiKeyFields, type ApiKeyStatus } from '../ApiKeyFields';
+import { ApiKeyFields, type FieldStatus, TOOL_FIELD_CONFIGS } from '../ApiKeyFields';
 import { FormEmojiPickerInput } from '../EmojiPickerInput';
 import { EnvVarEditor } from '../EnvVarEditor';
 import { AudioSettingsTab } from './AudioSettingsTab';
@@ -80,14 +81,17 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
   const [copilotForm] = Form.useForm();
   const [audioForm] = Form.useForm();
 
-  // API key management state
-  const [userApiKeyStatus, setUserApiKeyStatus] = useState<ApiKeyStatus>({
-    ANTHROPIC_API_KEY: false,
-    OPENAI_API_KEY: false,
-    GEMINI_API_KEY: false,
-    COPILOT_GITHUB_TOKEN: false,
+  // Per-tool credential presence state, keyed `${tool}.${field}` for spinner
+  // tracking. The actual presence map is rebuilt from `user.agentic_tools`
+  // each time the modal opens.
+  const [agenticToolStatus, setAgenticToolStatus] = useState<Record<AgenticToolName, FieldStatus>>({
+    'claude-code': {},
+    codex: {},
+    gemini: {},
+    opencode: {},
+    copilot: {},
   });
-  const [savingApiKeys, setSavingApiKeys] = useState<Record<string, boolean>>({});
+  const [savingToolField, setSavingToolField] = useState<Record<string, boolean>>({});
 
   // Environment variable management state (scope-aware, v0.5 env-var-access)
   const [userEnvVars, setUserEnvVars] = useState<Record<string, EnvVarMetadata>>({});
@@ -143,26 +147,28 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
     }
   }, [open, user, initializeForms]);
 
-  // Load user's API key and env var status when modal opens
-  // Include `open` in deps to rehydrate from server state each time modal opens
+  // Rehydrate per-tool credential presence and env-var metadata from the
+  // server every time the modal opens, so flags reflect the latest patch.
   useEffect(() => {
     if (!open) return;
 
-    if (user?.api_keys) {
-      setUserApiKeyStatus({
-        ANTHROPIC_API_KEY: !!user.api_keys.ANTHROPIC_API_KEY,
-        OPENAI_API_KEY: !!user.api_keys.OPENAI_API_KEY,
-        GEMINI_API_KEY: !!user.api_keys.GEMINI_API_KEY,
-        COPILOT_GITHUB_TOKEN: !!user.api_keys.COPILOT_GITHUB_TOKEN,
-      });
-    } else {
-      setUserApiKeyStatus({
-        ANTHROPIC_API_KEY: false,
-        OPENAI_API_KEY: false,
-        GEMINI_API_KEY: false,
-        COPILOT_GITHUB_TOKEN: false,
-      });
+    const next: Record<AgenticToolName, FieldStatus> = {
+      'claude-code': {},
+      codex: {},
+      gemini: {},
+      opencode: {},
+      copilot: {},
+    };
+    const stored = user?.agentic_tools;
+    if (stored) {
+      for (const tool of Object.keys(next) as AgenticToolName[]) {
+        const flags = (stored as Record<string, Record<string, boolean> | undefined>)[tool];
+        if (flags) {
+          next[tool] = { ...flags };
+        }
+      }
     }
+    setAgenticToolStatus(next);
 
     if (user?.env_vars) {
       setUserEnvVars(user.env_vars);
@@ -219,43 +225,58 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
       });
   };
 
-  // Handle API key save
-  const handleApiKeySave = async (field: keyof ApiKeyStatus, value: string) => {
+  // Persist a per-tool credential field. Patch is shaped as
+  // `{ agentic_tools: { [tool]: { [field]: value | null } } }` — the daemon
+  // service merges only the touched fields and encrypts at rest.
+  const handleToolFieldSave = async (
+    tool: AgenticToolName,
+    field: string,
+    value: string
+  ): Promise<void> => {
     if (!user) return;
+    const spinnerKey = `${tool}.${field}`;
 
     try {
-      setSavingApiKeys((prev) => ({ ...prev, [field]: true }));
+      setSavingToolField((prev) => ({ ...prev, [spinnerKey]: true }));
       await onUpdate?.(user.user_id, {
-        api_keys: {
-          [field]: value,
-        },
+        agentic_tools: {
+          [tool]: { [field]: value },
+        } as UpdateUserInput['agentic_tools'],
       });
-      setUserApiKeyStatus((prev) => ({ ...prev, [field]: true }));
+      setAgenticToolStatus((prev) => ({
+        ...prev,
+        [tool]: { ...(prev[tool] ?? {}), [field]: true },
+      }));
     } catch (err) {
-      console.error(`Failed to save ${field}:`, err);
+      console.error(`Failed to save ${tool}.${field}:`, err);
       throw err;
     } finally {
-      setSavingApiKeys((prev) => ({ ...prev, [field]: false }));
+      setSavingToolField((prev) => ({ ...prev, [spinnerKey]: false }));
     }
   };
 
-  // Handle API key clear
-  const handleApiKeyClear = async (field: keyof ApiKeyStatus) => {
+  // Clear a per-tool credential field by sending `null` in the patch.
+  const handleToolFieldClear = async (tool: AgenticToolName, field: string): Promise<void> => {
     if (!user) return;
+    const spinnerKey = `${tool}.${field}`;
 
     try {
-      setSavingApiKeys((prev) => ({ ...prev, [field]: true }));
+      setSavingToolField((prev) => ({ ...prev, [spinnerKey]: true }));
       await onUpdate?.(user.user_id, {
-        api_keys: {
-          [field]: null,
-        },
+        agentic_tools: {
+          [tool]: { [field]: null },
+        } as UpdateUserInput['agentic_tools'],
       });
-      setUserApiKeyStatus((prev) => ({ ...prev, [field]: false }));
+      setAgenticToolStatus((prev) => {
+        const nextToolFields = { ...(prev[tool] ?? {}) };
+        delete nextToolFields[field];
+        return { ...prev, [tool]: nextToolFields };
+      });
     } catch (err) {
-      console.error(`Failed to clear ${field}:`, err);
+      console.error(`Failed to clear ${tool}.${field}:`, err);
       throw err;
     } finally {
-      setSavingApiKeys((prev) => ({ ...prev, [field]: false }));
+      setSavingToolField((prev) => ({ ...prev, [spinnerKey]: false }));
     }
   };
 
@@ -403,7 +424,6 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
       case 'general':
         handleUpdate();
         break;
-      case 'api-keys':
       case 'env-vars':
       case 'personal-api-keys':
         // These tabs save individually, just close
@@ -416,6 +436,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
       case 'codex':
       case 'gemini':
       case 'opencode':
+      case 'copilot':
         await handleAgenticConfigSave(activeTab as AgenticToolName);
         break;
     }
@@ -447,7 +468,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
         },
         {
           key: 'personal-api-keys',
-          label: 'Personal API Keys',
+          label: 'Agor API Tokens',
           icon: <ApiOutlined />,
         },
       ],
@@ -457,11 +478,6 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
       label: 'Agentic Tools',
       type: 'group',
       children: [
-        {
-          key: 'api-keys',
-          label: 'API Keys',
-          icon: <KeyOutlined />,
-        },
         {
           key: 'claude-code',
           label: 'Claude Code',
@@ -480,6 +496,11 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
         {
           key: 'opencode',
           label: 'OpenCode',
+          icon: <RobotOutlined />,
+        },
+        {
+          key: 'copilot',
+          label: 'GitHub Copilot',
           icon: <RobotOutlined />,
         },
       ],
@@ -585,21 +606,6 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
               )}
           </Form>
         );
-      case 'api-keys':
-        return (
-          <>
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
-              Per-user API keys take precedence over global settings. These keys are encrypted at
-              rest.
-            </Typography.Paragraph>
-            <ApiKeyFields
-              keyStatus={userApiKeyStatus}
-              onSave={handleApiKeySave}
-              onClear={handleApiKeyClear}
-              saving={savingApiKeys}
-            />
-          </>
-        );
       case 'env-vars':
         return (
           <>
@@ -607,6 +613,20 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
               Environment variables are encrypted at rest and available to all sessions for this
               user.
             </Typography.Paragraph>
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="Looking for SDK credentials?"
+              description={
+                <span>
+                  API keys and SDK config (Anthropic, OpenAI, Gemini, Copilot) live under each
+                  tool's screen in the <strong>Agentic Tools</strong> section. Per-tool config takes
+                  precedence over global env vars and is scoped so credentials never leak across
+                  SDKs.
+                </span>
+              }
+            />
             <EnvVarEditor
               envVars={userEnvVars}
               onSave={handleEnvVarSave}
@@ -641,7 +661,14 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
           opencode: 'OpenCode',
           copilot: 'Copilot',
         };
-        return (
+        // Field set is owned by ApiKeyFields' `TOOL_FIELD_CONFIGS`. Per-field
+        // saving spinners are tracked in `savingToolField` keyed by `${tool}.${field}`.
+        const toolFields = TOOL_FIELD_CONFIGS[toolName] ?? [];
+        const fieldStatus: FieldStatus = agenticToolStatus[toolName] ?? {};
+        const savingForTool: Record<string, boolean> = Object.fromEntries(
+          toolFields.map((c) => [c.field, !!savingToolField[`${toolName}.${c.field}`]])
+        );
+        const defaultsPane = (
           <>
             <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
               Configure default settings for {displayNames[toolName]}. These will prepopulate
@@ -659,6 +686,37 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
             </div>
           </>
         );
+
+        // Tools with no auth/config fields (e.g. OpenCode) skip the tab strip entirely.
+        if (toolFields.length === 0) {
+          return defaultsPane;
+        }
+
+        const authPane = (
+          <>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
+              Per-user credentials and config for {displayNames[toolName]}. Encrypted at rest; take
+              precedence over the daemon's global configuration and your global env vars.
+            </Typography.Paragraph>
+            <ApiKeyFields
+              tool={toolName}
+              fieldStatus={fieldStatus}
+              onSave={(field, value) => handleToolFieldSave(toolName, field, value)}
+              onClear={(field) => handleToolFieldClear(toolName, field)}
+              saving={savingForTool}
+            />
+          </>
+        );
+
+        return (
+          <Tabs
+            defaultActiveKey="auth"
+            items={[
+              { key: 'auth', label: 'Authentication', children: authPane },
+              { key: 'defaults', label: 'Defaults', children: defaultsPane },
+            ]}
+          />
+        );
       }
       default:
         return null;
@@ -669,14 +727,14 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
   const getSectionTitle = () => {
     const titles: Record<string, string> = {
       general: 'General',
-      'api-keys': 'API Keys',
       'env-vars': 'Environment Variables',
       audio: 'Audio',
-      'personal-api-keys': 'Personal API Keys',
+      'personal-api-keys': 'Agor API Tokens',
       'claude-code': 'Claude Code',
       codex: 'Codex',
       gemini: 'Gemini',
       opencode: 'OpenCode',
+      copilot: 'GitHub Copilot',
     };
     return titles[activeTab] || 'User Settings';
   };
@@ -701,15 +759,9 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
             type="primary"
             onClick={handleModalSave}
             loading={
-              activeTab === 'claude-code'
-                ? savingAgenticConfig['claude-code']
-                : activeTab === 'codex'
-                  ? savingAgenticConfig.codex
-                  : activeTab === 'gemini'
-                    ? savingAgenticConfig.gemini
-                    : activeTab === 'opencode'
-                      ? savingAgenticConfig.opencode
-                      : false
+              activeTab in savingAgenticConfig
+                ? savingAgenticConfig[activeTab as AgenticToolName]
+                : false
             }
           >
             Save

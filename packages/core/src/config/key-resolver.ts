@@ -2,16 +2,39 @@ import { decryptApiKey, eq } from '../db';
 import type { Database } from '../db/client';
 import { select } from '../db/database-wrapper';
 import { users } from '../db/schema';
-import type { UserID } from '../types';
-import { getCredential } from './config-manager';
+import type { AgenticToolName, StoredAgenticTools, UserID } from '../types';
+import { getCredential, isConfigCredentialKey } from './config-manager';
 
-export type ApiKeyName = 'ANTHROPIC_API_KEY' | 'OPENAI_API_KEY' | 'GEMINI_API_KEY';
+/**
+ * The set of credential env-var names the resolver knows how to look up at the
+ * per-user (`agentic_tools[tool][keyName]`), config.yaml, and OS-env layers.
+ *
+ * Kept as an explicit union (rather than `string`) so callers can't accidentally
+ * ask the resolver for an unrelated env var like `PATH` or `AGOR_MASTER_SECRET`.
+ * Add new entries here when a tool's per-tool field config grows.
+ */
+export type ApiKeyName =
+  | 'ANTHROPIC_API_KEY'
+  | 'ANTHROPIC_AUTH_TOKEN'
+  | 'CLAUDE_CODE_OAUTH_TOKEN'
+  | 'OPENAI_API_KEY'
+  | 'GEMINI_API_KEY'
+  | 'COPILOT_GITHUB_TOKEN';
 
 export interface KeyResolutionContext {
   /** User ID for per-user key lookup */
   userId?: UserID;
   /** Database instance for user lookup */
   db?: Database;
+  /**
+   * Restrict the per-user lookup to a specific tool's credential bucket
+   * (`data.agentic_tools[tool][keyName]`). When omitted, the resolver sweeps
+   * every tool bucket — kept for back-compat with non-SDK callers (e.g. CLI).
+   *
+   * SDK executors should ALWAYS pass this so a Codex spawn never resolves a
+   * key stored under `agentic_tools['claude-code']`, and vice versa.
+   */
+  tool?: AgenticToolName;
 }
 
 /**
@@ -47,14 +70,34 @@ export async function resolveApiKey(
     `🔍 [API Key Resolution] Resolving ${keyName} for user ${context.userId?.substring(0, 8) || 'none'}`
   );
 
-  // 1. Check per-user key (highest precedence)
+  // 1. Check per-user key (highest precedence). Storage lives at
+  //    `data.agentic_tools[toolName][envVarName]`. When `context.tool` is
+  //    provided (the recommended path for SDK executors), only that tool's
+  //    bucket is consulted — this enforces cross-SDK credential isolation
+  //    matching the spawn-time `env-resolver` behavior. When `context.tool`
+  //    is omitted (CLI / generic callers), we fall back to sweeping every
+  //    bucket to preserve the legacy "any user key for this name" semantic.
   if (context.userId && context.db) {
     console.log(`   → Checking user-level configuration...`);
     const row = await select(context.db).from(users).where(eq(users.user_id, context.userId)).one();
 
     if (row) {
-      const data = row.data as { api_keys?: Record<string, string> };
-      const encryptedKey = data.api_keys?.[keyName];
+      const data = row.data as {
+        agentic_tools?: StoredAgenticTools;
+      };
+
+      let encryptedKey: string | undefined;
+      const tools = data.agentic_tools ?? {};
+      if (context.tool) {
+        encryptedKey = tools[context.tool]?.[keyName];
+      } else {
+        for (const fields of Object.values(tools)) {
+          if (fields?.[keyName]) {
+            encryptedKey = fields[keyName];
+            break;
+          }
+        }
+      }
 
       if (encryptedKey) {
         try {
@@ -82,13 +125,17 @@ export async function resolveApiKey(
     console.log(`   → Skipping user-level check (no database connection)`);
   }
 
-  // 2. Check global config.yaml (second precedence)
-  console.log(`   → Checking app-level configuration (config.yaml)...`);
-  const globalKey = getCredential(keyName);
-  if (globalKey && globalKey.length > 0) {
-    console.log(`   ✓ Found app-level API key for ${keyName} (from config.yaml)`);
-    return { apiKey: globalKey, source: 'config', useNativeAuth: false };
-  } else {
+  // 2. Check global config.yaml (second precedence). Only the keys that have a
+  //    meaningful global default live in `credentials` — user-only tokens like
+  //    CLAUDE_CODE_OAUTH_TOKEN / COPILOT_GITHUB_TOKEN are skipped here and fall
+  //    through to the env-var lookup below.
+  if (isConfigCredentialKey(keyName)) {
+    console.log(`   → Checking app-level configuration (config.yaml)...`);
+    const globalKey = getCredential(keyName);
+    if (globalKey && globalKey.length > 0) {
+      console.log(`   ✓ Found app-level API key for ${keyName} (from config.yaml)`);
+      return { apiKey: globalKey, source: 'config', useNativeAuth: false };
+    }
     console.log(`   ✗ No app-level API key for ${keyName}`);
   }
 
@@ -98,9 +145,8 @@ export async function resolveApiKey(
   if (envKey && envKey.length > 0) {
     console.log(`   ✓ Found OS-level environment variable ${keyName}`);
     return { apiKey: envKey, source: 'env', useNativeAuth: false };
-  } else {
-    console.log(`   ✗ No OS-level environment variable ${keyName}`);
   }
+  console.log(`   ✗ No OS-level environment variable ${keyName}`);
 
   // 4. No key found - SDK should fall back to native auth (OAuth, CLI login, etc.)
   console.log(`   ℹ️  No API key found for ${keyName} - SDK will use native authentication`);
@@ -115,10 +161,12 @@ export async function resolveApiKey(
  * @returns Resolution result (cannot check user-level keys synchronously)
  */
 export function resolveApiKeySync(keyName: ApiKeyName): KeyResolutionResult {
-  // Check global config.yaml
-  const globalKey = getCredential(keyName);
-  if (globalKey && globalKey.length > 0) {
-    return { apiKey: globalKey, source: 'config', useNativeAuth: false };
+  // Check global config.yaml (only for keys with a meaningful global default)
+  if (isConfigCredentialKey(keyName)) {
+    const globalKey = getCredential(keyName);
+    if (globalKey && globalKey.length > 0) {
+      return { apiKey: globalKey, source: 'config', useNativeAuth: false };
+    }
   }
 
   // Check environment variable
