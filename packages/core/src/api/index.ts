@@ -227,6 +227,15 @@ export interface ReposService extends AgorService<Repo> {
   clone(data: { url: string; name?: string; slug?: string }, params?: Params): Promise<Repo>;
 
   /**
+   * Initialize Unix group for a repo (daemon-side privileged operation).
+   * Called by executor after cloning.
+   */
+  initializeUnixGroup(
+    data: { repoId: string; userId?: string },
+    params?: Params
+  ): Promise<{ unixGroup: string }>;
+
+  /**
    * Create a git worktree for a repository
    */
   createWorktree(
@@ -289,9 +298,30 @@ export interface BoardsService extends AgorService<Board> {
 }
 
 /**
+ * Users service with git environment support
+ */
+export interface UsersService extends AgorService<User> {
+  /**
+   * Get the full resolved git environment for a user.
+   * Auth: service-account JWTs may fetch any user's env;
+   * regular users may only fetch their own.
+   */
+  getGitEnvironment(data: { userId: string }, params?: Params): Promise<Record<string, string>>;
+}
+
+/**
  * Worktrees service with environment management
  */
 export interface WorktreesService extends AgorService<Worktree> {
+  /**
+   * Initialize Unix group for a worktree (daemon-side privileged operation).
+   * Called by executor after creating the git worktree.
+   */
+  initializeUnixGroup(
+    data: { worktreeId: string; othersAccess?: 'none' | 'read' | 'write' },
+    params?: Params
+  ): Promise<{ unixGroup: string }>;
+
   /**
    * Find worktree by repo_id and name
    */
@@ -387,7 +417,7 @@ export interface AgorClient extends Omit<Application<ServiceTypes>, 'service'> {
   // Standard services (CRUD only)
   service(path: 'cards'): AgorService<CardWithType>;
   service(path: 'card-types'): AgorService<CardType>;
-  service(path: 'users'): AgorService<User>;
+  service(path: 'users'): UsersService;
   service(path: 'mcp-servers'): AgorService<MCPServer>;
   service(path: 'context'): AgorService<ContextFileListItem | ContextFileDetail>;
 

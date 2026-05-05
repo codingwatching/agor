@@ -10,7 +10,9 @@
  * The executor handles the complete transaction:
  * 1. Filesystem operations (git clone, git worktree add/remove)
  * 2. Database record creation via Feathers services
- * 3. Unix group/ACL setup (when RBAC is enabled)
+ * 3. Privileged Unix group/ACL setup is delegated to the daemon via Feathers RPC
+ *    (`repos.initializeUnixGroup`, `worktrees.initializeUnixGroup`) so it runs
+ *    with daemon sudo privileges regardless of executor impersonation mode.
  *
  * Feathers hooks handle WebSocket broadcasts automatically when records are created/updated.
  */
@@ -38,33 +40,28 @@ import type {
 import type { AgorClient } from '../services/feathers-client.js';
 import { createExecutorClient } from '../services/feathers-client.js';
 import type { CommandOptions } from './index.js';
-import {
-  fixWorktreeGitDirPermissions,
-  fixWorktreeGitDirPermissionsBasic,
-  initializeRepoGroup,
-  initializeWorktreeGroup,
-} from './unix.js';
+import { fixWorktreeGitDirPermissionsBasic } from './unix.js';
 
 /**
- * Resolve git credentials (GITHUB_TOKEN, GH_TOKEN)
+ * Fetch the requesting user's git environment via Feathers RPC.
  *
- * Checks environment variables for git authentication tokens.
- * These tokens are used to authenticate with GitHub/GitLab for private repos.
+ * Calls `users.getGitEnvironment` on the daemon, which decrypts the user's
+ * stored env vars (GITHUB_TOKEN, etc.) and returns them. Returns an empty
+ * object only when no userId is provided (e.g. local-path repos that skip
+ * credentials entirely).
+ *
+ * RPC failures are intentionally NOT swallowed: this is the channel through
+ * which per-user credentials reach git ops in strict mode. If we returned `{}`
+ * on failure, git would silently fall back to the daemon user's ambient
+ * credentials (e.g. `gh auth login`), which is exactly the cross-user leak
+ * this whole flow is designed to prevent.
  */
-function resolveGitCredentials(): Record<string, string> {
-  const env: Record<string, string> = {};
-
-  // Check for GITHUB_TOKEN in environment
-  if (process.env.GITHUB_TOKEN) {
-    env.GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-  }
-
-  // Check for GH_TOKEN as fallback (GitHub CLI uses this)
-  if (!env.GITHUB_TOKEN && process.env.GH_TOKEN) {
-    env.GH_TOKEN = process.env.GH_TOKEN;
-  }
-
-  return env;
+async function fetchUserGitEnvironment(
+  client: AgorClient,
+  userId: string | undefined
+): Promise<Record<string, string>> {
+  if (!userId) return {};
+  return client.service('users').getGitEnvironment({ userId });
 }
 
 /**
@@ -137,8 +134,8 @@ export async function handleGitClone(
     client = await createExecutorClient(daemonUrl, payload.sessionToken);
     console.log('[git.clone] Connected to daemon');
 
-    // Resolve git credentials from environment
-    const env = resolveGitCredentials();
+    // Fetch per-user git credentials via Feathers RPC
+    const env = await fetchUserGitEnvironment(client, payload.params.userId);
     if (Object.keys(env).length > 0) {
       console.log('[git.clone] Resolved credentials:', Object.keys(env));
     }
@@ -203,17 +200,16 @@ export async function handleGitClone(
       repoId = repoRecord.repo_id;
       console.log(`[git.clone] Repo record created: ${repoId}`);
 
-      // Initialize Unix group for repo isolation (if requested)
+      // Initialize Unix group for repo isolation via daemon RPC (if requested).
+      // Runs daemon-side so that groupadd/chgrp/setfacl execute with daemon
+      // sudo privileges regardless of executor impersonation mode.
       if (payload.params.initUnixGroup && repoId) {
         try {
           console.log(`[git.clone] Initializing Unix group for repo ${repoId.substring(0, 8)}`);
-          unixGroup = await initializeRepoGroup(
-            repoId,
-            cloneResult.path,
-            client,
-            payload.params.daemonUser,
-            payload.params.creatorUnixUsername
-          );
+          const result = await client
+            .service('repos')
+            .initializeUnixGroup({ repoId, userId: payload.params.userId });
+          unixGroup = result.unixGroup;
           console.log(`[git.clone] Unix group initialized: ${unixGroup}`);
         } catch (error) {
           // Log but don't fail the entire operation
@@ -389,8 +385,8 @@ export async function handleGitWorktreeAdd(
     client = await createExecutorClient(daemonUrl, payload.sessionToken);
     console.log('[git.worktree.add] Connected to daemon');
 
-    // Resolve git credentials from environment (needed for fetch operations)
-    const env = resolveGitCredentials();
+    // Fetch per-user git credentials via Feathers RPC
+    const env = await fetchUserGitEnvironment(client, payload.params.userId);
 
     // Get parameters
     const repoId = payload.params.repoId;
@@ -442,8 +438,9 @@ export async function handleGitWorktreeAdd(
 
     console.log(`[git.worktree.add] Worktree created at ${worktreePath}`);
 
-    // Initialize Unix group for worktree isolation (if requested)
-    // Note: initUnixGroup is explicitly set by daemon based on isWorktreeRbacEnabled()
+    // Initialize Unix group for worktree isolation via daemon RPC (if requested).
+    // Runs daemon-side so that groupadd/chgrp/setfacl execute with daemon
+    // sudo privileges regardless of executor impersonation mode.
     let unixGroup: string | undefined;
     if (payload.params.initUnixGroup && worktreeId) {
       try {
@@ -451,26 +448,11 @@ export async function handleGitWorktreeAdd(
         console.log(
           `[git.worktree.add] Initializing Unix group for worktree ${worktreeId.substring(0, 8)}`
         );
-        unixGroup = await initializeWorktreeGroup(
-          worktreeId,
-          worktreePath,
-          othersAccess,
-          client,
-          payload.params.daemonUser,
-          payload.params.creatorUnixUsername,
-          payload.params.repoUnixGroup
-        );
+        const result = await client
+          .service('worktrees')
+          .initializeUnixGroup({ worktreeId, othersAccess });
+        unixGroup = result.unixGroup;
         console.log(`[git.worktree.add] Unix group initialized: ${unixGroup}`);
-
-        // Also fix permissions on the repo's .git/worktrees/<name>/ directory
-        if (payload.params.repoUnixGroup) {
-          await fixWorktreeGitDirPermissions(
-            repoPath,
-            worktreeName,
-            payload.params.repoUnixGroup,
-            payload.params.daemonUser
-          );
-        }
       } catch (error) {
         // Log but don't fail the entire operation
         console.error(
@@ -576,19 +558,11 @@ export async function handleGitWorktreeAdd(
         }
       }
 
-      // Step 2: Apply perms/ACLs (runs even if dir already existed from a prior attempt)
+      // Step 2: Apply perms/ACLs via daemon RPC (runs even if dir already existed from a prior attempt)
       if (existsSync(fallbackPath) && payload.params.initUnixGroup && worktreeId && client) {
         try {
           const othersAccess = payload.params.othersAccess || 'read';
-          await initializeWorktreeGroup(
-            worktreeId,
-            fallbackPath,
-            othersAccess,
-            client,
-            payload.params.daemonUser,
-            payload.params.creatorUnixUsername,
-            payload.params.repoUnixGroup
-          );
+          await client.service('worktrees').initializeUnixGroup({ worktreeId, othersAccess });
           console.log(`[git.worktree.add] Fallback: applied Unix group permissions`);
           fallbackPermissionsApplied = true;
         } catch (permError) {
