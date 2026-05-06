@@ -64,6 +64,24 @@ export interface ReactiveSessionState {
   connected: boolean;
   loading: boolean;
   error: string | null;
+  /**
+   * `true` when `error` represents a non-recoverable condition for this
+   * session. Set when:
+   *
+   * - The server emits a `removed` event for this session (deleted /
+   *   archived out of view).
+   * - `resync()` fails with an HTTP **403** (forbidden — the user lost
+   *   access) or **404** (not found — session no longer exists from this
+   *   user's perspective).
+   *
+   * Callers driving auto-retry (visibilitychange, token refresh, manual
+   * Reload) MUST check this flag before calling `resync()` again,
+   * otherwise they will hammer a doomed endpoint on every focus change.
+   *
+   * Other failures — transient 401 (around-hook will refresh), 5xx, network
+   * drops — leave this `false` so the standard retry paths can heal them.
+   */
+  terminal: boolean;
   lastSyncedAt: string | null;
 }
 
@@ -156,6 +174,7 @@ export class ReactiveSessionHandle {
       connected: !!client.io?.connected,
       loading: true,
       error: null,
+      terminal: false,
       lastSyncedAt: null,
     };
 
@@ -344,10 +363,18 @@ export class ReactiveSessionHandle {
         lastSyncedAt: new Date().toISOString(),
       }));
     } catch (error) {
+      // Mirror doResync()'s terminal classification — a 403/404 on the
+      // initial mount is just as "doomed to retry" as on reconnect, and
+      // without this the UI's auto-retry loop would keep poking a deleted/
+      // forbidden session on every focus change until the component
+      // remounts.
+      const status = errorStatusCode(error);
+      const terminal = status === 403 || status === 404;
       this.updateState((prev) => ({
         ...prev,
         loading: false,
         error: error instanceof Error ? error.message : 'Failed to bootstrap reactive session',
+        terminal: prev.terminal || terminal,
       }));
     }
   }
@@ -385,6 +412,7 @@ export class ReactiveSessionHandle {
         ...prev,
         session: null,
         error: 'Session was removed',
+        terminal: true,
         lastSyncedAt: new Date().toISOString(),
       }));
     };
@@ -807,8 +835,46 @@ export class ReactiveSessionHandle {
     );
   }
 
-  private async resync(): Promise<void> {
+  /**
+   * In-flight `resync()` promise, if any. Used to single-flight overlapping
+   * callers (socket `connect`, visibilitychange, manual Reload) so a slow
+   * failure cannot stomp on a later success and re-stamp a stale error.
+   */
+  private resyncInflight: Promise<void> | null = null;
+
+  /**
+   * Re-fetch session/tasks/queue (and loaded message buckets) from the daemon.
+   *
+   * Called automatically on socket `connect` events (see {@link attachListeners})
+   * so a reconnect after sleep / network drop pulls fresh DB state. Also
+   * exposed publicly so the UI can re-trigger hydration manually — e.g. a
+   * "Reload" button on the conversation panel's error banner, or a
+   * `visibilitychange` / token-refresh listener that wants to recover from a
+   * sticky error without forcing the user to refresh the tab.
+   *
+   * Errors land in `state.error`; success clears it.
+   *
+   * Single-flighted: concurrent callers join the same in-flight promise rather
+   * than racing one another. Without this, a slow failing fetch could land
+   * after a faster successful fetch and overwrite the cleared error with a
+   * stale one. Callers should still check `state.terminal` before re-calling
+   * after a failure — see {@link ReactiveSessionState.terminal}.
+   */
+  async resync(): Promise<void> {
     if (this.disposed) return;
+    if (this.resyncInflight) return this.resyncInflight;
+    const promise = this.doResync();
+    this.resyncInflight = promise;
+    try {
+      await promise;
+    } finally {
+      if (this.resyncInflight === promise) {
+        this.resyncInflight = null;
+      }
+    }
+  }
+
+  private async doResync(): Promise<void> {
     try {
       const [session, tasks, queueResult] = await Promise.all([
         this.client.service('sessions').get(this.sessionId),
@@ -851,6 +917,7 @@ export class ReactiveSessionHandle {
         loadedTaskIds = new Set(refreshedByTask.keys());
       }
 
+      if (this.disposed) return;
       this.updateState((prev) => ({
         ...prev,
         session,
@@ -859,15 +926,40 @@ export class ReactiveSessionHandle {
         messagesByTask,
         loadedTaskIds,
         error: null,
+        terminal: false,
         lastSyncedAt: new Date().toISOString(),
       }));
     } catch (error) {
+      if (this.disposed) return;
+      const status = errorStatusCode(error);
+      // 403 (forbidden) and 404 (not found) mean this session is gone
+      // from the user's perspective — retrying will keep failing. Mark
+      // terminal so the UI stops auto-refetching on every focus change.
+      // 401 is intentionally NOT terminal: the around-hook on the socket
+      // client will refresh and the next retry can succeed.
+      const terminal = status === 403 || status === 404;
       this.updateState((prev) => ({
         ...prev,
         error: error instanceof Error ? error.message : 'Failed to resync reactive session',
+        terminal: prev.terminal || terminal,
       }));
     }
   }
+}
+
+/**
+ * Best-effort HTTP status extraction for arbitrary errors thrown by the
+ * Feathers client / fetch / socket transport. Mirrors the field-soup that
+ * `apps/agor-ui`'s `authErrors.ts` walks, but inlined here to avoid a UI →
+ * client cross-package dependency for what is just three property reads.
+ */
+function errorStatusCode(err: unknown): number | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const e = err as { code?: unknown; statusCode?: unknown; status?: unknown };
+  if (typeof e.code === 'number') return e.code;
+  if (typeof e.statusCode === 'number') return e.statusCode;
+  if (typeof e.status === 'number') return e.status;
+  return undefined;
 }
 
 export interface ReactiveAgorClient extends AgorClient {

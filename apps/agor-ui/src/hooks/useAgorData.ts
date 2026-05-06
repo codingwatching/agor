@@ -21,7 +21,8 @@ import type {
   Worktree,
 } from '@agor-live/client';
 import { PAGINATION } from '@agor-live/client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { TOKENS_REFRESHED_EVENT } from '../utils/singleFlightRefresh';
 
 interface UseAgorDataResult {
   sessionById: Map<string, Session>; // O(1) lookups by session_id - efficient, stable references
@@ -80,178 +81,230 @@ export function useAgorData(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Track if we've done initial fetch - prevents refetch on reconnection
-  // WebSocket events keep data synchronized in real-time
+  // Track if we've done initial fetch. The initial fetch happens once on mount;
+  // socket reconnects after that re-trigger fetchData() to recover any events
+  // that fired while disconnected (Feathers real-time events are fire-and-forget
+  // — there's no replay log, so a reconnect with no re-fetch leaves the byId
+  // maps stale until manual page refresh).
   const [hasInitiallyFetched, setHasInitiallyFetched] = useState(false);
 
+  // Single-flight guard for reconnect-triggered refetches. Prevents stampedes
+  // when the socket flaps (e.g. waking from sleep on a flaky network) — the
+  // around-hook on the socket client already single-flights the underlying
+  // auth refresh, but we also don't want to issue 14 parallel service calls
+  // multiple times in a row.
+  const refetchInflightRef = useRef(false);
+
+  // Tracks whether the most recent silent refetch failed. Set by the silent
+  // catch branch in `fetchData`, cleared on success. Read by the
+  // TOKENS_REFRESHED_EVENT listener below so a token refresh that lands AFTER
+  // a failed reconnect refetch (auth race during socket re-auth) gets to
+  // retry — without this, the byId maps would stay stale until the next
+  // physical reconnect or page refresh. We use a ref rather than state since
+  // we only consume it in event handlers, never in render.
+  const lastSilentFetchFailedRef = useRef(false);
+
   // Fetch all data
-  const fetchData = useCallback(async () => {
-    if (!client || !enabled) {
-      return;
-    }
+  //
+  // `silent: true` is used by background refetches (e.g. socket reconnect) that
+  // must not flip the global `loading` / `error` state — those are wired to the
+  // fullscreen "Connecting to daemon..." spinner and "Failed to load data"
+  // alert in App.tsx, which would be wildly disruptive if a transient
+  // reconnect-time 401 (auth race with the re-auth handler in useAgorClient)
+  // bubbled up. Silent failures are logged for observability; the UI continues
+  // to render whatever byId state was last successfully fetched, and the next
+  // reconnect or token refresh gets another shot.
+  const fetchData = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+      if (!client || !enabled) {
+        return;
+      }
 
-    try {
-      setLoading(true);
-      setError(null);
-
-      // Fetch sessions, boards, board-objects, comments, repos, worktrees, users, mcp servers, session-mcp relationships in parallel.
-      // Task/message detail now comes from per-session reactive state in conversation components.
-      const [
-        sessionsList,
-        boardsList,
-        boardObjectsList,
-        commentsList,
-        cardsList,
-        cardTypesList,
-        reposList,
-        worktreesList,
-        usersList,
-        mcpServersList,
-        sessionMcpList,
-        gatewayChannelsList,
-        artifactsList,
-        oauthStatusResult,
-      ] = await Promise.all([
-        client.service('sessions').findAll({
-          query: { archived: false, $limit: PAGINATION.DEFAULT_LIMIT, $sort: { updated_at: -1 } },
-        }),
-        client.service('boards').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
-        client.service('board-objects').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
-        client.service('board-comments').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
-        client.service('cards').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
-        client.service('card-types').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
-        client.service('repos').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
-        client
-          .service('worktrees')
-          .findAll({ query: { archived: false, $limit: PAGINATION.DEFAULT_LIMIT } }),
-        client.service('users').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
-        client.service('mcp-servers').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
-        client
-          .service('session-mcp-servers')
-          .findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
-        client.service('gateway-channels').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
-        client.service('artifacts').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
-        client
-          .service('mcp-servers/oauth-status')
-          .find()
-          .catch(() => ({ authenticated_server_ids: [] })),
-      ]);
-
-      // Build session Maps for efficient lookups
-      const sessionsById = new Map<string, Session>();
-      const sessionsByWorktreeId = new Map<string, Session[]>();
-
-      for (const session of sessionsList) {
-        // sessionById: O(1) ID lookups
-        sessionsById.set(session.session_id, session);
-
-        // sessionsByWorktree: O(1) worktree-scoped filtering
-        const worktreeId = session.worktree_id;
-        if (!sessionsByWorktreeId.has(worktreeId)) {
-          sessionsByWorktreeId.set(worktreeId, []);
+      try {
+        if (!silent) {
+          setLoading(true);
+          setError(null);
         }
-        sessionsByWorktreeId.get(worktreeId)!.push(session);
-      }
 
-      setSessionById(sessionsById);
-      setSessionsByWorktree(sessionsByWorktreeId);
+        // Fetch sessions, boards, board-objects, comments, repos, worktrees, users, mcp servers, session-mcp relationships in parallel.
+        // Task/message detail now comes from per-session reactive state in conversation components.
+        const [
+          sessionsList,
+          boardsList,
+          boardObjectsList,
+          commentsList,
+          cardsList,
+          cardTypesList,
+          reposList,
+          worktreesList,
+          usersList,
+          mcpServersList,
+          sessionMcpList,
+          gatewayChannelsList,
+          artifactsList,
+          oauthStatusResult,
+        ] = await Promise.all([
+          client.service('sessions').findAll({
+            query: { archived: false, $limit: PAGINATION.DEFAULT_LIMIT, $sort: { updated_at: -1 } },
+          }),
+          client.service('boards').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+          client.service('board-objects').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+          client.service('board-comments').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+          client.service('cards').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+          client.service('card-types').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+          client.service('repos').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+          client
+            .service('worktrees')
+            .findAll({ query: { archived: false, $limit: PAGINATION.DEFAULT_LIMIT } }),
+          client.service('users').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+          client.service('mcp-servers').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+          client
+            .service('session-mcp-servers')
+            .findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+          client
+            .service('gateway-channels')
+            .findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+          client.service('artifacts').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+          client
+            .service('mcp-servers/oauth-status')
+            .find()
+            .catch(() => ({ authenticated_server_ids: [] })),
+        ]);
 
-      // Build board Map for efficient lookups
-      const boardsMap = new Map<string, Board>();
-      for (const board of boardsList) {
-        boardsMap.set(board.board_id, board);
-      }
-      setBoardById(boardsMap);
+        // Build session Maps for efficient lookups
+        const sessionsById = new Map<string, Session>();
+        const sessionsByWorktreeId = new Map<string, Session[]>();
 
-      // Build board object Map for efficient lookups
-      const boardObjectsMap = new Map<string, BoardEntityObject>();
-      for (const boardObject of boardObjectsList) {
-        boardObjectsMap.set(boardObject.object_id, boardObject);
-      }
-      setBoardObjectById(boardObjectsMap);
+        for (const session of sessionsList) {
+          // sessionById: O(1) ID lookups
+          sessionsById.set(session.session_id, session);
 
-      // Build comment Map for efficient lookups
-      const commentsMap = new Map<string, BoardComment>();
-      for (const comment of commentsList) {
-        commentsMap.set(comment.comment_id, comment);
-      }
-      setCommentById(commentsMap);
-
-      // Build card Map for efficient lookups
-      const cardsMap = new Map<string, CardWithType>();
-      for (const card of cardsList) {
-        cardsMap.set(card.card_id, card);
-      }
-      setCardById(cardsMap);
-
-      // Build card type Map for efficient lookups
-      const cardTypesMap = new Map<string, CardType>();
-      for (const cardType of cardTypesList) {
-        cardTypesMap.set(cardType.card_type_id, cardType);
-      }
-      setCardTypeById(cardTypesMap);
-
-      // Build repo Map for efficient lookups
-      const reposMap = new Map<string, Repo>();
-      for (const repo of reposList) {
-        reposMap.set(repo.repo_id, repo);
-      }
-      setRepoById(reposMap);
-
-      // Build worktree Map for efficient lookups
-      const worktreesMap = new Map<string, Worktree>();
-      for (const worktree of worktreesList) {
-        worktreesMap.set(worktree.worktree_id, worktree);
-      }
-      setWorktreeById(worktreesMap);
-
-      // Build user Map for efficient lookups
-      const usersMap = new Map<string, User>();
-      for (const user of usersList) {
-        usersMap.set(user.user_id, user);
-      }
-      setUserById(usersMap);
-
-      // Build MCP server Map for efficient lookups
-      const mcpServersMap = new Map<string, MCPServer>();
-      for (const mcpServer of mcpServersList) {
-        mcpServersMap.set(mcpServer.mcp_server_id, mcpServer);
-      }
-      setMcpServerById(mcpServersMap);
-
-      // Build gateway channel Map for efficient lookups
-      const gatewayChannelsMap = new Map<string, GatewayChannel>();
-      for (const channel of gatewayChannelsList) {
-        gatewayChannelsMap.set(channel.id, channel);
-      }
-      setGatewayChannelById(gatewayChannelsMap);
-
-      // Build artifact Map for efficient lookups
-      const artifactsMap = new Map<string, Artifact>();
-      for (const artifact of artifactsList) {
-        artifactsMap.set(artifact.artifact_id, artifact);
-      }
-      setArtifactById(artifactsMap);
-
-      // Group session-MCP relationships by session_id
-      const sessionMcpMap = new Map<string, string[]>();
-      for (const relationship of sessionMcpList) {
-        if (!sessionMcpMap.has(relationship.session_id)) {
-          sessionMcpMap.set(relationship.session_id, []);
+          // sessionsByWorktree: O(1) worktree-scoped filtering
+          const worktreeId = session.worktree_id;
+          if (!sessionsByWorktreeId.has(worktreeId)) {
+            sessionsByWorktreeId.set(worktreeId, []);
+          }
+          sessionsByWorktreeId.get(worktreeId)!.push(session);
         }
-        sessionMcpMap.get(relationship.session_id)!.push(relationship.mcp_server_id);
-      }
-      setSessionMcpServerIds(sessionMcpMap);
 
-      // Set per-user OAuth auth status
-      const oauthStatus = oauthStatusResult as { authenticated_server_ids?: string[] };
-      setUserAuthenticatedMcpServerIds(new Set(oauthStatus?.authenticated_server_ids ?? []));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch data');
-    } finally {
-      setLoading(false);
-    }
-  }, [client, enabled]);
+        setSessionById(sessionsById);
+        setSessionsByWorktree(sessionsByWorktreeId);
+
+        // Build board Map for efficient lookups
+        const boardsMap = new Map<string, Board>();
+        for (const board of boardsList) {
+          boardsMap.set(board.board_id, board);
+        }
+        setBoardById(boardsMap);
+
+        // Build board object Map for efficient lookups
+        const boardObjectsMap = new Map<string, BoardEntityObject>();
+        for (const boardObject of boardObjectsList) {
+          boardObjectsMap.set(boardObject.object_id, boardObject);
+        }
+        setBoardObjectById(boardObjectsMap);
+
+        // Build comment Map for efficient lookups
+        const commentsMap = new Map<string, BoardComment>();
+        for (const comment of commentsList) {
+          commentsMap.set(comment.comment_id, comment);
+        }
+        setCommentById(commentsMap);
+
+        // Build card Map for efficient lookups
+        const cardsMap = new Map<string, CardWithType>();
+        for (const card of cardsList) {
+          cardsMap.set(card.card_id, card);
+        }
+        setCardById(cardsMap);
+
+        // Build card type Map for efficient lookups
+        const cardTypesMap = new Map<string, CardType>();
+        for (const cardType of cardTypesList) {
+          cardTypesMap.set(cardType.card_type_id, cardType);
+        }
+        setCardTypeById(cardTypesMap);
+
+        // Build repo Map for efficient lookups
+        const reposMap = new Map<string, Repo>();
+        for (const repo of reposList) {
+          reposMap.set(repo.repo_id, repo);
+        }
+        setRepoById(reposMap);
+
+        // Build worktree Map for efficient lookups
+        const worktreesMap = new Map<string, Worktree>();
+        for (const worktree of worktreesList) {
+          worktreesMap.set(worktree.worktree_id, worktree);
+        }
+        setWorktreeById(worktreesMap);
+
+        // Build user Map for efficient lookups
+        const usersMap = new Map<string, User>();
+        for (const user of usersList) {
+          usersMap.set(user.user_id, user);
+        }
+        setUserById(usersMap);
+
+        // Build MCP server Map for efficient lookups
+        const mcpServersMap = new Map<string, MCPServer>();
+        for (const mcpServer of mcpServersList) {
+          mcpServersMap.set(mcpServer.mcp_server_id, mcpServer);
+        }
+        setMcpServerById(mcpServersMap);
+
+        // Build gateway channel Map for efficient lookups
+        const gatewayChannelsMap = new Map<string, GatewayChannel>();
+        for (const channel of gatewayChannelsList) {
+          gatewayChannelsMap.set(channel.id, channel);
+        }
+        setGatewayChannelById(gatewayChannelsMap);
+
+        // Build artifact Map for efficient lookups
+        const artifactsMap = new Map<string, Artifact>();
+        for (const artifact of artifactsList) {
+          artifactsMap.set(artifact.artifact_id, artifact);
+        }
+        setArtifactById(artifactsMap);
+
+        // Group session-MCP relationships by session_id
+        const sessionMcpMap = new Map<string, string[]>();
+        for (const relationship of sessionMcpList) {
+          if (!sessionMcpMap.has(relationship.session_id)) {
+            sessionMcpMap.set(relationship.session_id, []);
+          }
+          sessionMcpMap.get(relationship.session_id)!.push(relationship.mcp_server_id);
+        }
+        setSessionMcpServerIds(sessionMcpMap);
+
+        // Set per-user OAuth auth status
+        const oauthStatus = oauthStatusResult as { authenticated_server_ids?: string[] };
+        setUserAuthenticatedMcpServerIds(new Set(oauthStatus?.authenticated_server_ids ?? []));
+
+        // Silent refetch succeeded — clear the retry flag so future token
+        // refreshes don't trigger another wasted re-fetch.
+        if (silent) {
+          lastSilentFetchFailedRef.current = false;
+        }
+      } catch (err) {
+        if (silent) {
+          // Background refetch failed (e.g. transient 401 racing the socket
+          // re-auth, or a 5xx). Don't escalate to the fullscreen error overlay —
+          // we still have last-known good byId state on screen. Latch the
+          // failure so the next TOKENS_REFRESHED_EVENT (or reconnect) retries.
+          console.warn('[useAgorData] silent refetch failed:', err);
+          lastSilentFetchFailedRef.current = true;
+        } else {
+          setError(err instanceof Error ? err.message : 'Failed to fetch data');
+        }
+      } finally {
+        if (!silent) {
+          setLoading(false);
+        }
+      }
+    },
+    [client, enabled]
+  );
 
   // Subscribe to real-time updates
   useEffect(() => {
@@ -881,9 +934,50 @@ export function useAgorData(
     };
     client.io.on('oauth:completed', handleOAuthCompleted);
 
+    // Re-fetch the global byId maps on every socket reconnect after the
+    // initial mount. Feathers real-time events (`created`/`patched`/`removed`)
+    // that fired while we were disconnected are gone — the daemon doesn't
+    // keep a per-subscriber replay log — so without this, the app keeps
+    // showing stale state (vanished worktrees still on the board, missed new
+    // sessions, etc.) until the user refreshes the page.
+    //
+    // We skip the very first connect: the initial fetch above (gated on
+    // `hasInitiallyFetched`) is already running or has just completed, and
+    // re-running it would just be wasted bandwidth at startup.
+    //
+    // `silent: true` so a transient failure (e.g. racing the re-auth handler
+    // in useAgorClient on reconnect, then 401-ing once before the around-hook
+    // refresh lands) doesn't blank the whole app via App.tsx's `dataError`
+    // path — see the silent branch in `fetchData`.
+    const refetchSilently = async () => {
+      if (!hasInitiallyFetched) return;
+      if (refetchInflightRef.current) return;
+      refetchInflightRef.current = true;
+      try {
+        await fetchData({ silent: true });
+      } finally {
+        refetchInflightRef.current = false;
+      }
+    };
+    client.io.on('connect', refetchSilently);
+
+    // If the prior reconnect refetch failed silently — typical scenario: the
+    // socket reconnected, the around-hook hadn't refreshed the access token
+    // yet, fetchData hit a 401 that bubbled up — retry once a token refresh
+    // lands. Without this, byId state stays stale until the next physical
+    // reconnect or a page refresh. We gate on the latch so we don't refetch
+    // 14 services on every routine token rotation.
+    const handleTokensRefreshed = () => {
+      if (!lastSilentFetchFailedRef.current) return;
+      void refetchSilently();
+    };
+    window.addEventListener(TOKENS_REFRESHED_EVENT, handleTokensRefreshed);
+
     // Cleanup listeners on unmount
     return () => {
       client.io.off('oauth:completed', handleOAuthCompleted);
+      client.io.off('connect', refetchSilently);
+      window.removeEventListener(TOKENS_REFRESHED_EVENT, handleTokensRefreshed);
       sessionsService.removeListener('created', handleSessionCreated);
       sessionsService.removeListener('patched', handleSessionPatched);
       sessionsService.removeListener('updated', handleSessionPatched);
