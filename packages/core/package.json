@@ -140,6 +140,11 @@
       "import": "./dist/utils/logger.js",
       "require": "./dist/utils/logger.cjs"
     },
+    "./utils/jwt": {
+      "types": "./dist/utils/jwt.d.ts",
+      "import": "./dist/utils/jwt.js",
+      "require": "./dist/utils/jwt.cjs"
+    },
     "./seed": {
       "types": "./dist/seed/index.d.ts",
       "import": "./dist/seed/index.js",
@@ -199,6 +204,11 @@
       "types": "./dist/tools/mcp/oauth-refresh.d.ts",
       "import": "./dist/tools/mcp/oauth-refresh.js",
       "require": "./dist/tools/mcp/oauth-refresh.cjs"
+    },
+    "./tools/mcp/oauth-token-expiry": {
+      "types": "./dist/tools/mcp/oauth-token-expiry.d.ts",
+      "import": "./dist/tools/mcp/oauth-token-expiry.js",
+      "require": "./dist/tools/mcp/oauth-token-expiry.cjs"
     },
     "./unix": {
       "types": "./dist/unix/index.d.ts",

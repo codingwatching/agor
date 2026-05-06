@@ -6,7 +6,17 @@
  */
 
 import { UserMCPOAuthTokenRepository } from '@agor/core/db';
+import { resolveTokenExpiry } from '@agor/core/tools/mcp/oauth-token-expiry';
 import type { MCPServerID, UserID } from '@agor/core/types';
+
+/**
+ * Default in-memory cache TTL when the provider gives us no expiry signal at
+ * all. This is ONLY used to bound the lifetime of the daemon-local
+ * `oauth21TokenCache` map (so it doesn't grow unbounded), NOT to fabricate
+ * an expiry on the persisted DB row. The DB row gets `expires_at = NULL`
+ * via `resolveTokenExpiry` → `saveToken({ expiresAt: null })`.
+ */
+const UNKNOWN_EXPIRY_CACHE_TTL_SECONDS = 3600;
 
 // ============================================================================
 // In-memory OAuth 2.1 Token Cache
@@ -86,10 +96,25 @@ export async function persistOAuthToken(
   },
   logPrefix: string
 ): Promise<void> {
-  const expiresIn = tokenResponse.expires_in ?? 3600;
+  // Walk the precedence cascade for the token TTL — see Phase 3.5 of
+  // `context/explorations/mcp-oauth-token-lifecycle.md`. Replaces the prior
+  // `tokenResponse.expires_in ?? 3600` defaulting that was asymmetric with
+  // the refresh path and lied to the DB for providers like Notion that omit
+  // `expires_in` entirely.
+  const expiry = resolveTokenExpiry(tokenResponse, tokenResponse.access_token);
 
-  // Cache the token at daemon level
-  cacheOAuth21Token(cacheKey, tokenResponse.access_token, expiresIn);
+  // The in-memory daemon cache still wants *some* TTL so its map doesn't
+  // grow unbounded. Derive seconds-from-now from the resolved Date when
+  // known, otherwise fall back to UNKNOWN_EXPIRY_CACHE_TTL_SECONDS (1h).
+  // This is local-cache hygiene only — the persisted DB row uses
+  // `expiry.expiresAt` directly so `NULL` makes it through to
+  // `oauth_token_expires_at` when the provider was silent, and the UI can
+  // correctly render "expires in: unknown".
+  const cacheTtlSeconds =
+    expiry.expiresAt !== null
+      ? Math.max(1, Math.floor((expiry.expiresAt.getTime() - Date.now()) / 1000))
+      : UNKNOWN_EXPIRY_CACHE_TTL_SECONDS;
+  cacheOAuth21Token(cacheKey, tokenResponse.access_token, cacheTtlSeconds);
 
   if (!pendingFlow.mcpServerId) {
     return;
@@ -111,7 +136,7 @@ export async function persistOAuthToken(
 
   await userTokenRepo.saveToken(tokenUserId, pendingFlow.mcpServerId as MCPServerID, {
     accessToken: tokenResponse.access_token,
-    expiresInSeconds: expiresIn,
+    expiresAt: expiry.expiresAt, // Date | null — null means "unknown"
     refreshToken: tokenResponse.refresh_token,
     clientId: pendingFlow.clientId,
     clientSecret: pendingFlow.clientSecret,
@@ -120,6 +145,8 @@ export async function persistOAuthToken(
   console.log(
     `[${logPrefix}] ${oauthMode === 'per_user' ? 'Per-user' : 'Shared'} token saved ` +
       `for user=${tokenUserId ?? '<shared>'} server=${pendingFlow.mcpServerId}` +
+      ` (expiry source: ${expiry.source}` +
+      `${expiry.expiresAt !== null ? `, expires=${expiry.expiresAt.toISOString()}` : ', expires=unknown'})` +
       `${pendingFlow.clientId ? ' (with DCR client creds)' : ''}`
   );
 }

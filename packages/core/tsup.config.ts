@@ -28,6 +28,7 @@ export default defineConfig({
     'utils/host-ip': 'src/utils/host-ip.ts', // Host IP detection for {{host.ip_address}} template var
     'utils/path': 'src/utils/path.ts', // Path expansion utilities (tilde to home directory)
     'utils/logger': 'src/utils/logger.ts', // Console monkey-patch for log level filtering
+    'utils/jwt': 'src/utils/jwt.ts', // Browser-safe JWT decode (no signature verification)
     'seed/index': 'src/seed/index.ts', // Development database seeding
     'callbacks/child-completion-template': 'src/callbacks/child-completion-template.ts', // Parent session callback templates
     'client/index': 'src/client/index.ts', // Client-safe core entrypoint for browser/SDK consumers
@@ -40,6 +41,7 @@ export default defineConfig({
     'tools/mcp/oauth-auth': 'src/tools/mcp/oauth-auth.ts', // MCP OAuth 2.0 authentication utilities
     'tools/mcp/oauth-mcp-transport': 'src/tools/mcp/oauth-mcp-transport.ts', // MCP OAuth 2.1 protocol transport
     'tools/mcp/oauth-refresh': 'src/tools/mcp/oauth-refresh.ts', // MCP OAuth refresh_token persistence + mutex
+    'tools/mcp/oauth-token-expiry': 'src/tools/mcp/oauth-token-expiry.ts', // MCP OAuth token expiry resolution cascade
     'unix/index': 'src/unix/index.ts', // Unix group management utilities for worktree isolation
     'mcp/index': 'src/mcp/index.ts', // MCP template resolution utilities
     'gateway/index': 'src/gateway/index.ts', // Gateway platform connectors (Slack, etc.)
