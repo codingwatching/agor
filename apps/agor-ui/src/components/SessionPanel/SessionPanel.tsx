@@ -29,18 +29,15 @@ import {
   StopOutlined,
 } from '@ant-design/icons';
 import { Alert, App, Badge, Button, Space, Spin, Tooltip, Typography, theme } from 'antd';
-import Handlebars from 'handlebars';
 import React from 'react';
 import { getDaemonUrl } from '../../config/daemon';
 import { useAppActions } from '../../contexts/AppActionsContext';
 import { useAppEntityData } from '../../contexts/AppDataContext';
 import { useConnectionDisabled } from '../../contexts/ConnectionContext';
 import { useSharedReactiveSession } from '../../hooks/useSharedReactiveSession';
-import spawnSubsessionTemplate from '../../templates/spawn_subsession.hbs?raw';
 import { getContextWindowGradient } from '../../utils/contextWindow';
 import { mcpServerNeedsAuth } from '../../utils/mcpAuth';
 import { getSessionDisplayTitle, getSessionTitleStyles } from '../../utils/sessionTitle';
-import { compileTemplate } from '../../utils/templates';
 import { AutocompleteTextarea } from '../AutocompleteTextarea';
 import { EffortSelector } from '../EffortSelector';
 import { FileUpload, FileUploadButton } from '../FileUpload';
@@ -51,36 +48,8 @@ import { ContextWindowPill, ModelPill, SessionIdPill, TimerPill, TokenCountPill 
 import { ToolIcon } from '../ToolIcon';
 import { SessionPanelContent } from './SessionPanelContent';
 
-// Register helper to check if value is defined (not undefined)
-// This allows us to distinguish between false and undefined in templates
-Handlebars.registerHelper('isDefined', (value: unknown) => value !== undefined);
-
 // Re-export PermissionMode from SDK for convenience
 export type { PermissionMode };
-
-/** Context shape for the spawn subsession Handlebars template */
-interface SpawnTemplateContext {
-  userPrompt: string;
-  hasConfig?: boolean;
-  agenticTool?: string;
-  permissionMode?: PermissionMode;
-  modelConfig?: SpawnConfig['modelConfig'];
-  codexSandboxMode?: CodexSandboxMode;
-  codexApprovalPolicy?: CodexApprovalPolicy;
-  codexNetworkAccess?: boolean;
-  mcpServerIds?: string[];
-  hasCallbackConfig?: boolean;
-  callbackConfig?: {
-    enableCallback?: boolean;
-    includeLastMessage?: boolean;
-    includeOriginalPrompt?: boolean;
-  };
-  extraInstructions?: string;
-}
-
-// Compile the spawn subsession template once at module level (after helper registration)
-const compiledSpawnSubsessionTemplate =
-  compileTemplate<SpawnTemplateContext>(spawnSubsessionTemplate);
 
 // ---------------------------------------------------------------------------
 // PromptInput — thin wrapper around AutocompleteTextarea that keeps the typed
@@ -598,49 +567,39 @@ const SessionPanel: React.FC<SessionPanelProps> = ({
   };
 
   const handleSpawnModalConfirm = async (config: string | Partial<SpawnConfig>) => {
-    if (!session) return;
+    if (!session || !client) return;
 
-    if (typeof config === 'string') {
-      const metaPrompt = compiledSpawnSubsessionTemplate({ userPrompt: config });
-      await onSendPrompt?.(session.session_id, metaPrompt, permissionMode);
-    } else {
-      const hasConfig =
-        config.agent !== undefined ||
-        config.permissionMode !== undefined ||
-        config.modelConfig !== undefined ||
-        config.codexSandboxMode !== undefined ||
-        config.codexApprovalPolicy !== undefined ||
-        config.codexNetworkAccess !== undefined ||
-        (config.mcpServerIds?.length ?? 0) > 0 ||
-        config.enableCallback !== undefined ||
-        config.includeLastMessage !== undefined ||
-        config.includeOriginalPrompt !== undefined ||
-        config.extraInstructions !== undefined;
+    // Daemon owns the spawn-subsession meta-prompt template. The UI sends raw
+    // `{userPrompt, config}` to /sessions/:id/spawn-prompt, which renders the
+    // meta-prompt and forwards it to /sessions/:id/prompt in one round trip.
+    //
+    // `parentPermissionMode` is the *parent* session's permission mode for the
+    // forwarding prompt; the spawn config's `permissionMode` is rendered into
+    // the meta-prompt as the *child* session's intended mode. They're distinct
+    // — don't reuse one for the other.
+    const spawnConfig =
+      typeof config === 'string'
+        ? { userPrompt: config }
+        : {
+            userPrompt: config.prompt || '',
+            agenticTool: config.agent,
+            permissionMode: config.permissionMode,
+            modelConfig: config.modelConfig,
+            codexSandboxMode: config.codexSandboxMode,
+            codexApprovalPolicy: config.codexApprovalPolicy,
+            codexNetworkAccess: config.codexNetworkAccess,
+            mcpServerIds: config.mcpServerIds,
+            callbackConfig: {
+              enableCallback: config.enableCallback,
+              includeLastMessage: config.includeLastMessage,
+              includeOriginalPrompt: config.includeOriginalPrompt,
+            },
+            extraInstructions: config.extraInstructions,
+          };
 
-      const metaPrompt = compiledSpawnSubsessionTemplate({
-        userPrompt: config.prompt || '',
-        hasConfig,
-        agenticTool: config.agent,
-        permissionMode: config.permissionMode,
-        modelConfig: config.modelConfig,
-        codexSandboxMode: config.codexSandboxMode,
-        codexApprovalPolicy: config.codexApprovalPolicy,
-        codexNetworkAccess: config.codexNetworkAccess,
-        mcpServerIds: config.mcpServerIds,
-        hasCallbackConfig:
-          config.enableCallback !== undefined ||
-          config.includeLastMessage !== undefined ||
-          config.includeOriginalPrompt !== undefined,
-        callbackConfig: {
-          enableCallback: config.enableCallback,
-          includeLastMessage: config.includeLastMessage,
-          includeOriginalPrompt: config.includeOriginalPrompt,
-        },
-        extraInstructions: config.extraInstructions,
-      });
-
-      await onSendPrompt?.(session.session_id, metaPrompt, permissionMode);
-    }
+    await client
+      .service(`sessions/${session.session_id}/spawn-prompt`)
+      .create({ ...spawnConfig, parentPermissionMode: permissionMode });
 
     setSpawnModalOpen(false);
     promptRef.current?.clear();

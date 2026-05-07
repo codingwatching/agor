@@ -19,6 +19,8 @@ import type {
   Repo,
   Session,
   Task,
+  TemplateRenderRequest,
+  TemplateRenderResponse,
   User,
   UUID,
   Worktree,
@@ -106,6 +108,21 @@ export interface SessionsClientHelpers {
 }
 
 /**
+ * Server-side Handlebars renderer. UI sends `{template, context}` via
+ * `client.service('templates').create(...)`; daemon returns `{rendered}`.
+ * Used so the browser bundle doesn't need Handlebars (avoids CSP
+ * `script-src 'unsafe-eval'`).
+ *
+ * Transport DTOs live in `@agor/core/types/template.ts` so the daemon
+ * service and this client typing share one shape.
+ */
+export type { TemplateRenderRequest, TemplateRenderResponse };
+
+export interface TemplatesService {
+  create(data: TemplateRenderRequest, params?: Params): Promise<TemplateRenderResponse>;
+}
+
+/**
  * Service interfaces for type safety
  */
 export interface ServiceTypes {
@@ -121,6 +138,7 @@ export interface ServiceTypes {
   artifacts: Artifact;
   'mcp-servers': MCPServer;
   context: ContextFileListItem | ContextFileDetail; // GET /context returns list, GET /context/:path returns detail
+  templates: TemplateRenderResponse;
 }
 
 /**
@@ -423,6 +441,7 @@ export interface AgorClient extends Omit<Application<ServiceTypes>, 'service'> {
   service(path: 'users'): UsersService;
   service(path: 'mcp-servers'): AgorService<MCPServer>;
   service(path: 'context'): AgorService<ContextFileListItem | ContextFileDetail>;
+  service(path: 'templates'): TemplatesService;
 
   // Generic fallback for custom routes and dynamic paths
   service<K extends keyof ServiceTypes>(path: K): AgorService<ServiceTypes[K]>;

@@ -4,7 +4,6 @@
  */
 
 import type { Repo, Worktree } from '@agor-live/client';
-import { renderTemplate } from '@agor-live/client';
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
@@ -95,6 +94,12 @@ export function renderEnvCell(
   const isRunningOrHealthy =
     status === 'running' || status === 'starting' || healthStatus === 'healthy';
 
+  // The "open health URL" button uses the worktree's own `health_check_url`
+  // (rendered at worktree creation, then user-editable via the worktree
+  // modal) rather than re-rendering the repo template at click time. This
+  // honours user edits and avoids a daemon round-trip.
+  const healthUrl = worktree.health_check_url;
+
   return (
     <Space size={4}>
       {renderEnvStatusIcon(worktree, token)}
@@ -121,25 +126,14 @@ export function renderEnvCell(
             }}
             style={{ padding: '0 4px' }}
           />
-          {effectiveEnv?.health && (
+          {healthUrl && (
             <Button
               type="text"
               size="small"
               icon={<GlobalOutlined />}
               onClick={(e) => {
                 e.stopPropagation();
-                const templateContext = {
-                  worktree: {
-                    unique_id: worktree.worktree_unique_id,
-                    name: worktree.name,
-                    path: worktree.path,
-                  },
-                  repo: { slug: repo.slug },
-                };
-                const url = renderTemplate(effectiveEnv.health ?? '', templateContext);
-                if (url) {
-                  window.open(url, '_blank');
-                }
+                window.open(healthUrl, '_blank');
               }}
               style={{ padding: '0 4px' }}
             />

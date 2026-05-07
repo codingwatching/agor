@@ -7,6 +7,7 @@
 
 import type {
   AgenticToolName,
+  AgorClient,
   MCPServer,
   PermissionMode,
   Session,
@@ -15,18 +16,19 @@ import type {
   WorktreeID,
   ZoneTrigger,
 } from '@agor-live/client';
-
+// Canonical zone-trigger context shape (worktree.context / board.context /
+// zone / session). Shared with the daemon's fire-zone-trigger route and the
+// MCP `agor_worktrees_set_zone` path so all three render against the same
+// shape.
+import { buildZoneTriggerContext } from '@agor-live/client';
 import { DownOutlined } from '@ant-design/icons';
 import { Alert, Collapse, Form, Input, Modal, Radio, Select, Space, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import type { AgenticToolOption } from '../../../types';
-// Use the shared renderer so we render against the same Handlebars instance
-// where `initializeHandlebarsHelpers()` registered helpers (the bundled copy
-// inside @agor-live/client). Importing `handlebars` directly gives a separate
-// instance with no helpers, which causes templates using helpers like {{add}}
-// or {{eq}} to throw and fall back to the raw template string.
-import { renderTemplate } from '../../../utils/handlebars-helpers';
 import { getSessionDisplayTitle } from '../../../utils/sessionTitle';
+// Async server-side renderer — keeps Handlebars out of the browser bundle so
+// the page doesn't need CSP `script-src 'unsafe-eval'`.
+import { renderTemplate } from '../../../utils/templates';
 import { AgenticToolConfigForm } from '../../AgenticToolConfigForm';
 import { AgentSelectionGrid } from '../../AgentSelectionGrid';
 import type { ModelConfig } from '../../ModelSelector';
@@ -34,6 +36,7 @@ import type { ModelConfig } from '../../ModelSelector';
 interface ZoneTriggerModalProps {
   open: boolean;
   onCancel: () => void;
+  client: AgorClient | null;
   worktreeId: WorktreeID;
   worktree: Worktree | undefined;
   sessionsByWorktree: Map<string, Session[]>; // O(1) worktree filtering
@@ -60,6 +63,7 @@ interface ZoneTriggerModalProps {
 export const ZoneTriggerModal = ({
   open,
   onCancel,
+  client,
   worktreeId,
   worktree,
   sessionsByWorktree,
@@ -193,72 +197,56 @@ export const ZoneTriggerModal = ({
     }
   }, [mode, selectedSession, form]);
 
-  // Render template preview
-  const renderedTemplate = useMemo(() => {
-    try {
-      const context = {
-        worktree: worktree
-          ? {
-              name: worktree.name || '',
-              ref: worktree.ref || '',
-              issue_url: worktree.issue_url || '',
-              pull_request_url: worktree.pull_request_url || '',
-              notes: worktree.notes || '',
-              path: worktree.path || '',
-              context: worktree.custom_context || {},
-            }
-          : {
-              name: '',
-              ref: '',
-              issue_url: '',
-              pull_request_url: '',
-              notes: '',
-              path: '',
-              context: {},
-            },
-        board: {
-          name: boardName || '',
-          description: boardDescription || '',
-          context: boardCustomContext || {},
-        },
-        session:
-          mode === 'reuse_existing' && selectedSessionId
-            ? {
-                description:
-                  worktreeSessions.find((s) => s.session_id === selectedSessionId)?.description ||
-                  '',
-                context:
-                  worktreeSessions.find((s) => s.session_id === selectedSessionId)
-                    ?.custom_context || {},
-              }
-            : {
-                description: '',
-                context: {},
-              },
-      };
-
-      // For the user-facing preview we want to see the raw template (with
-      // unresolved {{...}}) on failure rather than a silently-blank textarea.
-      return renderTemplate(trigger.template, context, { onError: 'raw' });
-    } catch (error) {
-      console.error('Handlebars template error:', error);
-      return trigger.template; // Defensive: renderTemplate itself never throws
+  // Render template preview (server-side via daemon /templates).
+  // We fetch on every dependency change; consecutive renders share the
+  // socket.io connection, and stale responses are dropped via the cancelled
+  // flag. For the user-facing preview we want the raw template (with
+  // unresolved `{{...}}`) on failure rather than a silently-blank textarea.
+  useEffect(() => {
+    let cancelled = false;
+    if (!client) {
+      setEditableTemplate(trigger.template);
+      return;
     }
+    const selectedSessionForCtx =
+      mode === 'reuse_existing' && selectedSessionId
+        ? worktreeSessions.find((s) => s.session_id === selectedSessionId)
+        : undefined;
+    const context = buildZoneTriggerContext({
+      worktree,
+      board: {
+        name: boardName,
+        description: boardDescription,
+        custom_context: boardCustomContext,
+      },
+      zone: { label: zoneName },
+      session: selectedSessionForCtx
+        ? {
+            description: selectedSessionForCtx.description,
+            custom_context: selectedSessionForCtx.custom_context,
+          }
+        : undefined,
+    });
+
+    renderTemplate(client, trigger.template, context, 'raw').then((rendered) => {
+      if (!cancelled) setEditableTemplate(rendered);
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [
+    client,
     trigger.template,
     worktree,
     boardName,
     boardDescription,
     boardCustomContext,
+    zoneName,
     mode,
     selectedSessionId,
     worktreeSessions,
   ]);
-
-  // Update editable template when rendered template changes
-  useEffect(() => {
-    setEditableTemplate(renderedTemplate);
-  }, [renderedTemplate]);
 
   const handleExecute = async () => {
     if (mode === 'create_new') {

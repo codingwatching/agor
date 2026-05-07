@@ -96,9 +96,10 @@ function buildDefaultDirectives(opts: {
     'default-src': ["'self'"],
     'script-src': ["'self'"],
     // TODO: drop 'unsafe-inline' once Ant Design supports CSP nonces.
-    'style-src': ["'self'", "'unsafe-inline'"],
+    // fonts.bunny.net hosts the Inter font CSS imported by index.css.
+    'style-src': ["'self'", "'unsafe-inline'", 'https://fonts.bunny.net'],
     'img-src': imgSrc,
-    'font-src': ["'self'", 'data:'],
+    'font-src': ["'self'", 'data:', 'https://fonts.bunny.net'],
     'connect-src': connectSrc,
     'frame-src': frameSrc,
     'worker-src': workerSrc,

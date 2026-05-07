@@ -1177,6 +1177,147 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
   );
 
   // ============================================================================
+  // Spawn-subsession prompt endpoint
+  //
+  // Renders the bundled spawn-subsession meta-prompt server-side and forwards
+  // it to /sessions/:id/prompt in a single round-trip. Clients send raw
+  // `{userPrompt, config}` instead of doing the render-then-prompt dance.
+  // The daemon owns the meta-prompt template, so the UI bundle stays
+  // Handlebars-free.
+  // ============================================================================
+
+  registerAuthenticatedRoute(
+    app,
+    '/sessions/:id/spawn-prompt',
+    {
+      async create(
+        data: {
+          userPrompt?: string;
+          /**
+           * Permission mode for the *parent* session's prompt. The spawn
+           * config's `permissionMode` (child's intended mode) is rendered into
+           * the meta-prompt; this field governs how the parent prompt is sent.
+           */
+          parentPermissionMode?: import('@agor/core/types').PermissionMode;
+          // Remaining fields are spawn-subsession context (incl. the *child*
+          // session's permissionMode/modelConfig/etc) — see
+          // `SpawnSubsessionContext` in @agor/core for the shape.
+          [key: string]: unknown;
+        },
+        params: RouteParams
+      ) {
+        const id = params.route?.id;
+        if (!id) throw new BadRequest('Session ID required');
+        if (typeof data?.userPrompt !== 'string') {
+          throw new BadRequest('userPrompt (string) is required');
+        }
+
+        const { renderSpawnSubsessionPrompt } = await import(
+          '@agor/core/templates/spawn-subsession-template'
+        );
+        // Render the meta-prompt against the child-session config (the rest
+        // of `data`). `parentPermissionMode` is intentionally excluded — it's
+        // the parent's send-mode, not part of the template.
+        const { parentPermissionMode, ...spawnContext } = data;
+        const metaPrompt = renderSpawnSubsessionPrompt(
+          spawnContext as unknown as import('@agor/core/templates/spawn-subsession-template').SpawnSubsessionContext
+        );
+
+        const promptService = app.service('/sessions/:id/prompt');
+        return promptService.create(
+          { prompt: metaPrompt, permissionMode: parentPermissionMode, messageSource: 'agor' },
+          { ...params, route: { id } }
+        );
+      },
+    },
+    {
+      create: { role: ROLES.MEMBER, action: 'send spawn-subsession prompts' },
+    },
+    requireAuth
+  );
+
+  // ============================================================================
+  // Zone-trigger fire endpoint (always_new behaviour)
+  //
+  // Daemon is the source of truth for the zone's trigger template / agent /
+  // label — the UI only sends the zone id. The shared
+  // `fireAlwaysNewZoneTrigger` helper (also used by the MCP
+  // `agor_worktrees_set_zone(triggerTemplate: true)` always_new branch)
+  // does render → validate → resolve defaults → create session → attach MCPs
+  // → prompt in one round-trip.
+  // ============================================================================
+
+  registerAuthenticatedRoute(
+    app,
+    '/worktrees/:id/fire-zone-trigger',
+    {
+      async create(data: { zoneId?: string }, params: RouteParams) {
+        const worktreeId = params.route?.id;
+        if (!worktreeId) throw new BadRequest('Worktree ID required');
+        if (typeof data?.zoneId !== 'string' || !data.zoneId.trim()) {
+          throw new BadRequest('zoneId (string) is required');
+        }
+
+        const worktree = await app.service('worktrees').get(worktreeId, params);
+        if (!worktree.board_id) {
+          throw new BadRequest('Worktree is not on a board; cannot resolve zone');
+        }
+        const board = await app.service('boards').get(worktree.board_id, params);
+
+        // Zones live on `board.objects` keyed by zone id; type === 'zone'.
+        const zoneObj = (board as { objects?: Record<string, unknown> }).objects?.[data.zoneId] as
+          | {
+              type?: string;
+              label?: string;
+              status?: string;
+              trigger?: {
+                template?: string;
+                agent?: import('@agor/core/types').AgenticToolName;
+                behavior?: string;
+              };
+            }
+          | undefined;
+        if (!zoneObj || zoneObj.type !== 'zone') {
+          throw new BadRequest(`Zone ${data.zoneId} not found on board ${worktree.board_id}`);
+        }
+        if (zoneObj.trigger?.behavior !== 'always_new') {
+          // This endpoint is the always_new server-side action. show_picker
+          // zones flow through the modal-driven explicit-target path, not this
+          // route — refuse instead of silently creating a session.
+          throw new BadRequest(
+            `Zone "${zoneObj.label}" trigger behaviour is "${zoneObj.trigger?.behavior}", expected "always_new"`
+          );
+        }
+
+        const userId = params.user?.user_id;
+        if (!userId) throw new BadRequest('Authenticated user required');
+        const user = await app.service('users').get(userId, params);
+
+        const { fireAlwaysNewZoneTrigger } = await import('./services/zone-trigger.js');
+        try {
+          return await fireAlwaysNewZoneTrigger({
+            app,
+            params,
+            worktree,
+            board,
+            zone: zoneObj,
+            user,
+            userId: userId as string,
+          });
+        } catch (err) {
+          // Surface helper validation errors as BadRequest for HTTP semantics.
+          const message = err instanceof Error ? err.message : String(err);
+          throw new BadRequest(message);
+        }
+      },
+    },
+    {
+      create: { role: ROLES.MEMBER, action: 'fire zone triggers' },
+    },
+    requireAuth
+  );
+
+  // ============================================================================
   // File upload endpoint
   // ============================================================================
 

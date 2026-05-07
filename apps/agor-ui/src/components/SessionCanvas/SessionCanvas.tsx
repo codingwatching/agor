@@ -53,12 +53,6 @@ import {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import './SessionCanvas.css';
-// Use the shared renderer so we render against the same Handlebars instance
-// where `initializeHandlebarsHelpers()` registered helpers (the bundled copy
-// inside @agor-live/client). Importing `handlebars` directly gives a separate
-// instance with no helpers, which causes templates using helpers like {{add}}
-// or {{eq}} to throw and silently fail.
-import { renderTemplate } from '@/utils/handlebars-helpers';
 import { mapToArray } from '@/utils/mapHelpers';
 import { DEFAULT_BACKGROUNDS } from '../../constants/ui';
 import { useMutationGate } from '../../contexts/ConnectionContext';
@@ -1645,65 +1639,16 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
                   const trigger = zoneData.trigger;
                   if (trigger && zoneChanged) {
                     if (trigger.behavior === 'always_new') {
-                      // Always_new: Auto-create new root session and apply trigger
-
-                      // Execute async trigger (don't await to avoid blocking drag handler)
+                      // always_new: daemon resolves the zone, renders, creates
+                      // a session, attaches inherited MCP servers, and sends
+                      // the prompt — all in one round-trip. UI just identifies
+                      // the zone; server is the source of truth for template,
+                      // agent, and label.
                       (async () => {
                         try {
-                          // Find the worktree
-                          const worktree = worktrees.find((wt) => wt.worktree_id === nodeId);
-
-                          // Render template
-                          const context = {
-                            worktree: worktree
-                              ? {
-                                  name: worktree.name || '',
-                                  ref: worktree.ref || '',
-                                  issue_url: worktree.issue_url || '',
-                                  pull_request_url: worktree.pull_request_url || '',
-                                  notes: worktree.notes || '',
-                                  path: worktree.path || '',
-                                  context: worktree.custom_context || {},
-                                }
-                              : {},
-                            board: {
-                              name: board?.name || '',
-                              description: board?.description || '',
-                              context: board?.custom_context || {},
-                            },
-                            session: {
-                              description: '',
-                              context: {},
-                            },
-                          };
-                          const renderedPrompt = renderTemplate(trigger.template, context);
-
-                          // Create new root session.
-                          //
-                          // permission_config / model_config are intentionally
-                          // omitted: the daemon's `applySessionConfigDefaults`
-                          // before:create hook fills them from the user's
-                          // default_agentic_config[tool] (see
-                          // apps/agor-daemon/src/utils/apply-session-config-defaults.ts).
-                          // Sending them here would mask the hook in tests
-                          // and re-introduce the drift this hook exists to
-                          // prevent. See preset-io/agor#1064.
-                          //
-                          // TODO(#1064 follow-up): MCP server inheritance from
-                          // worktree / user defaults is still caller-side on the
-                          // other paths; this UI handler does not attach any.
-                          // Resolve when MCP attach moves to a centralized hook.
-                          const newSession = await client.service('sessions').create({
-                            worktree_id: nodeId as WorktreeID,
-                            description: `Session from zone "${zoneData.label}"`,
-                            status: 'idle',
-                            agentic_tool: (trigger.agent || 'claude-code') as AgenticToolName,
-                          });
-
-                          // Send prompt to new session
-                          await client.sessions.prompt(newSession.session_id, renderedPrompt, {
-                            messageSource: 'agor',
-                          });
+                          await client
+                            .service(`worktrees/${nodeId}/fire-zone-trigger`)
+                            .create({ zoneId });
                         } catch (error) {
                           console.error('❌ Failed to execute always_new trigger:', error);
                         }
@@ -1884,7 +1829,6 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
         nodes,
         boardObjectByWorktree,
         boardObjectByCard,
-        worktrees,
         setNodes,
       ]
     );
@@ -2689,6 +2633,7 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
           <ZoneTriggerModal
             open={true}
             onCancel={() => setWorktreeTriggerModal(null)}
+            client={client}
             worktreeId={worktreeTriggerModal.worktreeId}
             worktree={worktrees.find((wt) => wt.worktree_id === worktreeTriggerModal.worktreeId)}
             sessionsByWorktree={sessionsByWorktree}

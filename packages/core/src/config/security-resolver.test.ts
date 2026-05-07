@@ -47,6 +47,20 @@ describe('resolveSecurity — CSP defaults', () => {
     expect(csp.directives['connect-src']).toContain('ws:');
     expect(csp.directives['connect-src']).toContain('wss:');
   });
+
+  it("script-src does NOT include 'unsafe-eval' (Handlebars rendering moved to daemon)", () => {
+    // Pins the contract: any browser code that triggers `new Function` /
+    // `eval` is a regression. If a future dep needs eval, prefer routing
+    // through the daemon's /templates service instead of relaxing this.
+    const { csp } = resolveSecurity(EMPTY);
+    expect(csp.directives['script-src']).not.toContain("'unsafe-eval'");
+  });
+
+  it('style-src and font-src include fonts.bunny.net for the Inter font import', () => {
+    const { csp } = resolveSecurity(EMPTY);
+    expect(csp.directives['style-src']).toContain('https://fonts.bunny.net');
+    expect(csp.directives['font-src']).toContain('https://fonts.bunny.net');
+  });
 });
 
 describe('resolveSecurity — CSP extras/override', () => {
