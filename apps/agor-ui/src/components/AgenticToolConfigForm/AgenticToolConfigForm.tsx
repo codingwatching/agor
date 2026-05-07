@@ -7,7 +7,8 @@
  * - MCP server attachments
  * - Codex-specific fields (sandbox, approval, network) — only in full mode
  *
- * Used in both NewSessionModal (full mode) and SessionSettingsModal (compact mode).
+ * Used by session creation, settings, defaults, schedules, gateway channels,
+ * forks/spawns, and zone triggers.
  *
  * In compact mode:
  * - PermissionModeSelector renders as a dropdown instead of radio group
@@ -16,11 +17,9 @@
 
 import type { AgenticToolName, MCPServer } from '@agor-live/client';
 import { Form, Select } from 'antd';
-import { mapToArray } from '@/utils/mapHelpers';
-import { useServiceReadable } from '../../hooks/useServicesConfig';
 import { CodexNetworkAccessToggle } from '../CodexNetworkAccessToggle';
 import { EffortSelector } from '../EffortSelector';
-import { MCPServerSelect } from '../MCPServerSelect';
+import { SessionMcpServersField } from '../MCPServerSelect';
 import { ModelSelector } from '../ModelSelector';
 import {
   CODEX_APPROVAL_POLICIES,
@@ -42,6 +41,13 @@ export interface AgenticToolConfigFormProps {
    *   Use CodexSettingsForm separately for those.
    */
   compact?: boolean;
+  /**
+   * Suppress the MCP Servers field. Use when the parent renders MCP as a
+   * standalone first-class field elsewhere in the form (e.g., NewSessionModal
+   * promotes it to the primary zone). Avoids duplicate `mcpServerIds`
+   * Form.Items in the same Form.
+   */
+  hideMcpServers?: boolean;
 }
 
 const MODEL_LABELS: Record<string, string> = {
@@ -56,10 +62,10 @@ export const AgenticToolConfigForm: React.FC<AgenticToolConfigFormProps> = ({
   mcpServerById,
   showHelpText = true,
   compact = false,
+  hideMcpServers = false,
 }) => {
   const modelLabel = MODEL_LABELS[agenticTool] ?? 'Claude Model';
   const showCodexFields = agenticTool === 'codex' && !compact;
-  const mcpReadable = useServiceReadable('mcp_servers');
 
   return (
     <>
@@ -150,17 +156,8 @@ export const AgenticToolConfigForm: React.FC<AgenticToolConfigFormProps> = ({
         </Form.Item>
       )}
 
-      {mcpReadable && (
-        <Form.Item
-          name="mcpServerIds"
-          label="MCP Servers"
-          help={showHelpText ? 'Select MCP servers to make available in this session' : undefined}
-        >
-          <MCPServerSelect
-            mcpServers={mapToArray(mcpServerById)}
-            placeholder="No MCP servers attached"
-          />
-        </Form.Item>
+      {!hideMcpServers && (
+        <SessionMcpServersField mcpServerById={mcpServerById} showHelpText={showHelpText} />
       )}
     </>
   );
