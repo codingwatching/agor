@@ -198,7 +198,7 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
         {/* Worktree Info */}
         {worktree && (
           <Alert
-            message={
+            title={
               <>
                 Creating session in worktree: <strong>{worktree.name}</strong> ({worktree.ref})
               </>
