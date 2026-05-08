@@ -58,6 +58,7 @@ import { createCardTypesService } from './services/card-types.js';
 import { createCardsService } from './services/cards.js';
 import { createConfigService } from './services/config.js';
 import { createContextService } from './services/context.js';
+import { createCopilotModelsService } from './services/copilot-models.js';
 import { createFileService } from './services/file.js';
 import { createFilesService } from './services/files.js';
 import { createGatewayService } from './services/gateway.js';
@@ -378,6 +379,13 @@ export async function registerServices(ctx: RegisterServicesContext): Promise<Re
       return await configService.resolveApiKey(data);
     },
   });
+
+  // Copilot dynamic model discovery via @github/copilot-sdk's listModels().
+  // Resolves the GitHub token per-user (with config.yaml + env fallback)
+  // and falls back to the static list at @agor/core/models/copilot if no
+  // token is configured or the SDK call fails.
+  app.use('/copilot-models', createCopilotModelsService(db));
+  app.service('/copilot-models').hooks({ before: { find: [ctx.requireAuth] } });
 
   const worktreeRepository = new WorktreeRepository(db);
   const { UsersRepository, SessionRepository } = await import('@agor/core/db');

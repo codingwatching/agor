@@ -1,13 +1,16 @@
 import {
+  type AgorClient,
   AVAILABLE_CLAUDE_MODEL_ALIASES,
   CODEX_MODEL_METADATA,
+  COPILOT_MODEL_METADATA,
   DEFAULT_CODEX_MODEL,
+  DEFAULT_COPILOT_MODEL,
   GEMINI_MODELS,
   type GeminiModel,
 } from '@agor-live/client';
 import { InfoCircleOutlined } from '@ant-design/icons';
 import { Input, Radio, Select, Space, Tooltip } from 'antd';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { type OpenCodeModelConfig, OpenCodeModelSelector } from './OpenCodeModelSelector';
 
 export interface ModelConfig {
@@ -22,6 +25,26 @@ export interface ModelSelectorProps {
   onChange?: (config: ModelConfig) => void;
   agent?: 'claude-code' | 'codex' | 'gemini' | 'opencode' | 'copilot'; // Kept as 'agent' for backwards compat in prop name
   agentic_tool?: 'claude-code' | 'codex' | 'gemini' | 'opencode' | 'copilot';
+  /**
+   * Optional Feathers client. When provided AND the agentic tool is Copilot,
+   * the picker fetches the live model list from /copilot-models (which calls
+   * the SDK's `listModels()` server-side) and merges it with the static
+   * fallback. Without a client, the picker only shows static models.
+   */
+  client?: AgorClient | null;
+}
+
+interface CopilotModelOption {
+  id: string;
+  displayName: string;
+  description?: string;
+  source: 'dynamic' | 'static';
+}
+
+interface CopilotModelsResponse {
+  default: string;
+  models: CopilotModelOption[];
+  source: 'dynamic' | 'static';
 }
 
 // Codex model options (derived from @agor/core metadata)
@@ -38,6 +61,17 @@ const GEMINI_MODEL_OPTIONS = Object.entries(GEMINI_MODELS).map(([modelId, meta])
   description: meta.description,
 }));
 
+// Copilot model options (static fallback). The dynamic list from the SDK's
+// listModels() is fetched server-side and may include BYOK-configured models
+// not represented here.
+const COPILOT_STATIC_MODEL_OPTIONS = Object.entries(COPILOT_MODEL_METADATA).map(
+  ([modelId, meta]) => ({
+    id: modelId,
+    label: meta.name,
+    description: meta.description,
+  })
+);
+
 /**
  * Model Selector Component
  *
@@ -52,15 +86,48 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   onChange,
   agent,
   agentic_tool,
+  client,
 }) => {
   // Determine which model list to use based on agentic_tool (with backwards compat for agent prop)
   const effectiveTool = agentic_tool || agent || 'claude-code';
 
-  // Calculate model list (needed for initial mode calculation)
-  // Copilot models are discovered dynamically via listModels() — use a placeholder
-  const COPILOT_MODEL_OPTIONS = [
-    { id: 'default', label: 'Default', description: 'Use Copilot default model' },
-  ];
+  // Copilot model list — fetched once when the picker opens for Copilot and
+  // a client is available. The daemon returns either the live `listModels()`
+  // result (source: 'dynamic') or the static fallback (source: 'static',
+  // typically when no GitHub token is configured). Either way we render
+  // whatever the server returns; the local static list is a last-resort
+  // fallback for when the call itself fails.
+  const [copilotServerOptions, setCopilotServerOptions] = useState<Array<{
+    id: string;
+    label: string;
+    description?: string;
+  }> | null>(null);
+  const [copilotSource, setCopilotSource] = useState<'dynamic' | 'static' | null>(null);
+
+  useEffect(() => {
+    if (effectiveTool !== 'copilot' || !client) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const raw = await client.service('copilot-models').find();
+        const response = raw as unknown as CopilotModelsResponse;
+        if (cancelled || !response?.models?.length) return;
+        setCopilotServerOptions(
+          response.models.map((m) => ({
+            id: m.id,
+            label: m.displayName,
+            description: m.description,
+          }))
+        );
+        setCopilotSource(response.source);
+      } catch {
+        // Silent fallback to local static — best-effort.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveTool, client]);
 
   const modelList =
     effectiveTool === 'codex'
@@ -70,7 +137,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         : effectiveTool === 'opencode'
           ? [] // OpenCode doesn't use this list
           : effectiveTool === 'copilot'
-            ? COPILOT_MODEL_OPTIONS
+            ? (copilotServerOptions ?? COPILOT_STATIC_MODEL_OPTIONS)
             : AVAILABLE_CLAUDE_MODEL_ALIASES;
 
   // Determine initial mode based on whether the value is in the aliases list
@@ -118,7 +185,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       } else if (effectiveTool === 'gemini') {
         defaultModel = 'gemini-2.5-flash';
       } else if (effectiveTool === 'copilot') {
-        defaultModel = 'default';
+        defaultModel = DEFAULT_COPILOT_MODEL;
       } else {
         // claude-code (opencode is handled earlier in the component)
         defaultModel = 'claude-sonnet-4-6';
@@ -163,6 +230,20 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                   label: m.id,
                 }))}
               />
+              {effectiveTool === 'copilot' && copilotSource && (
+                <div style={{ marginTop: 6, fontSize: 12, color: 'rgba(255, 255, 255, 0.45)' }}>
+                  {copilotSource === 'dynamic' ? (
+                    <>
+                      Live list from your Copilot account (via SDK <code>listModels()</code>).
+                    </>
+                  ) : (
+                    <>
+                      Showing static fallback. Set <code>COPILOT_GITHUB_TOKEN</code> on the daemon
+                      to see your account's live list (including BYOK models).
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
