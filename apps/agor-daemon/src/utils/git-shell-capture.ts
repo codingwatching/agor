@@ -5,11 +5,11 @@
  * after daemon start are missing). This means in-process simple-git calls fail
  * for repos whose ACLs rely on recently-added groups.
  *
- * Solution: Use `sudo -u <daemonUser>` to run git commands, which calls
- * initgroups() and gets fresh group memberships from /etc/group.
- *
- * Falls back to direct shell execution (without sudo) when no daemon user
- * is configured (e.g., simple mode without Unix isolation).
+ * When supplemental groups exist (RBAC enabled, or `unix_user_mode` insulated/
+ * strict), we wrap git commands in `sudo -u <daemonUser>` so sudo calls
+ * initgroups() and gets fresh group memberships from /etc/group. In the open-
+ * access default (no RBAC, simple mode) no such groups exist, so we run the
+ * git command directly — this avoids requiring sudoers config (#1140).
  *
  * @see git-impersonation.ts for the same pattern used in git clone/worktree operations
  */
@@ -19,13 +19,18 @@ import { runAsUser, validateResolvedUnixUser } from '@agor/core/unix';
 /**
  * Resolve and validate the daemon user for sudo -u impersonation.
  *
- * Uses getDaemonUser() from config and validates via validateResolvedUnixUser()
- * to prevent unvalidated strings from reaching shell commands.
+ * Returns `undefined` when no supplemental groups exist (no RBAC, simple
+ * unix mode), so `runAsUser` runs the command directly without sudo. This
+ * matches the gating in {@link ../utils/git-impersonation.ts} and avoids
+ * the "user not in sudoers" failure on default open-access setups (#1140).
  *
- * @returns Validated daemon username, or undefined if not configured
+ * @returns Validated daemon username, or undefined if no group refresh is needed
  */
 async function resolveValidatedDaemonUser(): Promise<string | undefined> {
-  const { getDaemonUser } = await import('@agor/core/config');
+  const { getDaemonUser, isUnixGroupRefreshNeeded } = await import('@agor/core/config');
+  if (!isUnixGroupRefreshNeeded()) {
+    return undefined;
+  }
   const daemonUser = getDaemonUser();
   if (daemonUser) {
     validateResolvedUnixUser('simple', daemonUser);
