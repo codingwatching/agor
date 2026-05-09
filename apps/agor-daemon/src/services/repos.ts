@@ -144,7 +144,7 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
    * Client receives 'repos.created' WebSocket event when complete.
    */
   async cloneRepository(
-    data: { url: string; slug?: string; name?: string },
+    data: { url: string; slug?: string; name?: string; default_branch?: string },
     params?: RepoParams
   ): Promise<{ status: 'pending' | 'exists'; slug: string }> {
     // Note: `||` (not `??`) is intentional — we want an empty `data.slug`
@@ -200,6 +200,10 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
         params: {
           url: data.url,
           slug,
+          // Forward the user-supplied default_branch so the executor
+          // persists what the operator typed in "Add Repository" instead
+          // of silently overwriting it with origin/HEAD.
+          ...(data.default_branch ? { default_branch: data.default_branch } : {}),
           createDbRecord: true,
           userId: userId as string | undefined,
           initUnixGroup: rbacEnabled,
@@ -217,10 +221,20 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
             const io = (app as unknown as { io?: { emit: (event: string, data: unknown) => void } })
               .io;
             if (io) {
+              // Include the pinned branch in the message so an operator who
+              // typo'd the Default Branch can self-diagnose. `git clone
+              // --branch <X>` failure is one of the most common reasons a
+              // clone exits non-zero, but the executor's stderr is consumed
+              // by spawnExecutorFireAndForget — without this hint the user
+              // sees only "Clone failed (exit code 128)" and has no idea
+              // the branch field is the cause.
+              const branchHint = data.default_branch
+                ? ` Default Branch was set to '${data.default_branch}' — verify it exists on the remote.`
+                : '';
               io.emit('repo:cloneError', {
                 slug,
                 url: data.url,
-                error: `Clone failed (exit code ${code}). Check that the repository URL is correct and accessible.`,
+                error: `Clone failed (exit code ${code}). Check that the repository URL is correct and accessible.${branchHint}`,
               });
             }
           }

@@ -1116,4 +1116,120 @@ describe('cloneRepo', () => {
       .catch(() => false);
     expect(objectsExists).toBe(true);
   });
+
+  // Regression coverage for the "Add Repository → Default Branch" bug:
+  // when the operator pins a non-default branch, the working tree must
+  // land on that branch (so `.agor.yml` etc. on a feature branch is
+  // visible to the daemon at parse time) and the returned defaultBranch
+  // must reflect what was pinned (so the DB record matches disk).
+  it('should check out the pinned branch when options.branch is set', async () => {
+    // Build a remote that has both `main` and a feature branch with a
+    // marker file that only exists on the feature branch.
+    const tmpRepoDir = path.join(tempDir, 'tmp-for-push');
+    await createTestRepo(tmpRepoDir);
+    const git = simpleGit(tmpRepoDir);
+    await git.checkoutLocalBranch('feature/x');
+    await fs.writeFile(path.join(tmpRepoDir, 'marker.txt'), 'on-feature', 'utf-8');
+    await git.add('marker.txt');
+    await git.commit('add feature marker');
+    await git.checkout('main');
+    await createBareRepo(remoteDir);
+    await git.addRemote('origin', remoteDir);
+    await git.push('origin', 'main');
+    await git.push('origin', 'feature/x');
+
+    const result = await cloneRepo({ url: remoteDir, branch: 'feature/x' });
+
+    expect(result.defaultBranch).toBe('feature/x');
+    // Working tree is on the pinned branch — marker file is checked out.
+    const markerExists = await fs
+      .access(path.join(result.path, 'marker.txt'))
+      .then(() => true)
+      .catch(() => false);
+    expect(markerExists).toBe(true);
+    // simple-git reports the current branch from HEAD; should be the pin.
+    const cloned = simpleGit(result.path);
+    const branches = await cloned.branch();
+    expect(branches.current).toBe('feature/x');
+  });
+
+  it('should fall back to remote HEAD when options.branch is not set', async () => {
+    // Counterpart to the test above — the unpinned path stays unchanged.
+    await createBareRepo(remoteDir);
+    const tmpRepoDir = path.join(tempDir, 'tmp-for-push');
+    await createTestRepo(tmpRepoDir);
+    const git = simpleGit(tmpRepoDir);
+    await git.addRemote('origin', remoteDir);
+    await git.push('origin', 'main');
+
+    const result = await cloneRepo({ url: remoteDir });
+
+    expect(result.defaultBranch).toBe('main');
+  });
+
+  it('should fail loudly when options.branch does not exist on the remote', async () => {
+    // Better than silently falling back to main — surfaces typos at
+    // clone time rather than persisting a half-broken repo record.
+    await createBareRepo(remoteDir);
+    const tmpRepoDir = path.join(tempDir, 'tmp-for-push');
+    await createTestRepo(tmpRepoDir);
+    const git = simpleGit(tmpRepoDir);
+    await git.addRemote('origin', remoteDir);
+    await git.push('origin', 'main');
+
+    await expect(cloneRepo({ url: remoteDir, branch: 'does-not-exist' })).rejects.toThrow();
+  });
+
+  // Existing-repo early-return path: if the repo dir is already present
+  // (re-clone, half-broken first attempt, manual provisioning), the pinned
+  // branch was previously ignored — DB record claimed feat/x while disk
+  // stayed on whatever was checked out. Two regressions follow.
+  it('should switch the working tree when reusing an existing clone with a pinned branch', async () => {
+    const tmpRepoDir = path.join(tempDir, 'tmp-for-push');
+    await createTestRepo(tmpRepoDir);
+    const git = simpleGit(tmpRepoDir);
+    await git.checkoutLocalBranch('feature/x');
+    await fs.writeFile(path.join(tmpRepoDir, 'marker.txt'), 'on-feature', 'utf-8');
+    await git.add('marker.txt');
+    await git.commit('add feature marker');
+    await git.checkout('main');
+    await createBareRepo(remoteDir);
+    await git.addRemote('origin', remoteDir);
+    await git.push('origin', 'main');
+    await git.push('origin', 'feature/x');
+
+    // First clone unpinned — leaves the working tree on `main`.
+    const first = await cloneRepo({ url: remoteDir });
+    expect(first.defaultBranch).toBe('main');
+
+    // Second call to the SAME target with a pin — must check out the pin
+    // before returning.
+    const second = await cloneRepo({ url: remoteDir, branch: 'feature/x' });
+    expect(second.path).toBe(first.path);
+    expect(second.defaultBranch).toBe('feature/x');
+    const cloned = simpleGit(second.path);
+    const branches = await cloned.branch();
+    expect(branches.current).toBe('feature/x');
+    // marker file from feature/x is now in the working tree
+    const markerExists = await fs
+      .access(path.join(second.path, 'marker.txt'))
+      .then(() => true)
+      .catch(() => false);
+    expect(markerExists).toBe(true);
+  });
+
+  it('should reject reuse when the pinned branch cannot be checked out', async () => {
+    // Existing clone, pin a branch that doesn't exist on the remote — must
+    // fail rather than silently returning the wrong defaultBranch.
+    await createBareRepo(remoteDir);
+    const tmpRepoDir = path.join(tempDir, 'tmp-for-push');
+    await createTestRepo(tmpRepoDir);
+    const git = simpleGit(tmpRepoDir);
+    await git.addRemote('origin', remoteDir);
+    await git.push('origin', 'main');
+
+    await cloneRepo({ url: remoteDir });
+
+    await expect(cloneRepo({ url: remoteDir, branch: 'does-not-exist' })).rejects.toThrow();
+  });
 });

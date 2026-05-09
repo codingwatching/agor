@@ -375,6 +375,13 @@ export interface CloneOptions {
   url: string;
   targetDir?: string;
   bare?: boolean;
+  /**
+   * Pin the working tree to a specific branch instead of the remote's HEAD.
+   * Forwarded as `git clone --branch <name>`. Used when the operator wants
+   * the repo's effective base to be a non-default branch — e.g. so `.agor.yml`
+   * on a feature branch is what the daemon reads at clone time.
+   */
+  branch?: string;
   onProgress?: (progress: CloneProgress) => void;
   env?: Record<string, string>; // User environment variables (e.g., from resolveUserEnvironment)
 }
@@ -436,8 +443,49 @@ export async function cloneRepo(options: CloneOptions): Promise<CloneResult> {
     const isValid = await isGitRepo(targetPath);
 
     if (isValid) {
-      // Repository already exists and is valid - just use it!
+      // Repository already exists and is valid — reuse it. If the caller
+      // pinned a branch, the working tree has to actually be on that branch
+      // before we return: skipping the checkout silently leaves disk on the
+      // previous branch while the caller writes the pin into the repo DB
+      // record, so `.agor.yml` parsed at the cached `path` would come from
+      // the wrong branch and the UI would log "no environment variants
+      // configured" even though the user picked the right branch.
       console.log(`Repository already exists at ${targetPath}, using existing clone`);
+
+      const existingGit = createGit(targetPath, options.env, parseHostFromGitUrl(cloneUrl)).git;
+
+      if (options.branch) {
+        const branches = await existingGit.branch();
+        if (branches.current !== options.branch) {
+          // Fetch from origin to make sure the pinned branch (and any
+          // updates to it) are visible locally before checkout.
+          try {
+            await existingGit.fetch(['origin', options.branch]);
+          } catch (err) {
+            throw new Error(
+              `Existing clone at ${targetPath} is on branch '${branches.current}'; ` +
+                `failed to fetch '${options.branch}' from origin: ${
+                  err instanceof Error ? err.message : String(err)
+                }`
+            );
+          }
+          try {
+            await existingGit.checkout(options.branch);
+          } catch (err) {
+            throw new Error(
+              `Existing clone at ${targetPath} is on branch '${branches.current}'; ` +
+                `failed to switch to pinned '${options.branch}': ${
+                  err instanceof Error ? err.message : String(err)
+                }`
+            );
+          }
+        }
+        return {
+          path: targetPath,
+          repoName,
+          defaultBranch: options.branch,
+        };
+      }
 
       const defaultBranch = await getDefaultBranch(targetPath);
 
@@ -471,11 +519,22 @@ export async function cloneRepo(options: CloneOptions): Promise<CloneResult> {
   }
 
   // Clone using the original URL — auth is supplied via http.extraheader env vars.
-  console.log(`Cloning ${options.url} to ${targetPath}...`);
-  await git.clone(cloneUrl, targetPath, options.bare ? ['--bare'] : []);
+  // If the caller pinned a branch, pass `--branch <name>` so the working tree
+  // lands on that branch (instead of remote HEAD). Without this, repos whose
+  // `.agor.yml` lives on a non-default branch would clone with the file
+  // missing on disk and the daemon would log "No environment variants
+  // configured" even though the user picked the right branch.
+  const cloneArgs: string[] = [];
+  if (options.bare) cloneArgs.push('--bare');
+  if (options.branch) cloneArgs.push('--branch', options.branch);
+  console.log(
+    `Cloning ${options.url} to ${targetPath}${options.branch ? ` (branch: ${options.branch})` : ''}...`
+  );
+  await git.clone(cloneUrl, targetPath, cloneArgs);
 
-  // Get default branch from remote HEAD
-  const defaultBranch = await getDefaultBranch(targetPath);
+  // Default branch: prefer the explicit pin (so the DB record matches what's
+  // on disk); fall back to the remote's HEAD when the caller didn't pin one.
+  const defaultBranch = options.branch ?? (await getDefaultBranch(targetPath));
 
   return {
     path: targetPath,
