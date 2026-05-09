@@ -1,9 +1,10 @@
 import type { WorktreeID } from '@agor/core/types';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import type { WorktreesServiceImpl } from '../../declarations.js';
+import type { ReposServiceImpl, WorktreesServiceImpl } from '../../declarations.js';
 import type { McpContext } from '../server.js';
 import { coerceString, textResult } from '../server.js';
+import { assertValidVariant } from './_environment-helpers.js';
 
 export function registerEnvironmentTools(server: McpServer, ctx: McpContext): void {
   // Tool 1: agor_environment_start
@@ -158,7 +159,130 @@ export function registerEnvironmentTools(server: McpServer, ctx: McpContext): vo
     }
   );
 
-  // Tool 6: agor_environment_nuke
+  // Tool 6: agor_environment_set
+  // Configuration verb: persists the variant on the worktree and re-renders
+  // the materialized command strings (start/stop/nuke/logs/health/app) from
+  // the repo's Handlebars templates. `start`, `stop`, `restart`, `logs`, etc.
+  // always operate on the persisted variant — they don't take a variant arg —
+  // so swapping the variant is an explicit, visible step rather than a side
+  // effect of an "execute" verb.
+  server.registerTool(
+    'agor_environment_set',
+    {
+      description:
+        "Set the environment variant for a worktree and persist it. Re-renders the worktree's " +
+        'environment commands (start/stop/nuke/logs/health/app) from the repo config so subsequent ' +
+        'agor_environment_start/stop/etc. operate on the new variant. ' +
+        'Variant changes require admin permission (rendered commands run as the system user). ' +
+        'Refuses to switch variant when the environment is running or starting — stop it first. ' +
+        'Pass andStart=true to start the environment after setting; otherwise call agor_environment_start separately. ' +
+        'Omit variant to re-render the worktree with its current variant (useful for picking up template_overrides changes).',
+      annotations: { idempotentHint: true },
+      inputSchema: z.object({
+        worktreeId: z.string().describe('Worktree ID (UUIDv7 or short ID)'),
+        variant: z
+          .string()
+          .optional()
+          .describe(
+            'Environment variant name to set. Must be a key in the repo environment config variants. ' +
+              "When omitted, re-renders using the worktree's current variant (or the repo default if unset)."
+          ),
+        andStart: z
+          .boolean()
+          .optional()
+          .describe(
+            'When true, start the environment after setting the variant. Defaults to false. ' +
+              'Convenience for one-shot configure-and-run workflows.'
+          ),
+      }),
+    },
+    async (args) => {
+      const worktreeId = coerceString(args.worktreeId)!;
+      const variant = coerceString(args.variant);
+      const andStart = args.andStart === true;
+      const worktreesService = ctx.app.service('worktrees') as unknown as WorktreesServiceImpl;
+
+      try {
+        const worktree = await worktreesService.get(
+          worktreeId as WorktreeID,
+          ctx.baseServiceParams
+        );
+
+        // Resolve the target variant: caller-supplied wins, otherwise re-render
+        // with the worktree's current variant. We only fall through to
+        // `undefined` (which lets the service apply the repo default) when the
+        // worktree has no variant set at all — the legacy first-render case.
+        // Without this fallback, omitting `variant` would silently flip a
+        // worktree from a non-default variant back to the repo default.
+        const targetVariant = variant ?? worktree.environment_variant ?? undefined;
+
+        if (variant) {
+          const reposService = ctx.app.service('repos') as unknown as ReposServiceImpl;
+          const repo = await reposService.get(worktree.repo_id);
+          assertValidVariant(repo, variant);
+        }
+
+        // The "variant change while env is running/starting" guard lives in
+        // WorktreesService.renderEnvironment so it covers REST/UI/MCP
+        // uniformly. The error it throws is propagated by the outer catch
+        // below.
+
+        const updated = await worktreesService.renderEnvironment(
+          worktreeId as WorktreeID,
+          targetVariant ? { variant: targetVariant } : undefined,
+          ctx.baseServiceParams
+        );
+
+        if (!andStart) {
+          return textResult({
+            success: true,
+            worktree: updated,
+            message: `Environment variant set to "${updated.environment_variant}".`,
+          });
+        }
+
+        // The variant has now been persisted. If start fails, surface that
+        // distinctly so callers know the configuration change DID land.
+        try {
+          const started = await worktreesService.startEnvironment(
+            worktreeId as WorktreeID,
+            ctx.baseServiceParams
+          );
+          return textResult({
+            success: true,
+            worktree: started,
+            message: `Environment variant set to "${updated.environment_variant}" and started.`,
+          });
+        } catch (startError) {
+          const startMessage = startError instanceof Error ? startError.message : 'Unknown error';
+          const commandOutput =
+            startError instanceof Error
+              ? (startError as Error & { commandOutput?: string }).commandOutput
+              : undefined;
+          return textResult({
+            success: false,
+            variant_set: true,
+            worktree: updated,
+            error: `Variant was set to "${updated.environment_variant}", but start failed: ${startMessage}`,
+            ...(commandOutput ? { output: commandOutput } : {}),
+          });
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        const commandOutput =
+          error instanceof Error
+            ? (error as Error & { commandOutput?: string }).commandOutput
+            : undefined;
+        return textResult({
+          success: false,
+          error: errorMessage,
+          ...(commandOutput ? { output: commandOutput } : {}),
+        });
+      }
+    }
+  );
+
+  // Tool 7: agor_environment_nuke
   server.registerTool(
     'agor_environment_nuke',
     {

@@ -2,6 +2,7 @@ import { isWorktreeRbacEnabled } from '@agor/core/config';
 import { WorktreeRepository } from '@agor/core/db';
 import type {
   BoardID,
+  Repo,
   UUID,
   Worktree,
   WorktreeID,
@@ -24,6 +25,7 @@ import {
 } from '../resolve-ids.js';
 import type { McpContext } from '../server.js';
 import { coerceString, textResult } from '../server.js';
+import { assertValidVariant } from './_environment-helpers.js';
 
 const WORKTREE_NAME_PATTERN = /^[a-z0-9-]+$/;
 const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
@@ -196,6 +198,15 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
               'The creating user is always added as owner automatically. ' +
               'Owners have full access regardless of othersCan/othersFsAccess settings.'
           ),
+        variant: z
+          .string()
+          .optional()
+          .describe(
+            'Environment variant name to use for this worktree. ' +
+              'Must be a key in the repo environment config variants. ' +
+              'When omitted, the repo default variant is used. ' +
+              'Use agor_environment_set later to switch variants on an existing worktree.'
+          ),
       }),
     },
     async (args) => {
@@ -211,12 +222,16 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
       }
 
       const reposService = ctx.app.service('repos') as unknown as ReposServiceImpl;
-      let repo: unknown;
+      let repo: Repo;
       try {
         repo = await reposService.get(repoId);
       } catch {
         throw new Error(`Repository ${repoId} not found`);
       }
+
+      // Validate variant up front so the error lists the available variants.
+      const variant = coerceString(args.variant);
+      if (variant) assertValidVariant(repo, variant);
 
       // Auto-suffix: resolve name conflicts by appending -2, -3, etc.
       // Uses direct DB query to bypass Feathers pagination limits
@@ -234,8 +249,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
         }
       }
 
-      const defaultBranch =
-        coerceString((repo as { default_branch?: unknown }).default_branch) ?? 'main';
+      const defaultBranch = repo.default_branch ?? 'main';
       const refType = (coerceString(args.refType) as 'branch' | 'tag') || 'branch';
       let createBranch = typeof args.createBranch === 'boolean' ? args.createBranch : true;
       let ref = coerceString(args.ref);
@@ -287,6 +301,7 @@ export function registerWorktreeTools(server: McpServer, ctx: McpContext): void 
           ...(zoneId ? { zoneId } : {}),
           ...(othersCan ? { others_can: othersCan } : {}),
           ...(othersFsAccess ? { others_fs_access: othersFsAccess } : {}),
+          ...(variant ? { environment_variant: variant } : {}),
         },
         ctx.baseServiceParams
       );
