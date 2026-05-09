@@ -48,6 +48,7 @@ const WORKTREES_SERVICE_EXTENDED = Symbol('agor.worktreesServiceExtended');
 const SERVICE_FIND_ALL_EXTENDED = Symbol('agor.serviceFindAllExtended');
 const CLIENT_SERVICE_FACTORY_EXTENDED = Symbol('agor.clientServiceFactoryExtended');
 const CLIENT_SESSIONS_HELPERS_EXTENDED = Symbol('agor.clientSessionsHelpersExtended');
+const CLIENT_TASKS_HELPERS_EXTENDED = Symbol('agor.clientTasksHelpersExtended');
 
 /**
  * Client-side input type helper:
@@ -105,6 +106,33 @@ export interface SessionsClientHelpers {
     prompt: string,
     options?: SessionPromptOptions
   ): Promise<SessionPromptResult>;
+}
+
+/**
+ * Body shape for `POST /tasks/:id/run`. Matches the prompt route's options
+ * so the same defaults (`stream: true`, agor messageSource for socket
+ * callers) apply when explicitly triggering an already-created task.
+ */
+export interface TaskRunRequest {
+  permissionMode?: PermissionMode;
+  stream?: boolean;
+  messageSource?: 'gateway' | 'agor';
+}
+
+export interface TaskRunOptions extends TaskRunRequest {
+  params?: Params;
+}
+
+export interface TasksClientHelpers {
+  /**
+   * Trigger executor pickup for an already-created task. Pure-REST harnesses
+   * use this after `POST /tasks` to avoid needing an MCP client. Returns the
+   * Task with `status: 'running'`. Only `'created'` tasks on idle sessions
+   * are accepted — `'queued'` tasks drain automatically in queue-position
+   * order via the queue processor, and busy sessions should be prompted via
+   * `client.sessions.prompt()` (which creates and queues the task atomically).
+   */
+  run(taskId: string, options?: TaskRunOptions): Promise<Task>;
 }
 
 /**
@@ -421,6 +449,7 @@ export interface WorktreesService extends AgorService<Worktree> {
 export interface AgorClient extends Omit<Application<ServiceTypes>, 'service'> {
   io: Socket;
   sessions: SessionsClientHelpers;
+  tasks: TasksClientHelpers;
 
   // Typed service overloads for services with custom methods
   service(path: 'sessions'): SessionsService;
@@ -734,6 +763,28 @@ function extendSessionsHelpers(client: AgorClient): void {
   augmentedClient[CLIENT_SESSIONS_HELPERS_EXTENDED] = true;
 }
 
+function extendTasksHelpers(client: AgorClient): void {
+  const augmentedClient = client as AgorClient & {
+    [CLIENT_TASKS_HELPERS_EXTENDED]?: boolean;
+  };
+
+  if (augmentedClient[CLIENT_TASKS_HELPERS_EXTENDED]) {
+    return;
+  }
+
+  client.tasks = {
+    run: async (taskId: string, options?: TaskRunOptions) => {
+      const { params, ...requestOptions } = options ?? {};
+      const response = await client
+        .service(`tasks/${taskId}/run`)
+        .create(requestOptions as TaskRunRequest, params);
+      return response as Task;
+    },
+  };
+
+  augmentedClient[CLIENT_TASKS_HELPERS_EXTENDED] = true;
+}
+
 /**
  * Create Feathers client connected to agor-daemon
  *
@@ -801,6 +852,7 @@ export async function createRestClient(
   extendReposService(client);
   extendWorktreesService(client);
   extendSessionsHelpers(client);
+  extendTasksHelpers(client);
 
   return client;
 }
@@ -883,6 +935,7 @@ export function createClient(
   extendReposService(client);
   extendWorktreesService(client);
   extendSessionsHelpers(client);
+  extendTasksHelpers(client);
 
   return client;
 }
