@@ -28,6 +28,7 @@ import { NotAuthenticated } from '@agor/core/feathers';
 import type {
   AuthenticatedParams,
   HookContext,
+  MCPAuth,
   MCPServerID,
   MessageSource,
   SessionID,
@@ -2163,11 +2164,21 @@ async function registerMCPServices(
           }
         };
 
+        // Skip pre-resolution URL validation for templated URLs — `new URL()`
+        // rejects whitespace inside `{{ user.env.X }}` (and full-URL templates
+        // like `{{ user.env.MCP_URL }}` have no scheme yet), so validating
+        // pre-resolution would block legitimate templates from ever reaching
+        // the resolver. The resolved URL is re-validated below before use.
+        const isTemplated = (url: string): boolean => url.includes('{{');
+
         const hasInlineConfig = !!data.url;
+        // `auth` is typed as the canonical MCPAuth (rather than narrowing to
+        // `typeof data.auth`) so the resolved auth from
+        // `resolveProbeServerTemplates` flows back in without casts.
         let serverConfig: {
           url: string;
           transport: 'http' | 'sse' | 'stdio';
-          auth?: typeof data.auth;
+          auth?: MCPAuth;
           name?: string;
           scope?: string;
           owner_user_id?: string;
@@ -2175,8 +2186,10 @@ async function registerMCPServices(
         let serverId: string | undefined;
 
         if (hasInlineConfig) {
-          const urlValidation = validateUrl(data.url!);
-          if (!urlValidation.valid) return { success: false, error: urlValidation.error };
+          if (!isTemplated(data.url!)) {
+            const urlValidation = validateUrl(data.url!);
+            if (!urlValidation.valid) return { success: false, error: urlValidation.error };
+          }
           serverConfig = {
             url: data.url!,
             transport: data.transport || 'http',
@@ -2223,7 +2236,7 @@ async function registerMCPServices(
                 error: 'Access denied: admin role required to discover session-scoped MCP servers',
               };
           }
-          if (server.url) {
+          if (server.url && !isTemplated(server.url)) {
             const urlValidation = validateUrl(server.url);
             if (!urlValidation.valid) return { success: false, error: urlValidation.error };
           }
@@ -2245,6 +2258,54 @@ async function registerMCPServices(
             success: false,
             error: `Connection test not supported for stdio servers (requires active session)`,
           };
+        }
+
+        // Resolve {{ user.env.X }} templates in url/auth using the caller's
+        // user env vars. The executor does this at session runtime via
+        // process.env + AGOR_USER_ENV_KEYS, but the daemon's process.env
+        // never holds user secrets — so we pull them from the DB here. Without
+        // this, Test Connection sends the literal `Bearer {{ user.env.X }}`
+        // string and the MCP server returns 401, even though the server works
+        // fine in real sessions.
+        //
+        // The endpoint is gated by `requireAuth` (see hook registration
+        // below), so a missing user_id here means the auth contract was
+        // bypassed somewhere upstream — fail loud rather than silently
+        // skip resolution and ship literal templates upstream.
+        const userId = params?.user?.user_id as UserID | undefined;
+        if (!userId) {
+          throw new NotAuthenticated('MCP discover requires an authenticated user');
+        }
+
+        const { resolveUserEnvironment } = await import('@agor/core/config');
+        const { resolveProbeServerTemplates } = await import('./utils/mcp-probe-templates.js');
+
+        const userEnv = await resolveUserEnvironment(userId, db);
+        const resolution = resolveProbeServerTemplates(
+          {
+            url: serverConfig.url,
+            transport: serverConfig.transport,
+            auth: serverConfig.auth,
+            name: serverConfig.name,
+            mcpServerId: serverId,
+          },
+          userEnv
+        );
+
+        if (!resolution.ok) {
+          return { success: false, error: resolution.error };
+        }
+
+        serverConfig.auth = resolution.resolved.auth;
+        // Re-validate whenever the input URL was templated, even if the
+        // resolved string happens to match the input (e.g., a user env
+        // value that itself looks like the template). Pre-resolution
+        // validation is skipped for templated URLs, so this is the only
+        // gate that runs for them.
+        if (resolution.resolved.url !== serverConfig.url || isTemplated(serverConfig.url)) {
+          const recheck = validateUrl(resolution.resolved.url);
+          if (!recheck.valid) return { success: false, error: recheck.error };
+          serverConfig.url = resolution.resolved.url;
         }
 
         console.log('[MCP Discovery] Starting test for:', serverConfig.name || 'inline-config');
