@@ -483,17 +483,16 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
         ? await resolveGitImpersonationForWorktree(this.db, worktree)
         : undefined;
 
-      // Generate session token for executor authentication
-      const userId = (params as AuthenticatedParams | undefined)?.user?.user_id as
-        | UserID
-        | undefined;
+      // Generate session token for executor authentication. Hook chain
+      // enforces auth before we get here, so non-null assertion is safe.
+      const userId = (params as AuthenticatedParams).user!.user_id as UserID;
       const appWithToken = this.app as unknown as {
         sessionTokenService?: import('../services/session-token-service').SessionTokenService;
       };
 
       // Generate token and spawn executor (fire-and-forget)
       appWithToken.sessionTokenService
-        ?.generateToken('worktree-remove', userId || 'anonymous')
+        ?.generateToken('worktree-remove', userId)
         .then((sessionToken) => {
           spawnExecutor(
             {
@@ -546,7 +545,8 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
   ): Promise<WorktreeWithZoneAndSessions | { deleted: true; worktree_id: WorktreeID }> {
     const { metadataAction, filesystemAction } = options;
     const worktree = await this.get(id, params);
-    const currentUserId = 'anonymous' as UUID; // TODO: Get from auth context
+    // Hook chain enforces auth before we get here.
+    const currentUserId = (params as AuthenticatedParams).user!.user_id as UUID;
 
     // Stop environment if running
     if (worktree.environment_instance?.status === 'running') {
@@ -577,7 +577,7 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
       // to the wrong home directory, causing safety check failures.
 
       appWithToken.sessionTokenService
-        ?.generateToken('worktree-clean', userId || 'anonymous')
+        ?.generateToken('worktree-clean', userId ?? currentUserId)
         .then((sessionToken) => {
           spawnExecutor(
             {
@@ -607,7 +607,7 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
       // to the wrong home directory, causing safety check failures.
 
       appWithToken.sessionTokenService
-        ?.generateToken('worktree-delete', userId || 'anonymous')
+        ?.generateToken('worktree-delete', userId ?? currentUserId)
         .then((sessionToken) => {
           spawnExecutor(
             {

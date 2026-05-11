@@ -575,9 +575,10 @@ function createExecuteHandler(
     if (!appWithExecutor.sessionTokenService) {
       throw new Error('Session token service not initialized');
     }
+    // Hook chain enforces auth before we get here.
     const sessionToken = await appWithExecutor.sessionTokenService.generateToken(
       sessionId,
-      (params as AuthenticatedParams).user?.user_id || 'anonymous'
+      (params as AuthenticatedParams).user!.user_id
     );
 
     const taskId = data.taskId;
