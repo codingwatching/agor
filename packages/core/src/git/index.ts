@@ -13,6 +13,7 @@ import { mkdir, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { simpleGit } from 'simple-git';
 import { getReposDir, getWorktreesDir } from '../config/config-manager';
+import type { RepoCloneErrorCategory } from '../types/repo';
 
 /**
  * Validate a user-supplied git ref (branch name, tag) before it is passed to
@@ -257,6 +258,53 @@ export function buildAuthHeaderEnv(
   // configured host. Submodule fetches at any other host get nothing.
   const key = `http.https://${host}/.extraheader`;
   return [[key, `Authorization: Basic ${credential}`]];
+}
+
+/**
+ * Bucket a git error message into a coarse category so callers (UI, MCP) can
+ * suggest the right next step.
+ *
+ * Returns the canonical `RepoCloneErrorCategory` union from `@agor/core/types`
+ * so callers can persist it onto `Repo.clone_error.category` without redeclaring
+ * the values. The matching is intentionally loose — git's stderr varies across
+ * versions and remotes, and a false-positive `auth_failed` is cheaper than
+ * `unknown` for the user trying to recover. `'auth_failed'` is the bucket whose
+ * copy points users at Settings → API Keys (the most common reason private
+ * clones silently failed pre-#1126).
+ */
+export function categorizeGitError(stderr: string): RepoCloneErrorCategory {
+  const s = stderr.toLowerCase();
+  if (
+    s.includes('authentication failed') ||
+    s.includes('could not read username') ||
+    s.includes('could not read password') ||
+    s.includes('terminal prompts disabled') ||
+    s.includes('fatal: authentication') ||
+    s.includes('http basic') ||
+    s.includes('403 forbidden') ||
+    s.includes('permission denied (publickey)')
+  ) {
+    return 'auth_failed';
+  }
+  if (
+    s.includes('repository not found') ||
+    s.includes('not found') ||
+    s.includes('does not exist') ||
+    s.includes('404')
+  ) {
+    return 'not_found';
+  }
+  if (
+    s.includes('could not resolve host') ||
+    s.includes('connection refused') ||
+    s.includes('connection timed out') ||
+    s.includes('operation timed out') ||
+    s.includes('network is unreachable') ||
+    s.includes('network error')
+  ) {
+    return 'network';
+  }
+  return 'unknown';
 }
 
 /**

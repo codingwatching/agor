@@ -26,8 +26,10 @@ import { type Database, RepoRepository, WorktreeRepository } from '@agor/core/db
 import { autoAssignWorktreeUniqueId } from '@agor/core/environment/variable-resolver';
 import { type Application, Forbidden, NotAuthenticated } from '@agor/core/feathers';
 import {
+  extractRepoName,
   getDefaultBranch,
   getRemoteUrl,
+  getReposDir,
   getWorktreePath,
   isValidGitRepo,
   listWorktrees,
@@ -35,6 +37,7 @@ import {
 } from '@agor/core/git';
 import type {
   AuthenticatedParams,
+  CloneRepositoryResult,
   QueryParams,
   Repo,
   RepoEnvironment,
@@ -134,19 +137,27 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
   /**
    * Custom method: Clone repository (fire-and-forget)
    *
-   * Spawns executor to handle everything:
+   * The DB row is created EARLY (here) with `clone_status: 'cloning'` so
+   * MCP / UI callers can discover the outcome via `agor_repos_get(repoId)`
+   * even when the clone fails — fixes #1126's "silent pending forever"
+   * symptom. The executor then handles:
    * - Git clone
    * - Parse .agor.yml
-   * - Create DB record via Feathers
+   * - Patch the existing row to `'ready'` (with parsed env, default branch)
+   *   or `'failed'` (with categorized clone_error)
    * - Initialize Unix group
    *
-   * Returns immediately with { status: 'pending' }.
-   * Client receives 'repos.created' WebSocket event when complete.
+   * Returns immediately with `{ status: 'pending', slug, repo_id }`.
+   * Clients see a `repos.created` event for the placeholder row, then a
+   * `repos.patched` event when the clone finishes.
+   *
+   * Slug-collision policy: a previous `clone_status: 'failed'` row is
+   * deleted to allow seamless retry; any other state surfaces `'exists'`.
    */
   async cloneRepository(
     data: { url: string; slug?: string; name?: string; default_branch?: string },
     params?: RepoParams
-  ): Promise<{ status: 'pending' | 'exists'; slug: string }> {
+  ): Promise<CloneRepositoryResult> {
     // Note: `||` (not `??`) is intentional — we want an empty `data.slug`
     // to fall through to derivation rather than be treated as "explicit".
     let slug = data.slug || data.name;
@@ -159,22 +170,43 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
       throw new Error('Could not derive a valid slug from URL. Please provide a slug.');
     }
 
-    // If repo with this slug already exists, this is a no-op but we surface
-    // it as `status: 'exists'` (rather than `pending`) so callers can give
-    // users immediate feedback — otherwise the UI would wait indefinitely
-    // for a `repos.created` event that will never fire.
+    // Slug-collision policy:
+    // - `clone_status: 'failed'` → previous attempt left a tombstone row;
+    //   delete it so the user can retry without manually cleaning up.
+    //   Cascades to any half-initialized worktree rows (FK onDelete: cascade).
+    // - any other state (ready / cloning / undefined-legacy) → surface
+    //   `'exists'` so callers don't unintentionally clobber a working repo
+    //   or interrupt an in-flight clone.
+    //
+    // Go through `this.remove` (the Feathers service) — NOT `repoRepo.delete`
+    // directly — so the standard `repos.removed` WebSocket event fires and
+    // connected UIs drop the failed row from their state before we create
+    // the replacement placeholder.
+    //
+    // CRITICAL: do NOT forward the caller's `params.query` into the retry
+    // remove. A REST caller hitting `/repos/clone?cleanup=true` would
+    // otherwise trip the filesystem-cleanup branch on the placeholder
+    // (which doesn't exist on disk anyway, but the side-effects matter for
+    // worktrees that may have been pre-created). Pass an explicitly empty
+    // query so retry is always a DB-only tombstone removal.
     const existing = await this.repoRepo.findBySlug(slug);
     if (existing) {
-      return { status: 'exists', slug };
+      if (existing.clone_status === 'failed') {
+        console.log(
+          `[clone ${slug}] Found previous failed clone (${existing.repo_id.substring(0, 8)}); deleting to retry`
+        );
+        await this.remove(existing.repo_id, { ...params, query: {} });
+      } else {
+        return { status: 'exists', slug, repo_id: existing.repo_id };
+      }
     }
 
     const userId = (params as AuthenticatedParams | undefined)?.user?.user_id as UserID | undefined;
 
     // Generate service JWT for executor authentication. The executor talks back
-    // to the daemon to create the repo record (which may include
-    // environment_config from .agor.yml) and patch status — operations that
-    // materialize admin-defined templates rather than user edits. Using a
-    // service token ensures hooks like requireAdminForEnvConfig bypass via
+    // to the daemon to patch the pre-created repo row to 'ready'/'failed' (and
+    // surface the parsed `.agor.yml` environment on success). Using a service
+    // token ensures hooks like requireAdminForEnvConfig bypass via
     // _isServiceAccount. Executor fetches per-user credentials via Feathers
     // RPC (users.getGitEnvironment) using the same service JWT.
     const sessionToken = generateSessionToken(
@@ -188,11 +220,44 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
     const asUser =
       rbacEnabled && userId ? await resolveGitImpersonationForUser(this.db, userId) : undefined;
 
+    // Pre-create the repo row with `clone_status: 'cloning'` so failures stay
+    // queryable via `agor_repos_get(repoId)`. Pre-#1126 the row was only
+    // created on success by the executor — a failed clone left zero state and
+    // MCP callers had no way to discover the outcome (issue #1126 bug B).
+    //
+    // Use the Feathers service `create` (not `repoRepo.create`) so the
+    // standard `repos.created` WebSocket event fires and the UI can render
+    // a "cloning" card immediately, then transition to ready/failed when the
+    // executor patches the row.
+    //
+    // local_path is computed best-effort (mirrors what the executor will use
+    // inside `cloneRepo`); the executor patches it to the actual on-disk path
+    // on success.
+    const expectedRepoName = extractRepoName(data.url);
+    const expectedLocalPath = path.join(getReposDir(), expectedRepoName);
+    const placeholder = (await this.create(
+      {
+        slug: slug as RepoSlug,
+        name: data.name || slug,
+        repo_type: 'remote',
+        remote_url: data.url,
+        local_path: expectedLocalPath,
+        ...(data.default_branch ? { default_branch: data.default_branch } : {}),
+        clone_status: 'cloning',
+      },
+      params
+    )) as Repo;
+    const repoId = placeholder.repo_id;
+
     // Fire and forget - spawn executor and return immediately.
-    // Executor handles: git clone, .agor.yml parsing, DB record creation.
+    // Executor handles: git clone, .agor.yml parsing, repo row patching.
     // Executor fetches per-user credentials via Feathers RPC (users.getGitEnvironment).
     // Unix group init (groupadd/chgrp/setfacl) runs daemon-side via repos.initializeUnixGroup RPC.
     const app = this.app;
+    // Capture the Feathers service so the `onExit` safety net (below) writes
+    // through the same service layer the executor uses — that way clients
+    // receive `repos.patched` regardless of which path declares failure.
+    const reposService = this.app.service('repos');
     spawnExecutorFireAndForget(
       {
         command: 'git.clone',
@@ -201,6 +266,7 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
         params: {
           url: data.url,
           slug,
+          repoId,
           // Forward the user-supplied default_branch so the executor
           // persists what the operator typed in "Add Repository" instead
           // of silently overwriting it with origin/HEAD.
@@ -215,7 +281,8 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
         asUser, // Run as resolved user (fresh groups via sudo -u)
         onExit: (code) => {
           if (code !== 0 && code !== null) {
-            // Broadcast clone failure to all connected clients
+            // Broadcast clone failure to all connected clients (the existing
+            // toast UX). Persistent failure state lives on the repo row.
             console.error(
               `[clone ${slug}] Clone failed with exit code ${code}, broadcasting error`
             );
@@ -236,15 +303,47 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
                 slug,
                 url: data.url,
                 error: `Clone failed (exit code ${code}). Check that the repository URL is correct and accessible.${branchHint}`,
+                repo_id: repoId,
               });
             }
+
+            // Safety net: if the executor crashed before it could patch the
+            // row (e.g. lost daemon connection), the repo would be stuck in
+            // `'cloning'` forever. Force it to `'failed'` here, but only if
+            // it's still 'cloning' (don't clobber a 'failed' write the
+            // executor already made with a richer category/message).
+            //
+            // Use the service (no `params` → internal call, bypasses auth
+            // hooks) so the patched event fires for any client that joined
+            // after the initial broadcast above.
+            void (async () => {
+              try {
+                const current = (await reposService.get(repoId)) as Repo;
+                if (current.clone_status === 'cloning') {
+                  await reposService.patch(repoId, {
+                    clone_status: 'failed',
+                    clone_error: {
+                      exit_code: code,
+                      category: 'unknown',
+                      message: `Clone exited with code ${code} before reporting an error.`,
+                    },
+                  });
+                }
+              } catch (err) {
+                console.error(
+                  `[clone ${slug}] Failed to mark repo as failed in onExit safety net:`,
+                  err instanceof Error ? err.message : String(err)
+                );
+              }
+            })();
           }
         },
       }
     );
 
-    // Return immediately - client will receive WebSocket event when repo is created
-    return { status: 'pending', slug };
+    // Return immediately - callers can poll `agor_repos_get(repoId)` for
+    // `clone_status: 'ready' | 'failed'` to discover the final outcome.
+    return { status: 'pending', slug, repo_id: repoId };
   }
 
   /**
@@ -275,6 +374,87 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
     const { initializeRepoUnixGroup } = await import('../utils/unix-group-init.js');
     const unixGroup = await initializeRepoUnixGroup(this.db, this.app, data.repoId, data.userId);
     return { unixGroup };
+  }
+
+  /**
+   * Custom method: Patch repo metadata with validation.
+   *
+   * Centralizes the rules that wrap the bare Feathers `patch` so callers
+   * (MCP, REST, UI, internal) can't drift:
+   * - `slug` must match `isValidSlug` and be unique across all repos.
+   * - `remote_url`, when provided, must be a valid git URL.
+   * - Resulting `repo_type: 'remote'` requires a `remote_url` (the patch's
+   *   own field or the existing row's).
+   *
+   * Slug renames are DB-only — `local_path` on disk is not moved. Worktrees
+   * and running sessions hold absolute paths into the old directory, so a
+   * directory move is intentionally out of scope (do delete + re-clone).
+   */
+  async updateMetadata(
+    id: string,
+    patch: {
+      name?: string;
+      slug?: string;
+      repo_type?: 'remote' | 'local';
+      remote_url?: string;
+      default_branch?: string;
+    },
+    params?: RepoParams
+  ): Promise<Repo> {
+    const cleanPatch: Partial<Repo> = {};
+    if (patch.name !== undefined) cleanPatch.name = patch.name;
+
+    if (patch.slug !== undefined) {
+      if (!isValidSlug(patch.slug)) {
+        throw new Error('slug must be in org/name format');
+      }
+      cleanPatch.slug = patch.slug as RepoSlug;
+    }
+
+    if (patch.repo_type !== undefined) {
+      if (patch.repo_type !== 'remote' && patch.repo_type !== 'local') {
+        throw new Error('repo_type must be "remote" or "local"');
+      }
+      cleanPatch.repo_type = patch.repo_type;
+    }
+
+    if (patch.remote_url !== undefined) {
+      if (patch.remote_url && !isValidGitUrl(patch.remote_url)) {
+        throw new Error('remote_url must be a valid git URL (https:// or git@)');
+      }
+      cleanPatch.remote_url = patch.remote_url;
+    }
+
+    if (patch.default_branch !== undefined) cleanPatch.default_branch = patch.default_branch;
+
+    if (Object.keys(cleanPatch).length === 0) {
+      throw new Error('At least one field must be provided to update');
+    }
+
+    const current = (await this.get(id, params)) as Repo;
+
+    // Slug uniqueness — pre-check for a clean error message, but the DB
+    // uniqueness constraint remains authoritative for concurrent writes.
+    if (cleanPatch.slug && cleanPatch.slug !== current.slug) {
+      const collision = await this.repoRepo.findBySlug(cleanPatch.slug);
+      if (collision && collision.repo_id !== current.repo_id) {
+        throw new Error(`A repository with slug '${cleanPatch.slug}' already exists`);
+      }
+    }
+
+    // Resulting `remote` repos must have a remote_url. Evaluate against the
+    // post-patch shape so we catch both "URL provided in patch" and
+    // "URL already on the row".
+    const effectiveType = cleanPatch.repo_type ?? current.repo_type;
+    const effectiveRemoteUrl =
+      'remote_url' in cleanPatch ? cleanPatch.remote_url : current.remote_url;
+    if (effectiveType === 'remote' && !effectiveRemoteUrl) {
+      throw new Error('repo_type "remote" requires a remote_url');
+    }
+
+    // Use the Feathers service `patch` (not `repoRepo.update`) so the standard
+    // `patched` WebSocket event fires and the existing patch hooks run.
+    return (await this.patch(id, cleanPatch, params)) as Repo;
   }
 
   /**

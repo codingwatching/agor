@@ -163,6 +163,72 @@ describe('RepoRepository.create', () => {
     expect(created.created_at).toBe(createdAt);
     expect(created.last_updated).toBe(lastUpdated);
   });
+
+  // Issue #1126 / Bug B: pre-#1126 a failed clone left zero state because the
+  // executor only wrote the row on success. Pre-create + patch lets MCP
+  // callers discover the outcome via `agor_repos_get(repoId)`.
+  dbTest('should round-trip clone_status and clone_error through data blob', async ({ db }) => {
+    const repo = new RepoRepository(db);
+    const placeholder = await repo.create({
+      ...createRepoData({ slug: 'test/cloning' }),
+      clone_status: 'cloning',
+    });
+    expect(placeholder.clone_status).toBe('cloning');
+    expect(placeholder.clone_error).toBeUndefined();
+
+    const failed = await repo.update(placeholder.repo_id, {
+      clone_status: 'failed',
+      clone_error: {
+        exit_code: 128,
+        category: 'auth_failed',
+        message: 'fatal: Authentication failed for github.com',
+      },
+    });
+    expect(failed.clone_status).toBe('failed');
+    expect(failed.clone_error?.category).toBe('auth_failed');
+    expect(failed.clone_error?.exit_code).toBe(128);
+
+    // findById must surface the same shape (catches a regression where
+    // `rowToRepo` forgot to forward the new fields).
+    const fetched = await repo.findById(placeholder.repo_id);
+    expect(fetched?.clone_status).toBe('failed');
+    expect(fetched?.clone_error?.category).toBe('auth_failed');
+  });
+
+  // The executor's success patch sends `clone_error: null` to drop the prior
+  // failure shape from the row. `repoToInsert` coerces null → undefined so
+  // the stored value matches the `clone_error?: RepoCloneError` invariant
+  // (set only when failed). Without that coercion, the type would lie about
+  // the shape of `repo.clone_error` after a recovery patch.
+  dbTest(
+    'should clear clone_error when success patch sends null (via deepMerge + repoToInsert)',
+    async ({ db }) => {
+      const repo = new RepoRepository(db);
+      const placeholder = await repo.create({
+        ...createRepoData({ slug: 'test/recovers' }),
+        clone_status: 'failed',
+        clone_error: {
+          exit_code: 128,
+          category: 'auth_failed',
+          message: 'fatal: Authentication failed',
+        },
+      });
+      expect(placeholder.clone_error?.category).toBe('auth_failed');
+
+      // `null` is the explicit-clear signal honored by `deepMerge`. Cast to
+      // mirror the executor's call site (Feathers' `Partial<Repo>` rejects
+      // null on optional fields even when the merger handles it).
+      const cleared = await repo.update(placeholder.repo_id, {
+        clone_status: 'ready',
+        clone_error: null as unknown as undefined,
+      });
+      expect(cleared.clone_status).toBe('ready');
+      expect(cleared.clone_error).toBeUndefined();
+
+      const refetched = await repo.findById(placeholder.repo_id);
+      expect(refetched?.clone_error).toBeUndefined();
+    }
+  );
 });
 
 // ============================================================================
