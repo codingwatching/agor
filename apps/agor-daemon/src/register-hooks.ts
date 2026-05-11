@@ -174,6 +174,7 @@ interface RouteParams extends Params {
     id?: string;
     messageId?: string;
     mcpId?: string;
+    requestId?: string;
   };
   user?: User;
 }
@@ -517,8 +518,17 @@ export function registerHooks(ctx: RegisterHooksContext): void {
         ) {
           const artifactId = _params.route?.id;
           if (!artifactId) throw new Error('Artifact ID required');
+          const userId = _params.user?.user_id;
+          if (!userId) throw new Error('Authenticated user required');
           const artifactsService = app.service('artifacts') as unknown as ArtifactsService;
-          artifactsService.appendConsoleLogs(artifactId, data.entries as never);
+          // Visibility check: only viewers who can see the artifact may
+          // append to its console buffer. Without this any member could
+          // write spam into another artifact's logs.
+          const artifact = await artifactsService.get(artifactId);
+          if (!artifactsService.isVisibleTo(artifact, userId)) {
+            throw new Error(`Artifact ${artifactId} not found`);
+          }
+          artifactsService.appendConsoleLogs(artifactId, userId, data.entries as never);
           return { success: true };
         },
       },
@@ -541,13 +551,143 @@ export function registerHooks(ctx: RegisterHooksContext): void {
         ) {
           const artifactId = _params.route?.id;
           if (!artifactId) throw new Error('Artifact ID required');
+          const userId = _params.user?.user_id;
+          if (!userId) throw new Error('Authenticated user required');
           const artifactsService = app.service('artifacts') as unknown as ArtifactsService;
-          artifactsService.setSandpackError(artifactId, data.error, data.status);
+          const artifact = await artifactsService.get(artifactId);
+          if (!artifactsService.isVisibleTo(artifact, userId)) {
+            throw new Error(`Artifact ${artifactId} not found`);
+          }
+          artifactsService.setSandpackError(artifactId, userId, data.error, data.status);
           return { success: true };
         },
       },
       {
         create: { role: ROLES.MEMBER, action: 'post artifact sandpack error' },
+      },
+      requireAuth
+    );
+
+    // ── Runtime query responses ────────────────────────────────────────────
+    // Browser POSTs the iframe's `agor:result` payload here. Path encodes
+    // the request id so the daemon can correlate to a pending query in
+    // memory. The caller must be the same user that issued the original
+    // query — the service-side check rejects mismatches silently.
+    //
+    // The injected agor-runtime.js caps replies (200KB document HTML, 50
+    // nodes per query, 50KB outerHTML per node), but a malicious or buggy
+    // browser could bypass the runtime and POST a much larger body. Cap
+    // here too so a wrongly-sized payload doesn't bloat the daemon's
+    // pending-query map or the agent's MCP context.
+    const RUNTIME_RESPONSE_BYTE_CAP = 512 * 1024;
+    registerAuthenticatedRoute(
+      app,
+      '/artifacts/:id/runtime-response/:requestId',
+      {
+        async create(
+          data: { ok: boolean; result?: unknown; error?: string },
+          _params: RouteParams
+        ) {
+          const requestId = _params.route?.requestId;
+          if (!requestId) throw new Error('Request ID required');
+          const userId = _params.user?.user_id;
+          if (!userId) throw new Error('Authenticated user required');
+
+          // Defensive size cap. JSON.stringify is the cheapest faithful
+          // measurement of "how big is this payload going to be when we
+          // hand it to the agent." Round trips through the runtime stay
+          // well under this in practice.
+          let payloadOk = data.ok;
+          let payloadResult = data.result;
+          let payloadError = data.error;
+          try {
+            const measured = JSON.stringify(payloadResult ?? null);
+            if (measured.length > RUNTIME_RESPONSE_BYTE_CAP) {
+              payloadOk = false;
+              payloadResult = undefined;
+              payloadError = `Runtime response exceeded ${RUNTIME_RESPONSE_BYTE_CAP} bytes (got ${measured.length}). Reduce maxNodes or use a more specific selector.`;
+            }
+          } catch (err) {
+            payloadOk = false;
+            payloadResult = undefined;
+            payloadError = `Runtime response was not JSON-serializable: ${err instanceof Error ? err.message : String(err)}`;
+          }
+
+          const artifactsService = app.service('artifacts') as unknown as ArtifactsService;
+          artifactsService.resolveRuntimeQuery({
+            requestId,
+            responderUserId: userId,
+            ok: payloadOk,
+            result: payloadResult,
+            error: payloadError,
+          });
+          return { received: true };
+        },
+      },
+      {
+        create: { role: ROLES.MEMBER, action: 'post artifact runtime response' },
+      },
+      requireAuth
+    );
+
+    // ── Trust grants (TOFU consent flow) ───────────────────────────────────
+    // Per-artifact: POST creates a grant covering the artifact's currently-
+    // requested env vars and grants. Caller MUST be authenticated; the grant
+    // is attributed to the calling user.
+    registerAuthenticatedRoute(
+      app,
+      '/artifacts/:id/trust',
+      {
+        async create(
+          data: { scopeType: import('@agor/core/types').ArtifactTrustScopeType },
+          _params: RouteParams
+        ) {
+          const artifactId = _params.route?.id;
+          if (!artifactId) throw new Error('Artifact ID required');
+          const userId = _params.user?.user_id;
+          if (!userId) throw new Error('Authenticated user required');
+          const artifactsService = app.service('artifacts') as unknown as ArtifactsService;
+          // The consent surface (env vars + grants) is derived server-side
+          // from the artifact's current request. The client only nominates
+          // the scope; the server decides what the grant covers. This stops
+          // a confused/malicious client from persisting a grant whose
+          // covered set diverges from what the server will actually inject.
+          return artifactsService.grantTrust({
+            userId,
+            artifactId,
+            scopeType: data.scopeType,
+          });
+        },
+      },
+      {
+        create: { role: ROLES.MEMBER, action: 'create artifact trust grant' },
+      },
+      requireAuth
+    );
+
+    // List the calling user's active trust grants. Used by the settings page.
+    registerAuthenticatedRoute(
+      app,
+      '/me/artifact-trust-grants',
+      {
+        async find(params: RouteParams) {
+          const userId = params.user?.user_id;
+          if (!userId) throw new Error('Authenticated user required');
+          const artifactsService = app.service('artifacts') as unknown as ArtifactsService;
+          return artifactsService.listTrustGrants(userId);
+        },
+        async remove(id: unknown, params: RouteParams) {
+          const userId = params.user?.user_id;
+          if (!userId) throw new Error('Authenticated user required');
+          const grantId = String(id);
+          const artifactsService = app.service('artifacts') as unknown as ArtifactsService;
+          await artifactsService.revokeTrustGrant(userId, grantId);
+          return { revoked: true, grantId };
+        },
+      },
+      {
+        find: { role: ROLES.VIEWER, action: 'list artifact trust grants' },
+        remove: { role: ROLES.MEMBER, action: 'revoke artifact trust grant' },
       },
       requireAuth
     );

@@ -5,9 +5,10 @@
  */
 
 import type { Repo, RepoEnvironment, RepoEnvironmentConfigV1, UUID } from '@agor/core/types';
+import { prefixToLikePattern } from '@agor/core/types';
 import { eq, like, sql } from 'drizzle-orm';
 import { resolveVariant, wrapV1AsV2 } from '../../config/variant-resolver.js';
-import { formatShortId, generateId } from '../../lib/ids';
+import { generateId } from '../../lib/ids';
 import type { Database } from '../client';
 import { deleteFrom, insert, lockRowForUpdate, select, txAsDb, update } from '../database-wrapper';
 import { type RepoInsert, type RepoRow, repos } from '../schema';
@@ -150,8 +151,7 @@ export class RepoRepository implements BaseRepository<Repo, Partial<Repo>> {
     }
 
     // Short ID - need to resolve
-    const normalized = id.replace(/-/g, '').toLowerCase();
-    const pattern = `${normalized}%`;
+    const pattern = prefixToLikePattern(id);
 
     const results = await select(this.db).from(repos).where(like(repos.repo_id, pattern)).all();
 
@@ -163,7 +163,7 @@ export class RepoRepository implements BaseRepository<Repo, Partial<Repo>> {
       throw new AmbiguousIdError(
         'Repo',
         id,
-        results.map((r: { repo_id: string }) => formatShortId(r.repo_id as UUID))
+        results.map((r: { repo_id: string }) => r.repo_id)
       );
     }
 

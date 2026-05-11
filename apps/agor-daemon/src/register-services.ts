@@ -7,7 +7,6 @@
 
 import {
   type AgorConfig,
-  getBaseUrl,
   PublicBaseUrlNotConfiguredError,
   requirePublicBaseUrl,
 } from '@agor/core/config';
@@ -50,7 +49,6 @@ import {
   oauth21TokenCache,
   persistOAuthToken,
 } from './oauth-cache.js';
-import type { ArtifactsService } from './services/artifacts.js';
 import { createArtifactsService } from './services/artifacts.js';
 import { createBoardCommentsService } from './services/board-comments.js';
 import { createBoardObjectsService } from './services/board-objects.js';
@@ -281,25 +279,12 @@ export async function registerServices(ctx: RegisterServicesContext): Promise<Re
   }
 
   if (svcEnabled('artifacts')) {
-    app.use('/artifacts', createArtifactsService(db, app));
-
-    // Detect self-hosted Sandpack bundler
-    {
-      const pathMod = await import('node:path');
-      const { fileURLToPath: toPath } = await import('node:url');
-      const { existsSync: exists } = await import('node:fs');
-      const dir =
-        typeof __dirname !== 'undefined' ? __dirname : pathMod.dirname(toPath(import.meta.url));
-      const sandpackPath = pathMod.resolve(dir, '../static/sandpack');
-      if (exists(sandpackPath)) {
-        const baseUrl = await getBaseUrl();
-        const origin = new URL(baseUrl).origin;
-        const bundlerURL = `${origin}/static/sandpack/`;
-        const artifactsService = app.service('artifacts') as unknown as ArtifactsService;
-        artifactsService.selfHostedBundlerURL = bundlerURL;
-        console.log(`🧩 Self-hosted Sandpack bundler detected: ${bundlerURL}`);
-      }
-    }
+    // `agor-query` is the runtime-introspection fan-out event (daemon →
+    // viewer's browser tab). Feathers' default `serviceEvents` is just
+    // ['created','updated','patched','removed'], so without this it
+    // fires locally on the server's EventEmitter and never reaches any
+    // socket. See queryArtifactRuntime in services/artifacts.ts.
+    app.use('/artifacts', createArtifactsService(db, app), { events: ['agor-query'] });
   }
 
   if (svcEnabled('boards')) {

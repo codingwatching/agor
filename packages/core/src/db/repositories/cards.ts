@@ -6,8 +6,9 @@
  */
 
 import type { BoardID, Card, CardType, CardTypeID, CardWithType, UUID } from '@agor/core/types';
+import { prefixToLikePattern } from '@agor/core/types';
 import { and, eq, like } from 'drizzle-orm';
-import { formatShortId, generateId } from '../../lib/ids';
+import { generateId } from '../../lib/ids';
 import type { Database } from '../client';
 import { deleteFrom, insert, select, update } from '../database-wrapper';
 import { boardObjects, type CardInsert, type CardRow, cards, cardTypes } from '../schema';
@@ -57,8 +58,7 @@ export class CardRepository implements BaseRepository<Card, Partial<Card>> {
   private async resolveId(id: string): Promise<string> {
     if (id.length === 36 && id.includes('-')) return id;
 
-    const normalized = id.replace(/-/g, '').toLowerCase();
-    const pattern = `${normalized}%`;
+    const pattern = prefixToLikePattern(id);
     const results = await select(this.db).from(cards).where(like(cards.card_id, pattern)).all();
 
     if (results.length === 0) throw new EntityNotFoundError('Card', id);
@@ -66,7 +66,7 @@ export class CardRepository implements BaseRepository<Card, Partial<Card>> {
       throw new AmbiguousIdError(
         'Card',
         id,
-        results.map((r: { card_id: string }) => formatShortId(r.card_id as UUID))
+        results.map((r: { card_id: string }) => r.card_id)
       );
     }
     return results[0].card_id;

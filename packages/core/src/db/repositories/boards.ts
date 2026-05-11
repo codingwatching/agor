@@ -5,11 +5,11 @@
  */
 
 import type { Board, BoardExportBlob, BoardObject, UUID } from '@agor/core/types';
-import { WORKTREE_PERMISSION_LEVELS } from '@agor/core/types';
+import { prefixToLikePattern, WORKTREE_PERMISSION_LEVELS } from '@agor/core/types';
 import { and, eq, exists, inArray, isNotNull, like, ne, or, sql } from 'drizzle-orm';
 import * as yaml from 'js-yaml';
 import { getBaseUrl } from '../../config/config-manager';
-import { formatShortId, generateId } from '../../lib/ids';
+import { generateId } from '../../lib/ids';
 import { generateSlug } from '../../lib/slugs';
 import { getBoardUrl } from '../../utils/url';
 import type { Database } from '../client';
@@ -105,8 +105,7 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
     }
 
     // Short ID - need to resolve
-    const normalized = id.replace(/-/g, '').toLowerCase();
-    const pattern = `${normalized}%`;
+    const pattern = prefixToLikePattern(id);
 
     const results = await select(this.db).from(boards).where(like(boards.board_id, pattern)).all();
 
@@ -118,7 +117,7 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
       throw new AmbiguousIdError(
         'Board',
         id,
-        results.map((r: { board_id: string }) => formatShortId(r.board_id as UUID))
+        results.map((r: { board_id: string }) => r.board_id)
       );
     }
 
