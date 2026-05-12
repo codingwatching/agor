@@ -194,18 +194,28 @@ agor_artifacts_publish({
 
 ### Reading injected values in app code
 
-The daemon prefixes the synthesized `.env` keys per template, so apps use the standard idiom:
+The daemon prefixes the synthesized `.env` keys per template — each bundler has
+its own hard-coded allowlist (CRA only inlines `REACT_APP_*`, Vite only inlines
+`VITE_*`, etc.). Apps use the standard idiom for their template:
 
-| Template family | Bundler | `.env` prefix | Read from |
-|---|---|---|---|
-| `react`, `react-ts`, `vue3`, `svelte`, `solid` | Vite | `VITE_` | `import.meta.env.VITE_X` |
-| `vue`, `angular` | Vue/Angular CLI | (none) | `process.env.X` |
-| `vanilla`, `vanilla-ts` | Static | n/a | not supported |
+| Template family | Bundler | `.env` prefix | Read from | Status |
+|---|---|---|---|---|
+| `react`, `react-ts` | Create React App (sandpack-react v2) | `REACT_APP_` | `process.env.REACT_APP_X` | verified |
+| `vue3`, `svelte`, `solid` | (depends on template) | `VITE_` | `import.meta.env.VITE_X` | best-effort, not verified end-to-end |
+| `vue`, `angular` | Vue CLI / Angular CLI | (none) | `process.env.X` | best-effort, not verified end-to-end |
+| `vanilla`, `vanilla-ts` | Static / Parcel | n/a | not supported | verified |
+
+Right now only the `react` / `react-ts` mapping has been exercised against a live artifact. The other rows are inherited from the original artifact-format proposal and may need adjustment when an artifact in that template family is first published; treat them as a starting point, not a contract.
 
 ```ts
-const apiKey = import.meta.env.VITE_OPENAI_KEY;
-const agorToken = import.meta.env.VITE_AGOR_TOKEN;
-const proxyUrl = import.meta.env.VITE_AGOR_PROXY_OPENAI;
+// react / react-ts (CRA)
+const apiKey = process.env.REACT_APP_OPENAI_KEY;
+const agorToken = process.env.REACT_APP_AGOR_TOKEN;
+const proxyUrl = process.env.REACT_APP_AGOR_PROXY_OPENAI;
+
+// Best-effort inherited mapping for vue3 / svelte / solid (not yet
+// verified end-to-end — see the status table above):
+// const apiKey = import.meta.env.VITE_OPENAI_KEY;
 
 if (!apiKey) {
   return <ConfigurePrompt name="OPENAI_KEY" />;
@@ -275,7 +285,7 @@ Artifacts are designed for rapid prototyping, not permanent hosting. When you're
 1. **The code is already on disk** — artifact source files live at `.agor/artifacts/<id>/` inside your worktree. They're standard source files, not a proprietary format
 2. **Ask your agent to scaffold a real project** — "Take this artifact and set it up as a Next.js app" or "Create a Vite project from this prototype"
 3. **Pick your hosting** — Vercel, Netlify, Cloudflare Pages, a Docker container — the agent can set up deployment config for whatever platform you choose
-4. **Graduate your secrets** — Move `requiredEnvVars` to your hosting platform's environment variable system. The bundler convention is the same on the other side (Vite reads `import.meta.env.VITE_*`, etc.) — only the prefix and the source of values change.
+4. **Graduate your secrets** — Move `requiredEnvVars` to your hosting platform's environment variable system. The bundler convention is the same on the other side (CRA reads `process.env.REACT_APP_*`, Vite reads `import.meta.env.VITE_*`, etc.) — only the source of values changes.
 
 You can also one-click eject to CodeSandbox (`agor_artifacts_export_codesandbox`) if you want a quick share link — note that daemon-supplied capabilities (`AGOR_TOKEN`, `AGOR_PROXY_*`) won't work there.
 

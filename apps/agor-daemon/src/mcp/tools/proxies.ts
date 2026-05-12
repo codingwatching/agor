@@ -64,12 +64,16 @@ The daemon resolves consent (TOFU) and writes a per-viewer .env with the prefixe
   VITE_AGOR_TOKEN, VITE_AGOR_PROXY_SHORTCUT, VITE_SHORTCUT_API_TOKEN  (Vite templates)
   REACT_APP_AGOR_TOKEN, REACT_APP_AGOR_PROXY_SHORTCUT, ...            (CRA templates)
 
-# Canonical example (Vite)
+# Canonical example (react / react-ts — sandpack-react v2 CRA)
 
-  // App.tsx
-  const shortcutUrl = import.meta.env.VITE_AGOR_PROXY_SHORTCUT;
-  const agorToken   = import.meta.env.VITE_AGOR_TOKEN;
-  const scToken     = import.meta.env.VITE_SHORTCUT_API_TOKEN;
+  // App.jsx
+  const shortcutUrl = process.env.REACT_APP_AGOR_PROXY_SHORTCUT;
+  const agorToken   = process.env.REACT_APP_AGOR_TOKEN;
+  const scToken     = process.env.REACT_APP_SHORTCUT_API_TOKEN;
+
+  // Best-effort inherited mapping for vue3 / svelte / solid (not yet
+  // verified end-to-end against the bundler they actually ship with):
+  //   const x = import.meta.env.VITE_AGOR_PROXY_SHORTCUT;
 
   if (!scToken) {
     // Empty string when the user hasn't configured it — show a prompt.
@@ -118,7 +122,7 @@ Always check r.ok before JSON.parse, and surface the error JSON to the user — 
 
   1. Call agor_proxies_list to see what vendors are configured.
   2. Declare the vendors you'll use in agor_artifacts_publish via agorGrants={ agor_token: true, agor_proxies: ["..."] } and the user-side secrets via requiredEnvVars=["VENDOR_API_TOKEN", ...].
-  3. Wire a fetch wrapper that reads import.meta.env.VITE_AGOR_TOKEN, VITE_AGOR_PROXY_<VENDOR>, VITE_<USER_KEY> and includes the two headers on every call.
+  3. Wire a fetch wrapper that reads the three env vars. The verified mapping today is react/react-ts → process.env.REACT_APP_*. Other templates (vue3/svelte/solid/vue/angular) carry best-effort prefixes inherited from the original artifact-format proposal and may need audit the first time you ship one — see apps/agor-docs/pages/guide/artifacts.mdx for the current status table.
   4. If a user hasn't configured the env var, the value renders as "" — detect this and prompt them, don't make the API call.`,
       annotations: { readOnlyHint: true },
       inputSchema: z.object({}),

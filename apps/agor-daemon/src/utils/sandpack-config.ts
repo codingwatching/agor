@@ -25,31 +25,105 @@ import type {
 } from '@agor/core/types';
 
 /**
- * Templates whose Sandpack runtime uses Vite. The synthesized `.env` keys
- * must be prefixed with `VITE_` so `import.meta.env.VITE_*` picks them up.
+ * Per-template prefix the daemon applies when synthesizing `.env`.
+ *
+ * Each bundler has its own hard-coded allowlist for which env vars it
+ * inlines into client code — agor doesn't get to choose. The mapping
+ * below mirrors those bundler conventions:
+ *
+ * - `react`, `react-ts` use `@codesandbox/sandpack-react`'s
+ *   `environment: 'create-react-app'`. CRA's webpack config only inlines
+ *   `REACT_APP_*` vars from `.env`. If a future Sandpack version flips
+ *   the built-in `react` template to a Vite-based environment, move
+ *   these to `'VITE_'`.
+ * - `vue3`, `svelte`, `solid` are mapped to `'VITE_'` as inherited from
+ *   PR #1147. The sandpack-react v2.x runtime for these is actually
+ *   bundler-specific (`environment: 'svelte'` / `'solid'` / Vue CLI),
+ *   not literal Vite, so this mapping has not been end-to-end verified.
+ *   Treated as best-effort until an artifact on one of those templates
+ *   exercises it; see the follow-up issue.
+ * - `vue` and `angular` use the empty prefix — their bundlers consume
+ *   plain `process.env.X` without name mangling (note: Vue CLI actually
+ *   expects `VUE_APP_*` for browser-side env vars; tracked as the same
+ *   follow-up).
+ * - `vanilla`, `vanilla-ts` have no working dotenv path — the daemon
+ *   skips env injection entirely and emits a warning if the artifact
+ *   declared `required_env_vars`.
+ *
+ * `satisfies Record<SandpackTemplate, …>` ensures any future addition
+ * to the `SandpackTemplate` union fails typecheck until it's mapped
+ * here. The very bug this fixes came from a stale assumption baked into
+ * a fall-through default, so we want compile-time exhaustiveness.
  */
-const VITE_TEMPLATES = new Set<SandpackTemplate>(['react', 'react-ts', 'vue3', 'svelte', 'solid']);
+const ENV_PREFIX_BY_TEMPLATE = {
+  react: 'REACT_APP_',
+  'react-ts': 'REACT_APP_',
+  vue3: 'VITE_',
+  svelte: 'VITE_',
+  solid: 'VITE_',
+  vue: '',
+  angular: '',
+  vanilla: null,
+  'vanilla-ts': null,
+} as const satisfies Record<SandpackTemplate, string | null>;
 
 /**
- * Templates that don't have a working dotenv path at all. The daemon emits
- * a warning if such an artifact has a non-empty `required_env_vars`.
+ * Set of `SandpackTemplate` values the daemon understands at runtime.
+ * Derived from the prefix table so the two can't drift. Used by
+ * `sanitizeSandpackConfig` and `effectiveTemplateForArtifact` as a
+ * boundary check — DB rows or REST payloads can carry arbitrary strings
+ * that aren't part of the TS union, and we must not let those flow
+ * into the `.env` synth (otherwise the prefix lookup returns `undefined`
+ * and the daemon writes literal `undefinedOPENAI_KEY=…` lines).
  */
-const NO_ENV_TEMPLATES = new Set<SandpackTemplate>(['vanilla', 'vanilla-ts']);
+const KNOWN_TEMPLATES = new Set<string>(Object.keys(ENV_PREFIX_BY_TEMPLATE));
+
+export function isKnownSandpackTemplate(value: unknown): value is SandpackTemplate {
+  return typeof value === 'string' && KNOWN_TEMPLATES.has(value);
+}
 
 /**
- * Returns the prefix the daemon should apply when synthesizing `.env` for
- * the given template, or `null` if the template doesn't support a dotenv
- * path (the artifact will need to find another way to consume secrets).
+ * Returns the prefix the daemon should apply when synthesizing `.env`
+ * for the given template, or `null` if the template doesn't support a
+ * dotenv path (the artifact will need to find another way to consume
+ * secrets). Also returns `null` for any string the type system thinks
+ * is a `SandpackTemplate` but isn't in the runtime table — defensive
+ * against stale DB rows or callers that bypassed sanitization.
+ *
+ * If the artifact uses `sandpack_config.template` (or
+ * `customSetup.environment`) to override the runtime, callers should
+ * derive the effective template first — see `effectiveTemplateForArtifact`.
  */
 export function envVarPrefixForTemplate(template: SandpackTemplate): string | null {
-  if (NO_ENV_TEMPLATES.has(template)) return null;
-  if (VITE_TEMPLATES.has(template)) return 'VITE_';
-  // CRA isn't a separate template in the current type — it ships as a
-  // forked `react` build that consumers opt into. We default to `VITE_`
-  // for `react` since the upstream Sandpack template is now Vite-based.
-  // `vue` (Vue CLI), `angular` (Angular CLI), etc. consume plain
-  // `process.env.X`.
-  return '';
+  const prefix = ENV_PREFIX_BY_TEMPLATE[template];
+  return prefix === undefined ? null : prefix;
+}
+
+/**
+ * The Sandpack template that actually drives the rendered runtime.
+ *
+ * The UI resolves it as `sandpack_config.template ?? artifact.template`
+ * (see `ArtifactNode.tsx`), so any daemon-side code that needs to mirror
+ * the UI's choice — most importantly `.env` synthesis and CodeSandbox
+ * export guidance — must go through this helper instead of reading
+ * `artifact.template` directly.
+ *
+ * `customSetup.environment` can also override the bundler, but it's an
+ * arbitrary string with no general mapping back to a prefix; callers
+ * synthesizing env vars should check for that override separately and
+ * warn the operator rather than guess.
+ */
+export function effectiveTemplateForArtifact(artifact: {
+  template: SandpackTemplate;
+  sandpack_config?: SandpackConfig;
+}): SandpackTemplate {
+  const override = artifact.sandpack_config?.template;
+  // Guard the runtime cast — `sandpack_config` comes from JSONB / REST /
+  // round-tripped sidecars and isn't structurally guaranteed to hold a
+  // member of the `SandpackTemplate` union. Fall through to the row's
+  // own template if the override is unknown.
+  if (isKnownSandpackTemplate(override)) return override;
+  return artifact.template;
 }
 
 /**
@@ -63,8 +137,8 @@ export function sanitizeSandpackConfig(input: unknown): SandpackConfig {
   const src = input as Record<string, unknown>;
   const out: SandpackConfig = {};
 
-  if (typeof src.template === 'string') {
-    out.template = src.template as SandpackTemplate;
+  if (isKnownSandpackTemplate(src.template)) {
+    out.template = src.template;
   }
 
   if (src.customSetup && typeof src.customSetup === 'object') {
