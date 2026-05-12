@@ -21,7 +21,13 @@ import { patchConsole } from '@agor/core/utils/logger';
 patchConsole();
 
 import type { AgorConfig, ResolvedSecurity } from '@agor/core/config';
-import { loadConfig, loadConfigFromFile, resolveSecurity } from '@agor/core/config';
+import {
+  loadConfig,
+  loadConfigFromFile,
+  renderGitConfigParametersForLog,
+  resolveGitConfigParameters,
+  resolveSecurity,
+} from '@agor/core/config';
 import { getDatabaseUrl } from '@agor/core/db';
 import {
   authenticate,
@@ -31,6 +37,7 @@ import {
   rest,
   socketio,
 } from '@agor/core/feathers';
+import { buildGitConfigParameters } from '@agor/core/git';
 import { registerHandlebarsHelpers } from '@agor/core/templates/handlebars-helpers';
 import type { HookContext, ServiceGroupName, ServiceTier, User } from '@agor/core/types';
 import { getServiceTier, isServiceEnabled } from '@agor/core/types';
@@ -130,6 +137,23 @@ export async function startDaemon(options?: DaemonStartOptions): Promise<void> {
     : options?.configPath
       ? await loadConfigFromFile(options.configPath)
       : await loadConfig();
+
+  // Set GIT_CONFIG_PARAMETERS before any child-process spawn so every git
+  // invocation under Agor's control inherits it. See @agor/core/config
+  // (security-resolver) for the defaults + resolver semantics.
+  const resolvedGitParams = resolveGitConfigParameters(config.security?.git_config_parameters);
+  const gitConfigParams = buildGitConfigParameters(resolvedGitParams);
+  if (gitConfigParams.length > 0) {
+    process.env.GIT_CONFIG_PARAMETERS = gitConfigParams;
+    console.log(
+      `🔒 GIT_CONFIG_PARAMETERS hardened: ${renderGitConfigParametersForLog(resolvedGitParams)}`
+    );
+  } else {
+    // override: [] in config — Agor defaults disabled; any inherited env var preserved.
+    console.log(
+      '🔒 Agor git hardening disabled (override: []); inherited GIT_CONFIG_PARAMETERS preserved'
+    );
+  }
 
   // Surface a clear migration note if the config still carries leftover
   // anonymous-mode keys. Operators upgrading from a release that had

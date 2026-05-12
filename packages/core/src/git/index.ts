@@ -14,6 +14,7 @@ import { basename, join } from 'node:path';
 import { simpleGit } from 'simple-git';
 import { getReposDir, getWorktreesDir } from '../config/config-manager';
 import type { RepoCloneErrorCategory } from '../types/repo';
+import { escapeShellArg } from '../unix/run-as-user';
 
 /**
  * Validate a user-supplied git ref (branch name, tag) before it is passed to
@@ -222,6 +223,23 @@ export function buildGitConfigEnv(entries: [string, string][]): Record<string, s
     out[`GIT_CONFIG_VALUE_${i}`] = value;
   }
   return out;
+}
+
+/**
+ * Encode pairs into the `GIT_CONFIG_PARAMETERS` env-var value (single-quote
+ * protocol — quotes are literal, not shell escaping, but the close-escape-
+ * reopen pattern matches).
+ *
+ * Empty input returns `''` so callers can avoid setting the var at all.
+ *
+ * @see https://git-scm.com/docs/git-config#ENVIRONMENT
+ */
+export function buildGitConfigParameters(pairs: readonly string[]): string {
+  return pairs
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0)
+    .map((p) => escapeShellArg(p))
+    .join(' ');
 }
 
 /**
@@ -703,6 +721,57 @@ export async function getRemoteUrl(
   } catch {
     return null;
   }
+}
+
+/**
+ * `previousUrl` is newline-joined when the prior state was multi-valued (git
+ * config legally allows that). Callers logging this MUST redact — values can
+ * carry credentials.
+ */
+export interface EnsureRemoteUrlResult {
+  changed: boolean;
+  previousUrl: string | undefined;
+}
+
+/**
+ * Realign `remote.<name>.url` to `expectedUrl`, leaving other remotes alone.
+ * No-op when already matching; deliberately does NOT create the remote when
+ * absent. Caller must trust `expectedUrl` (no validation here).
+ *
+ * Uses raw `git config --get-all` / `--replace-all` to handle the multi-value
+ * case (`--add` semantics) — `simple-git.getRemotes()` surfaces only one
+ * value, and `git remote set-url` errors when the key is multi-valued.
+ */
+export async function ensureGitRemoteUrl(
+  repoPath: string,
+  remoteName: string,
+  expectedUrl: string,
+  env?: Record<string, string>
+): Promise<EnsureRemoteUrlResult> {
+  const { git } = createGit(repoPath, env);
+  const configKey = `remote.${remoteName}.url`;
+
+  // `--get-all` exits 1 when the key is unset; absence ≡ "no remote".
+  let currentUrls: string[];
+  try {
+    const raw = await git.raw(['config', '--get-all', configKey]);
+    currentUrls = raw
+      .split('\n')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  } catch {
+    return { changed: false, previousUrl: undefined };
+  }
+
+  if (currentUrls.length === 0) {
+    return { changed: false, previousUrl: undefined };
+  }
+  if (currentUrls.length === 1 && currentUrls[0] === expectedUrl) {
+    return { changed: false, previousUrl: currentUrls[0] };
+  }
+
+  await git.raw(['config', '--replace-all', configKey, expectedUrl]);
+  return { changed: true, previousUrl: currentUrls.join('\n') };
 }
 
 export interface WorktreeInfo {

@@ -24,6 +24,7 @@ import type {
 } from '@agor/core/types';
 import { MessageRole, TaskStatus } from '@agor/core/types';
 import { DrizzleService } from '../adapters/drizzle';
+import { ensureRepoOriginAlignedById } from '../utils/realign-repo-origin';
 import type { SessionsService } from './sessions';
 
 /**
@@ -230,6 +231,26 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
           // CRITICAL: Check if THIS task is still the current/latest task before updating session
           // If a new task has started, we must NOT set the session to IDLE
           const session = await this.app.service('sessions').get(task.session_id, params);
+
+          // Realign on terminal transition — decoupled from session-state
+          // updates and callback delivery so an error there doesn't skip it.
+          if (session.worktree_id) {
+            this.app
+              .service('worktrees')
+              .get(session.worktree_id, params)
+              .then((worktree) => {
+                const repoId = worktree?.repo_id;
+                if (!repoId) return;
+                return ensureRepoOriginAlignedById(this.app, repoId);
+              })
+              .catch((err: unknown) => {
+                const message = err instanceof Error ? err.message : String(err);
+                console.warn(
+                  `⚠️  [TasksService] ensureRepoOriginAlignedById failed for session ${task.session_id?.substring(0, 8)}: ${message}`
+                );
+              });
+          }
+
           const latestTaskId = session.tasks?.[session.tasks.length - 1];
 
           if (latestTaskId && latestTaskId !== task.task_id) {

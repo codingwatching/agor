@@ -20,12 +20,18 @@ export * from './repo-reference';
 export * from './resource-schemas';
 export * from './resource-sync';
 export type {
+  AgorGitConfigParametersSettings,
   ResolvedCors,
   ResolvedCsp,
   ResolvedSecurity,
   ResolveSecurityOptions,
 } from './security-resolver';
 export {
+  getDefaultGitConfigParameters,
+  gitConfigParameterLooksSecret,
+  redactUrlUserinfo,
+  renderGitConfigParametersForLog,
+  resolveGitConfigParameters,
   resolveSecurity,
   SANDPACK_CSP_FRAME_SRC,
   SANDPACK_CSP_WORKER_SRC,

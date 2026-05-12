@@ -58,6 +58,7 @@ import {
   requireMinimumRole,
 } from './utils/authorization.js';
 import { injectCreatedBy } from './utils/inject-created-by.js';
+import { realignRepoOriginAfterPatchHook } from './utils/realign-repo-origin.js';
 import {
   createServiceToken,
   getDaemonUrl,
@@ -717,6 +718,9 @@ export function registerHooks(ctx: RegisterHooksContext): void {
       update: [requireMinimumRole(ROLES.MEMBER, 'update repositories'), requireAdminForEnvConfig()],
       patch: [requireMinimumRole(ROLES.MEMBER, 'update repositories'), requireAdminForEnvConfig()],
       remove: [requireMinimumRole(ROLES.MEMBER, 'delete repositories')],
+    },
+    after: {
+      patch: [realignRepoOriginAfterPatchHook()],
     },
   });
 
