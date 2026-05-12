@@ -58,8 +58,12 @@ export async function validateGitRef(ref: unknown): Promise<void> {
   // fails outside a git worktree — breaking callers like the seed script
   // that validate refs before a repo exists. The non-`--branch` form is
   // pure syntactic validation and needs no git context.
-  const gitBinary = getGitBinary();
-  const git = simpleGit({ binary: gitBinary });
+  //
+  // Route through `createGit` so the unsafe-ops scanner is opt-in here too
+  // — otherwise a daemon env carrying `GIT_SSH_COMMAND` (or similar) would
+  // throw a confusing "not permitted without enabling allowUnsafeSshCommand"
+  // out of what is meant to be a pure syntactic check.
+  const { git } = createGit();
   try {
     await git.raw(['check-ref-format', `refs/heads/${ref}`]);
   } catch {
@@ -362,6 +366,12 @@ export function redactGitEnv(env: Record<string, string | undefined>): Record<st
  * `/etc/gitconfig` is intentionally NOT killed — admin policy territory
  * (CA bundles, proxies, safe.directory).
  *
+ * **env isolation**: `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_TERMINAL_PROMPT=0` are
+ * only set when `env` is provided (or an auth token is found in it). Callers
+ * that omit `env` (e.g. `createGit(worktreePath)`) intentionally inherit the
+ * daemon process environment so they can read `/etc/gitconfig`, `safe.directory`,
+ * and other admin-policy config. They still get the `unsafe.*` scanner opt-ins.
+ *
  * @param authHost - Host to scope the auth header to. When omitted, falls back
  *                   to github.com; callers should derive this via
  *                   {@link parseHostFromGitUrl} or {@link resolveAuthHost}.
@@ -373,11 +383,18 @@ export function createGit(
 ): { git: ReturnType<typeof simpleGit> } {
   const gitBinary = getGitBinary();
 
-  // Non-secret config stays in `config:` (becomes `-c key=value` on argv,
-  // which is fine for these values).
-  const config = [
-    'core.sshCommand=ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null',
-  ];
+  // No `-c core.sshCommand=...` injection. PR #786 added one to skip the
+  // first-time-host SSH prompt in Docker — but it silently overrode the
+  // user's intentional `core.sshCommand` from `~/.gitconfig` on every
+  // daemon-issued op AND was the argv that tripped simple-git's bundled
+  // `@simple-git/argv-parser` ("Configuring core.sshCommand is not
+  // permitted…"). `GIT_CONFIG_GLOBAL=/dev/null` (set below) is the correct
+  // way to neutralize the user gitconfig for token-carrying ops; the
+  // `unsafe.allowUnsafeSshCommand` flag below remains as defense-in-depth
+  // for anything else that injects `core.sshCommand` (e.g. an SSH-origin
+  // pull whose existing `.git/config` carries one). Agor's daemon-issued
+  // ops are HTTPS+token regardless (`clone-redesign.md`).
+  const config: string[] = [];
 
   // Auth header config goes through env vars so the token never lands on
   // argv. buildAuthHeaderEnv returns [] when no usable token is supplied.
@@ -569,7 +586,10 @@ export async function cloneRepo(options: CloneOptions): Promise<CloneResult> {
     }
   }
 
-  // Create git instance with user env vars (SSH host key checking is always disabled).
+  // Create git instance with user env vars. Auth headers are injected via
+  // http.extraheader; GIT_CONFIG_GLOBAL isolation is active only when env is
+  // provided (intentional — callers without env inherit the daemon process
+  // environment so they can read /etc/gitconfig, safe.directory, etc.).
   // Derive the auth-header host from the clone URL so GitHub Enterprise and
   // self-hosted GitLab work without per-deployment configuration. (Bitbucket
   // Cloud needs a different username shape — see buildAuthHeaderEnv comments.)
@@ -1400,7 +1420,8 @@ export async function deleteBranch(repoPath: string, branchName: string): Promis
 }
 
 /**
- * Re-export simpleGit for use in services
- * Allows other packages to use simple-git through @agor/core dependency
+ * Re-export for test helpers only.
+ * Production service code must use createGit() to get the unsafe-ops flags,
+ * env hardening, and consistent git binary selection.
  */
 export { simpleGit };
