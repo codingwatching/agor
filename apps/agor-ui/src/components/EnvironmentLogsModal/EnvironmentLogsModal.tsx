@@ -152,7 +152,7 @@ export const EnvironmentLogsModal: React.FC<EnvironmentLogsModalProps> = ({
       ]}
     >
       <ErrorBoundary fallbackTitle="Couldn't render the logs viewer." resetKey={logs?.timestamp}>
-        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+        <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
           {/* Timestamp and truncation warning */}
           {logs && !logs.error && (
             <div>
@@ -161,7 +161,7 @@ export const EnvironmentLogsModal: React.FC<EnvironmentLogsModalProps> = ({
               </Text>
               {logs.truncated && (
                 <Alert
-                  message="Logs truncated (showing last 500 lines)"
+                  title="Logs truncated (showing last 500 lines)"
                   type="warning"
                   showIcon
                   style={{ marginTop: 8 }}
@@ -174,7 +174,7 @@ export const EnvironmentLogsModal: React.FC<EnvironmentLogsModalProps> = ({
           {/* Error state */}
           {logs?.error && (
             <Alert
-              message="Error fetching logs"
+              title="Error fetching logs"
               description={
                 <div>
                   <div>{logs.error}</div>
