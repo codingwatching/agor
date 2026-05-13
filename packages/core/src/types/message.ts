@@ -24,8 +24,8 @@ export enum MessageRole {
 export type MessageSource = 'gateway' | 'agor';
 
 /**
- * Message type (from Claude transcript)
- * Distinguishes conversation messages from meta/snapshot messages
+ * Message type
+ * Distinguishes conversation messages from meta/synthetic messages
  */
 export type MessageType =
   | 'user'
@@ -33,7 +33,9 @@ export type MessageType =
   | 'system'
   | 'file-history-snapshot'
   | 'permission_request'
-  | 'input_request';
+  | 'input_request'
+  | 'daemon_restart'
+  | 'daemon_crash';
 
 /**
  * Content block (for multi-modal messages)
