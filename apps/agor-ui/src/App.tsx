@@ -23,6 +23,7 @@ import { BrowserRouter, Route, Routes, useLocation, useNavigate } from 'react-ro
 import { AVAILABLE_AGENTS } from './components/AgentSelectionGrid';
 import { App as AgorApp } from './components/App';
 import { ForcePasswordChangeModal } from './components/ForcePasswordChangeModal';
+import { InitialLoadingScreen } from './components/InitialLoadingScreen';
 import { LoginPage } from './components/LoginPage';
 import { MobileApp } from './components/mobile/MobileApp';
 import { OnboardingWizard } from './components/OnboardingWizard';
@@ -31,11 +32,13 @@ import { ConnectionProvider } from './contexts/ConnectionContext';
 import { ServicesConfigContext } from './contexts/ServicesConfigContext';
 import { ThemeProvider, useTheme } from './contexts/ThemeContext';
 import {
+  allInitialLoadItemsDone,
   useAgorClient,
   useAgorData,
   useAuth,
   useAuthConfig,
   useBoardActions,
+  useInitialLoaderPhase,
   useServerVersion,
   useSessionActions,
 } from './hooks';
@@ -155,6 +158,7 @@ function AppContent() {
     artifactById,
     sessionMcpServerIds,
     userAuthenticatedMcpServerIds,
+    loadingItems,
     loading,
     error: dataError,
   } = useAgorData(connected ? client : null, {
@@ -192,12 +196,23 @@ function AppContent() {
   // This prevents UI from unmounting during reconnections
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
 
-  // Mark as loaded once we have data
+  // Mark as loaded once the initial fetch completes (regardless of whether the
+  // workspace is empty — checking map sizes failed for fresh instances with no
+  // sessions/boards/repos yet).
   useEffect(() => {
-    if (!loading && (sessionById.size > 0 || boardById.size > 0 || repoById.size > 0)) {
+    if (!loading && !dataError && allInitialLoadItemsDone(loadingItems)) {
       setHasLoadedOnce(true);
     }
-  }, [loading, sessionById.size, boardById.size, repoById.size]);
+  }, [loading, loadingItems, dataError]);
+
+  const mustChangePassword = !!user?.must_change_password;
+  const loaderPhase = useInitialLoaderPhase({
+    connecting,
+    loading,
+    dataError,
+    mustChangePassword,
+    loadingItems,
+  });
 
   // Get current user from users Map (real-time updates via WebSocket)
   // This ensures we get the latest onboarding_completed status
@@ -400,23 +415,13 @@ function AppContent() {
 
   // Show loading state ONLY on initial load, not during reconnections
   // Once data is loaded, keep UI mounted and show connection status in header instead
-  if ((connecting || loading) && !hasLoadedOnce) {
+  if (loaderPhase !== 'done') {
     return (
-      <div
-        style={{
-          height: '100vh',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: token.colorBgLayout,
-        }}
-      >
-        <Spin size="large" />
-        <div style={{ marginTop: 16, color: 'rgba(255, 255, 255, 0.65)' }}>
-          Connecting to daemon...
-        </div>
-      </div>
+      <InitialLoadingScreen
+        phase={loaderPhase}
+        connecting={connecting}
+        loadingItems={loadingItems}
+      />
     );
   }
 
