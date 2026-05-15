@@ -395,13 +395,24 @@ export const App: React.FC<AppProps> = ({
     [currentBoardId]
   );
 
-  // If the stored board no longer exists (e.g., deleted), fallback to first board
+  // If the stored board no longer exists (deleted/archived), fall back to the
+  // first board. Distinguish the two reasons `boardById` can be empty:
+  //   - Disconnected and data was never loaded, or was momentarily wiped by a
+  //     stale upstream effect → treat as transient, keep the id sticky so the
+  //     `/b/<id>` URL survives.
+  //   - Connected with an authoritative empty set (user deleted last board) →
+  //     clear the selection so we stop pointing at a tombstone.
   useEffect(() => {
+    if (boardById.size === 0) {
+      if (!connected) return;
+      if (currentBoardId) setCurrentBoardId('');
+      return;
+    }
     if (currentBoardId && !boardById.has(currentBoardId)) {
       const fallback = mapToArray(boardById)[0]?.board_id || '';
       setCurrentBoardId(fallback);
     }
-  }, [boardById, currentBoardId, setCurrentBoardId]);
+  }, [boardById, currentBoardId, setCurrentBoardId, connected]);
 
   // Recalculate default position when board changes while modal is open
   // This ensures worktrees spawn at the center of the new board's viewport

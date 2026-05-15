@@ -142,8 +142,11 @@ function AppContent() {
   // rows). Mounted exactly once so all consumers share the same baseline.
   const { capturedSha, currentSha, outOfSync } = useServerVersion(client);
 
-  // Fetch data (only when connected and authenticated)
-  // Skip data fetch if user needs to change password - the ForcePasswordChangeModal will handle that
+  // Pass the stable client lifetime, not `connected ? client : null`:
+  // useAgorData owns reconnect refetches and `null` is reserved for logout /
+  // token removal. See the reset-effect comment in useAgorData.ts for the full
+  // failure chain we're avoiding.
+  // Skip data fetch if user needs to change password — the ForcePasswordChangeModal handles that.
   const {
     sessionById,
     sessionsByWorktree,
@@ -163,7 +166,7 @@ function AppContent() {
     loadingItems,
     loading,
     error: dataError,
-  } = useAgorData(connected ? client : null, {
+  } = useAgorData(client, {
     enabled: !user?.must_change_password,
   });
 
