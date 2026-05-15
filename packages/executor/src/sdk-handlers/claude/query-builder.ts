@@ -30,6 +30,7 @@ import type { PermissionService } from '../../permissions/permission-service.js'
 import type { MCPServersConfig, SessionID, TaskID, UserID } from '../../types.js';
 import { getMcpServersForSession } from '../base/mcp-scoping.js';
 import type { MessagesService, SessionsService, TasksService } from './claude-tool.js';
+import { CLAUDE_CODE_DISALLOWED_TOOLS } from './constants.js';
 import { parseModelWithBetas } from './model-utils.js';
 import { DEFAULT_CLAUDE_MODEL } from './models.js';
 import { createCanUseToolCallback } from './permissions/permission-hooks.js';
@@ -106,7 +107,6 @@ export interface QuerySetupDeps {
   sessionMCPRepo?: SessionMCPServerRepository;
   mcpServerRepo?: MCPServerRepository;
   permissionService?: PermissionService;
-  inputRequestService?: import('../../input-requests/input-request-service.js').InputRequestService;
   tasksService?: TasksService;
   sessionsService?: SessionsService;
   messagesService?: MessagesService;
@@ -268,6 +268,8 @@ export async function setupQuery(
       append: agorSystemPrompt, // Append rich Agor context (session, worktree, repo)
     },
     settingSources: ['user', 'project', 'local'], // Load user + project + local permissions, auto-loads CLAUDE.md
+    // Defensive copy — the const is readonly but the SDK option is typed `string[]`.
+    disallowedTools: [...CLAUDE_CODE_DISALLOWED_TOOLS],
     model, // Use configured model or default
     pathToClaudeCodeExecutable: claudeCodePath,
     // Allow access to common directories outside CWD (e.g., /tmp)
@@ -321,35 +323,31 @@ export async function setupQuery(
     console.log(`🔬 Beta flags: ${betas.join(', ')}`);
   }
 
-  // Add canUseTool callback if permission service is available and taskId provided
-  // This enables Agor's custom permission UI (WebSocket-based) when SDK would show a prompt
-  // Fires AFTER SDK checks settings.json - respects user's existing Claude CLI permissions!
+  // Add canUseTool callback if permission service is available and taskId provided.
+  // This enables Agor's custom permission UI (WebSocket-based) when the SDK would
+  // show a prompt. Fires AFTER the SDK checks settings.json — respects user's
+  // existing Claude CLI permissions.
   //
-  // We register canUseTool even in `bypassPermissions` mode. AskUserQuestion's tool
-  // descriptor sets `requiresUserInteraction: true`, which makes the SDK's permission
-  // resolver return `{behavior: "ask", message: "Answer questions?"}` BEFORE checking
-  // the bypass-mode shortcut (see @anthropic-ai/claude-agent-sdk 0.2.x). With no
-  // canUseTool registered, the SDK's default deny fires and the model receives
-  // "Answer questions?" as the tool error — bypassing Agor's input-request UI.
-  // The callback itself fast-paths non-AskUserQuestion tools to `allow` when in
-  // bypass mode so the rest of bypass semantics are preserved.
-  if (deps.permissionService && taskId && deps.sessionMCPRepo && deps.mcpServerRepo) {
+  // Skip in bypassPermissions mode: the SDK skips canUseTool there anyway, and
+  // we no longer need a workaround to intercept AskUserQuestion (now disallowed).
+  if (
+    deps.permissionService &&
+    taskId &&
+    deps.sessionMCPRepo &&
+    deps.mcpServerRepo &&
+    effectivePermissionMode !== 'bypassPermissions'
+  ) {
     queryOptions.canUseTool = createCanUseToolCallback(sessionId, taskId, {
       permissionService: deps.permissionService,
-      inputRequestService: deps.inputRequestService,
       tasksService: deps.tasksService!,
-      sessionsRepo: deps.sessionsRepo,
       messagesRepo: deps.messagesRepo!,
       messagesService: deps.messagesService,
       sessionsService: deps.sessionsService,
       permissionLocks: deps.permissionLocks,
       mcpServerRepo: deps.mcpServerRepo,
       sessionMCPRepo: deps.sessionMCPRepo,
-      permissionMode: effectivePermissionMode,
     });
     console.log(`✅ canUseTool callback added (permission mode: ${effectivePermissionMode})`);
-    console.log(`   SDK will check settings.json first, then call Agor UI if needed`);
-    console.log(`   Using SDK's built-in permission persistence (updatedPermissions)`);
   }
 
   // Add optional apiKey if provided
