@@ -11,6 +11,7 @@
 import type {
   AgenticToolName,
   AssistantConfig,
+  AuthCheckResult,
   Board,
   CreateLocalRepoRequest,
   CreateRepoRequest,
@@ -20,7 +21,12 @@ import type {
   UserPreferences,
   Worktree,
 } from '@agor-live/client';
-import { normalizeRepoUrl } from '@agor-live/client';
+import {
+  extractSlugFromUrl,
+  isValidSlug,
+  normalizeRepoUrl,
+  TOOL_API_KEY_NAMES,
+} from '@agor-live/client';
 import {
   CheckCircleOutlined,
   CloudDownloadOutlined,
@@ -33,6 +39,7 @@ import {
 import {
   Alert,
   Button,
+  Card,
   Form,
   Input,
   Modal,
@@ -42,6 +49,7 @@ import {
   Space,
   Spin,
   Steps,
+  Tag,
   Typography,
   theme,
 } from 'antd';
@@ -51,6 +59,7 @@ import {
   FRAMEWORK_REPO_URL,
   findFrameworkRepo,
 } from '../../hooks/useFrameworkRepo';
+import { extractSlugFromPath } from '../../utils/repoSlug';
 import type { NewSessionConfig } from '../NewSessionModal/NewSessionModal';
 
 const { Text, Title, Paragraph } = Typography;
@@ -59,6 +68,12 @@ const { useToken } = theme;
 // ─── Constants ──────────────────────────────────────────
 
 const CLONE_TIMEOUT_MS = 120_000;
+
+const ASSISTANT_BOOT_PROMPT = `You are starting your first session as an Agor assistant.
+
+Read the framework files in this worktree. Then introduce yourself — show that you understand your role as a persistent, memory-aware assistant, not a generic chatbot. Keep your intro brief and warm.
+
+Context: this is a fresh Agor installation, assistant path, first session.`;
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -100,8 +115,9 @@ export interface OnboardingWizardProps {
     }
   ) => Promise<Worktree | null>;
   onCreateSession: (config: NewSessionConfig, boardId: string) => Promise<string | null>;
-  onUpdateUser: (userId: string, updates: UpdateUserInput) => void;
-  onUpdateWorktree?: (worktreeId: string, updates: Partial<Worktree>) => void;
+  onUpdateUser: (userId: string, updates: UpdateUserInput) => Promise<void>;
+  onUpdateWorktree?: (worktreeId: string, updates: Partial<Worktree>) => Promise<void>;
+  onCheckAuth?: (tool: AgenticToolName, apiKey?: string) => Promise<AuthCheckResult>;
 
   // Config from health endpoint
   assistantPending?: boolean;
@@ -131,10 +147,10 @@ function getUsernameSlug(user?: User | null): string {
 
 function getStepsForPath(path: WizardPath | null): WizardStep[] {
   if (path === 'assistant') {
-    return ['welcome', 'clone', 'board', 'worktree', 'api-keys', 'launch'];
+    return ['welcome', 'api-keys', 'clone', 'board', 'worktree', 'launch'];
   }
   if (path === 'own-repo') {
-    return ['welcome', 'add-repo', 'clone', 'board', 'worktree', 'api-keys', 'launch'];
+    return ['welcome', 'api-keys', 'add-repo', 'clone', 'board', 'worktree', 'launch'];
   }
   return ['welcome'];
 }
@@ -144,20 +160,9 @@ function getStepIndex(steps: WizardStep[], step: WizardStep): number {
 }
 
 function apiKeyNameForAgent(agent: AgenticToolName): string {
-  switch (agent) {
-    case 'claude-code':
-      return 'ANTHROPIC_API_KEY';
-    case 'codex':
-      return 'OPENAI_API_KEY';
-    case 'gemini':
-      return 'GEMINI_API_KEY';
-    case 'copilot':
-      return 'COPILOT_GITHUB_TOKEN';
-    case 'opencode':
-      return 'ANTHROPIC_API_KEY';
-    default:
-      return 'ANTHROPIC_API_KEY';
-  }
+  // opencode has no canonical key of its own; wizard collects an Anthropic key
+  // and routes it to the claude-code bucket (see handleSaveApiKey).
+  return TOOL_API_KEY_NAMES[agent] ?? 'ANTHROPIC_API_KEY';
 }
 
 function apiKeyPlaceholder(agent: AgenticToolName): string {
@@ -259,6 +264,7 @@ export function OnboardingWizard({
   onCreateSession,
   onUpdateUser,
   onUpdateWorktree,
+  onCheckAuth,
   assistantPending,
   frameworkRepoUrl,
   systemCredentials,
@@ -267,7 +273,25 @@ export function OnboardingWizard({
 
   // ─── State ────────────────────────────────────────
   const [path, setPath] = useState<WizardPath | null>(null);
-  const [currentStep, setCurrentStep] = useState<WizardStep>('welcome');
+  const [currentStep, rawSetCurrentStep] = useState<WizardStep>('welcome');
+
+  // Funnel ALL step transitions through this wrapper. In dev it logs every
+  // transition with caller context (use the browser console to follow the
+  // wizard's path through its steps). This makes step-transition bugs —
+  // historically the biggest source of regressions in this component —
+  // immediately visible.
+  //
+  // Rule of thumb: any time you'd reach for `rawSetCurrentStep`, use this
+  // instead. Auto-advance effects watching WS events also go through here.
+  const setCurrentStep = useCallback((next: WizardStep) => {
+    rawSetCurrentStep((prev) => {
+      if (import.meta.env.DEV && prev !== next) {
+        // eslint-disable-next-line no-console
+        console.debug(`[OnboardingWizard] step: ${prev} → ${next}`);
+      }
+      return next;
+    });
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   // Step-specific state
@@ -276,15 +300,20 @@ export function OnboardingWizard({
   const [localRepoPath, setLocalRepoPath] = useState('');
   const [repoMode, setRepoMode] = useState<'remote' | 'local'>('remote');
   const [branchName, setBranchName] = useState('');
-  const [worktreeName, setWorktreeName] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [selectedAgent, setSelectedAgent] = useState<AgenticToolName>('claude-code');
+  const [testAuthLoading, setTestAuthLoading] = useState(false);
+  const [testAuthResult, setTestAuthResult] = useState<AuthCheckResult | null>(null);
+  // Lets the user opt out of detected auth (CLI/OAuth/file-probe) and paste
+  // a key manually — useful when the detected method isn't what they want
+  // (e.g. ChatGPT OAuth detected but they prefer a work API key) or when
+  // our probe is wrong. Resets on agent change and on wizard reset.
+  const [overrideDetectedAuth, setOverrideDetectedAuth] = useState(false);
 
   // Created resource IDs
   const [createdRepoId, setCreatedRepoId] = useState<string | null>(null);
   const [createdBoardId, setCreatedBoardId] = useState<string | null>(null);
   const [createdWorktreeId, setCreatedWorktreeId] = useState<string | null>(null);
-  const [createdSessionId, setCreatedSessionId] = useState<string | null>(null);
 
   // Timeout ref for clone
   const cloneTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -295,6 +324,9 @@ export function OnboardingWizard({
   // The failure watcher ignores these so a stale row from a prior attempt never
   // immediately cancels a new retry before the daemon has a chance to replace it.
   const knownFailedRepoIdsRef = useRef<Set<string>>(new Set());
+  // Tracks which agent we've already auto-tested on the current api-keys
+  // visit, so re-rendering the step doesn't re-fire the test endlessly.
+  const autoTestedAgentRef = useRef<string | null>(null);
 
   // ─── Derived ──────────────────────────────────────
   const steps = useMemo(() => getStepsForPath(path), [path]);
@@ -380,49 +412,69 @@ export function OnboardingWizard({
       setCreatedBoardId(onboarding.boardId);
     }
 
+    // Restore repoId so the worktree step doesn't fail "Missing repo or board"
+    // on resume. The safety-net effect can re-derive it for the assistant path
+    // (framework slug) but has no signal for an own-repo resume because
+    // `repoUrl`/`localRepoPath` are local state and reset to ''.
+    if (onboarding.repoId && repoById.has(onboarding.repoId)) {
+      setCreatedRepoId(onboarding.repoId);
+    }
+
     if (onboarding.worktreeId) {
       setCreatedWorktreeId(onboarding.worktreeId);
     }
 
     // Figure out which step to resume from
     if (onboarding.worktreeId && worktreeById.has(onboarding.worktreeId)) {
-      // Worktree exists — go to API keys
-      setCurrentStep('api-keys');
+      // Worktree exists — go to launch (api-keys now comes before clone/add-repo)
+      setCurrentStep('launch');
     } else if (mainBoardId && boardById.has(mainBoardId)) {
       // Board exists — go to worktree creation
       setCurrentStep('worktree');
+    } else if (onboarding.repoId && repoById.has(onboarding.repoId)) {
+      // Repo is registered (already restored above) — go straight to board
+      setCurrentStep('board');
     } else if (resumedPath === 'assistant') {
-      // Check if the framework repo is registered AND finished cloning.
-      // A placeholder (`clone_status: 'cloning'`) or `'failed'` row means
-      // the previous clone is still in flight or stuck — resume on the
-      // clone step so the user can wait it out or hit Retry.
+      // Assistant path may have a framework repo cloned outside this wizard
+      // (or under a prior onboarding without persisted repoId). Try to find it.
       const found = findReadyFrameworkRepo(repoById);
       if (found) {
         setCreatedRepoId(found[0]);
+        setCurrentStep('board');
+      } else {
+        // Nothing created yet — restart from api-keys (first real step in new flow)
+        setCurrentStep('api-keys');
       }
-      setCurrentStep(found ? 'board' : 'clone');
     } else {
-      setCurrentStep('add-repo');
+      // own-repo with nothing created — restart from api-keys
+      setCurrentStep('api-keys');
     }
-  }, [open, user, assistantPending, path, repoById, boardById, worktreeById]);
+  }, [
+    open,
+    user,
+    assistantPending,
+    path,
+    repoById,
+    boardById,
+    worktreeById, // own-repo with nothing created — restart from api-keys
+    setCurrentStep,
+  ]);
 
-  // Initialize branch name when user is available
+  // Initialize branch name once when user first loads (ref guards against re-init on edit)
+  const branchNameInitRef = useRef(false);
   useEffect(() => {
-    if (user && !branchName) {
+    if (user && !branchNameInitRef.current) {
+      branchNameInitRef.current = true;
       setBranchName(`private-${usernameSlug}`);
     }
-  }, [user, branchName, usernameSlug]);
-
-  // Initialize worktree name for own-repo path (only once when path is chosen)
-  const worktreeNameInitRef = useRef(false);
-  useEffect(() => {
-    if (path === 'own-repo' && !worktreeNameInitRef.current) {
-      worktreeNameInitRef.current = true;
-      setWorktreeName('my-worktree');
-    }
-  }, [path]);
+  }, [user, usernameSlug]);
 
   // ─── Auto-advance: Watch repoById for clone completion ──
+  // This is the ONE legitimately async step: clone completion is signalled
+  // by a WebSocket event landing in `repoById`. Every other step transition
+  // in the wizard is owned by its handler (imperative). If you find yourself
+  // adding another effect that calls `setCurrentStep` based on a service map,
+  // think twice — most operations are synchronous from the wizard's POV.
   useEffect(() => {
     if (currentStep !== 'clone' || !loading) return;
 
@@ -461,7 +513,7 @@ export function OnboardingWizard({
         return;
       }
     }
-  }, [currentStep, loading, path, repoById, repoUrl, repoSlug, localRepoPath]);
+  }, [currentStep, loading, path, repoById, repoUrl, repoSlug, localRepoPath, setCurrentStep]);
 
   // ─── Safety net: ensure createdRepoId is set when reaching board/worktree ──
   useEffect(() => {
@@ -485,33 +537,11 @@ export function OnboardingWizard({
     }
   }, [currentStep, createdRepoId, repoById, repoUrl, repoSlug, localRepoPath, path]);
 
-  // ─── Auto-advance: Watch boardById for board creation ──
-  useEffect(() => {
-    if (currentStep !== 'board' || !loading) return;
-
-    for (const [id] of boardById) {
-      if (id === createdBoardId) {
-        setLoading(false);
-        setCurrentStep('worktree');
-        return;
-      }
-    }
-  }, [currentStep, loading, boardById, createdBoardId]);
-
-  // ─── Auto-advance: Watch worktreeById for worktree creation ──
-  useEffect(() => {
-    if (currentStep !== 'worktree' || !loading) return;
-
-    if (createdWorktreeId) {
-      for (const [id] of worktreeById) {
-        if (id === createdWorktreeId) {
-          setLoading(false);
-          setCurrentStep('api-keys');
-          return;
-        }
-      }
-    }
-  }, [currentStep, loading, worktreeById, createdWorktreeId]);
+  // No auto-advance for board or worktree creation: handleCreateBoard and
+  // handleCreateWorktree own their success/failure transitions explicitly
+  // because both are synchronous from the wizard's perspective (the daemon
+  // returns the created row from the create call). Prior effects watching
+  // boardById / worktreeById raced the handlers — see git history.
 
   // ─── Watch repoById for clone failure (state-driven, race-free) ──
   // Events can arrive while the listener closure still has `loading=false`
@@ -633,9 +663,12 @@ export function OnboardingWizard({
 
   // ─── Step Handlers ────────────────────────────────
 
-  // Persist onboarding progress to user preferences so restarts can resume
+  // Persist onboarding progress to user preferences so restarts can resume.
+  // ⚠️  Declared in the handlers section because effects above (notably the
+  // createdRepoId-persist effect below) reference it — moving this further
+  // down re-introduces a TDZ ReferenceError on mount.
   const saveOnboardingProgress = useCallback(
-    (updates: { path?: WizardPath; boardId?: string; worktreeId?: string }) => {
+    (updates: { path?: WizardPath; repoId?: string; boardId?: string; worktreeId?: string }) => {
       if (!user) return;
       const current = user.preferences?.onboarding || {};
       const prefs: Record<string, unknown> = {
@@ -650,6 +683,16 @@ export function OnboardingWizard({
     [user, onUpdateUser]
   );
 
+  // Persist createdRepoId so a refresh / reset-then-resume of the wizard
+  // lands back on the worktree step with the repo still wired up. Without
+  // this, handleCreateWorktree throws "Missing repo or board" on resume
+  // because repoId is only kept in local state.
+  useEffect(() => {
+    if (!createdRepoId) return;
+    if (user?.preferences?.onboarding?.repoId === createdRepoId) return;
+    saveOnboardingProgress({ repoId: createdRepoId });
+  }, [createdRepoId, user, saveOnboardingProgress]);
+
   const handleSelectPath = useCallback(
     (selectedPath: WizardPath) => {
       setPath(selectedPath);
@@ -658,23 +701,20 @@ export function OnboardingWizard({
       // Persist chosen path immediately
       saveOnboardingProgress({ path: selectedPath });
 
+      // API keys is now the first step for both paths.
+      // Check if framework repo already exists (assistant) — if so, skip ahead.
       if (selectedPath === 'assistant') {
-        // Check if framework repo already exists AND is cloned. A leftover
-        // placeholder/failed row means the previous attempt didn't finish —
-        // route the user to the clone step so they see the spinner (or
-        // error + Retry) instead of being sent on with no usable repo.
         const found = findReadyFrameworkRepo(repoById);
         if (found) {
           setCreatedRepoId(found[0]);
           setCurrentStep('board');
           return;
         }
-        setCurrentStep('clone');
-      } else {
-        setCurrentStep('add-repo');
       }
+
+      setCurrentStep('api-keys');
     },
-    [repoById, saveOnboardingProgress]
+    [repoById, saveOnboardingProgress, setCurrentStep]
   );
 
   const handleStartClone = useCallback(async () => {
@@ -703,29 +743,37 @@ export function OnboardingWizard({
           slug: FRAMEWORK_REPO_SLUG,
           default_branch: 'main',
         });
-      } else if (repoMode === 'remote') {
-        await onCreateRepo({
-          url: repoUrl,
-          slug: repoSlug || '',
-          default_branch: 'main',
-        });
       } else {
-        // Local repos are registered synchronously — no clone needed.
-        await onCreateLocalRepo({
-          path: localRepoPath,
-          slug: repoSlug || undefined,
-        });
+        // If the user typed a local filesystem path into the URL field (starts with
+        // / or ~), treat it as a local repo regardless of which mode toggle is active.
+        const looksLikeLocalPath = repoUrl.startsWith('/') || repoUrl.startsWith('~');
+        const effectiveMode = looksLikeLocalPath ? 'local' : repoMode;
+
+        if (effectiveMode === 'remote') {
+          await onCreateRepo({
+            url: repoUrl,
+            slug: repoSlug || '',
+            default_branch: 'main',
+          });
+        } else {
+          // Local repos are registered synchronously — no clone needed.
+          await onCreateLocalRepo({
+            path: looksLikeLocalPath ? repoUrl : localRepoPath,
+            slug: repoSlug || undefined,
+          });
+        }
       }
     } catch (err) {
       setLoading(false);
-      setError(`Failed to start clone: ${err instanceof Error ? err.message : String(err)}`);
+      setError(err instanceof Error ? err.message : String(err));
       return;
     }
 
     // Decide whether this operation is async (clone) or synchronous (local registration).
-    // Keying on `path` explicitly avoids relying on `repoMode` state that isn't
-    // meaningful on the assistant path.
-    const isAsyncClone = path === 'assistant' || (path === 'own-repo' && repoMode === 'remote');
+    const looksLikeLocalPath = repoUrl.startsWith('/') || repoUrl.startsWith('~');
+    const effectiveMode = path === 'own-repo' && looksLikeLocalPath ? 'local' : repoMode;
+    const isAsyncClone =
+      path === 'assistant' || (path === 'own-repo' && effectiveMode === 'remote');
 
     // Transition to the clone step so the auto-advance effect can detect
     // the newly-created repo in repoById and move to the board step.
@@ -763,6 +811,7 @@ export function OnboardingWizard({
     repoById,
     onCreateRepo,
     onCreateLocalRepo,
+    setCurrentStep,
   ]);
 
   const handleCreateBoard = useCallback(async () => {
@@ -796,7 +845,7 @@ export function OnboardingWizard({
       setLoading(false);
       setError(`Failed to create board: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [client, user, boardById, saveOnboardingProgress]);
+  }, [client, user, boardById, saveOnboardingProgress, setCurrentStep]);
 
   const handleCreateWorktree = useCallback(async () => {
     if (!createdRepoId || !createdBoardId) {
@@ -807,15 +856,20 @@ export function OnboardingWizard({
     setError(null);
     setLoading(true);
 
-    const wtName = path === 'assistant' ? 'assistant' : worktreeName;
-    const ref = sanitizeBranchName(branchName);
+    // Worktree name and ref are unified into a single input — they're almost
+    // always the same for first-time users, and the underlying form elsewhere
+    // exposes the same shortcut.
+    const sanitized = sanitizeBranchName(branchName);
+    // Fork from the repo's actual default branch (e.g. 'master' on older
+    // repos), falling back to 'main' for legacy rows missing the field.
+    const sourceBranch = repoById.get(createdRepoId)?.default_branch || 'main';
 
     try {
       const worktree = await onCreateWorktree(createdRepoId, {
-        name: wtName,
-        ref,
+        name: sanitized,
+        ref: sanitized,
         createBranch: true,
-        sourceBranch: 'main',
+        sourceBranch,
         pullLatest: true,
         boardId: createdBoardId,
       });
@@ -833,13 +887,13 @@ export function OnboardingWizard({
             frameworkRepo: FRAMEWORK_REPO_SLUG,
             createdViaOnboarding: true,
           };
-          onUpdateWorktree(worktree.worktree_id, {
+          await onUpdateWorktree(worktree.worktree_id, {
             custom_context: { ...worktree.custom_context, assistant: assistantConfig },
           });
         }
 
         setLoading(false);
-        setCurrentStep('api-keys');
+        setCurrentStep('launch');
       } else {
         setLoading(false);
         setError('Failed to create worktree. Please try again.');
@@ -852,11 +906,12 @@ export function OnboardingWizard({
     createdRepoId,
     createdBoardId,
     path,
-    worktreeName,
     branchName,
+    repoById,
     onCreateWorktree,
     onUpdateWorktree,
     saveOnboardingProgress,
+    setCurrentStep,
   ]);
 
   const handleSaveApiKey = useCallback(async () => {
@@ -876,25 +931,34 @@ export function OnboardingWizard({
       const keyName = apiKeyNameForAgent(selectedAgent);
       const targetTool: AgenticToolName =
         selectedAgent === 'opencode' ? 'claude-code' : selectedAgent;
-      onUpdateUser(user.user_id, {
+      await onUpdateUser(user.user_id, {
         agentic_tools: {
           [targetTool]: { [keyName]: apiKey.trim() },
         } as UpdateUserInput['agentic_tools'],
       });
       setLoading(false);
-      setCurrentStep('launch');
+      setCurrentStep(path === 'own-repo' ? 'add-repo' : 'clone');
     } catch (err) {
       setLoading(false);
       setError(`Failed to save API key: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [user, apiKey, selectedAgent, onUpdateUser]);
+  }, [user, apiKey, selectedAgent, path, onUpdateUser, setCurrentStep]);
 
   const handleAdvanceFromApiKeys = useCallback(() => {
-    setCurrentStep('launch');
-  }, []);
+    setCurrentStep(path === 'own-repo' ? 'add-repo' : 'clone');
+  }, [path, setCurrentStep]);
+
+  const handleTestAuth = useCallback(async () => {
+    if (!onCheckAuth) return;
+    setTestAuthLoading(true);
+    setTestAuthResult(null);
+    const result = await onCheckAuth(selectedAgent, apiKey.trim() || undefined);
+    setTestAuthLoading(false);
+    setTestAuthResult(result);
+  }, [onCheckAuth, selectedAgent, apiKey]);
 
   const handleLaunch = useCallback(async () => {
-    if (!createdWorktreeId || !createdBoardId) {
+    if (!createdWorktreeId || !createdBoardId || !path) {
       setError('Missing worktree or board.');
       return;
     }
@@ -907,13 +971,14 @@ export function OnboardingWizard({
         {
           worktree_id: createdWorktreeId,
           agent: selectedAgent,
+          ...(path === 'assistant' && { initialPrompt: ASSISTANT_BOOT_PROMPT }),
         },
         createdBoardId
       );
 
       if (sessionId) {
-        setCreatedSessionId(sessionId);
         setLoading(false);
+        onComplete({ worktreeId: createdWorktreeId, sessionId, boardId: createdBoardId, path });
       } else {
         setLoading(false);
         setError('Failed to create session. Please try again.');
@@ -922,18 +987,7 @@ export function OnboardingWizard({
       setLoading(false);
       setError(`Failed to launch session: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [createdWorktreeId, createdBoardId, selectedAgent, onCreateSession]);
-
-  const handleFinish = useCallback(() => {
-    if (!createdWorktreeId || !createdSessionId || !createdBoardId || !path) return;
-
-    onComplete({
-      worktreeId: createdWorktreeId,
-      sessionId: createdSessionId,
-      boardId: createdBoardId,
-      path,
-    });
-  }, [createdWorktreeId, createdSessionId, createdBoardId, path, onComplete]);
+  }, [createdWorktreeId, createdBoardId, selectedAgent, path, onCreateSession, onComplete]);
 
   const handleSkip = useCallback(() => {
     if (!user) return;
@@ -952,54 +1006,114 @@ export function OnboardingWizard({
     if (idx > 0) {
       setCurrentStep(steps[idx - 1]);
     }
-  }, [stepIndex, steps]);
+  }, [stepIndex, steps, setCurrentStep]);
+
+  // Dev-only: reset the wizard back to the welcome screen so the flows can be
+  // re-tested without DB surgery. Clears persisted onboarding state but leaves
+  // any repos / boards / worktrees the user already created intact — those
+  // are easy to clean up manually if needed.
+  const handleReset = useCallback(async () => {
+    if (cloneTimeoutRef.current) {
+      clearTimeout(cloneTimeoutRef.current);
+      cloneTimeoutRef.current = null;
+    }
+    if (cloneIntervalRef.current) {
+      clearInterval(cloneIntervalRef.current);
+      cloneIntervalRef.current = null;
+    }
+    setPath(null);
+    setCurrentStep('welcome');
+    setError(null);
+    setLoading(false);
+    setRepoUrl('');
+    setRepoSlug('');
+    setLocalRepoPath('');
+    setRepoMode('remote');
+    setBranchName('');
+    setApiKey('');
+    setSelectedAgent('claude-code');
+    setTestAuthLoading(false);
+    setTestAuthResult(null);
+    setOverrideDetectedAuth(false);
+    setCreatedRepoId(null);
+    setCreatedBoardId(null);
+    setCreatedWorktreeId(null);
+    setCloneElapsedSeconds(0);
+    resumedRef.current = false;
+    branchNameInitRef.current = false;
+    autoTestedAgentRef.current = null;
+    knownFailedRepoIdsRef.current = new Set();
+
+    if (user) {
+      const prefs = { ...(user.preferences || {}) } as Record<string, unknown>;
+      delete prefs.onboarding;
+      delete prefs.mainBoardId;
+      await onUpdateUser(user.user_id, { preferences: prefs as UserPreferences });
+    }
+  }, [user, onUpdateUser, setCurrentStep]);
 
   // ─── Render Helpers ───────────────────────────────
 
   const renderWelcome = () => (
-    <div style={{ textAlign: 'center', padding: '24px 0' }}>
-      <Title level={3} style={{ marginBottom: 8 }}>
+    <div style={{ padding: '8px 0' }}>
+      <Title level={3} style={{ marginBottom: 6 }}>
         Welcome to Agor
       </Title>
-      <Paragraph type="secondary" style={{ marginBottom: 32, fontSize: 15 }}>
+      <Paragraph type="secondary" style={{ marginBottom: 24, fontSize: 15 }}>
         Let's get you set up with your first AI session.
       </Paragraph>
 
-      <Space
-        orientation="vertical"
-        size="middle"
-        style={{ width: '100%', maxWidth: 400, margin: '0 auto' }}
-      >
-        <Button
-          type="primary"
-          size="large"
-          block
-          icon={<ThunderboltOutlined />}
+      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+        <Card
+          hoverable
           onClick={() => handleSelectPath('assistant')}
-          style={{ height: 56, fontSize: 16 }}
+          style={{ cursor: 'pointer', borderColor: token.colorPrimary }}
         >
-          Set up your assistant
-        </Button>
-        <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: -8 }}>
-          Clone the assistant framework with pre-configured tasks and templates
-        </Text>
+          <Space align="start" size="middle">
+            <ThunderboltOutlined
+              style={{ fontSize: 24, color: token.colorPrimary, marginTop: 2, flexShrink: 0 }}
+            />
+            <div>
+              <Space style={{ marginBottom: 6 }} align="center">
+                <Text strong style={{ fontSize: 15 }}>
+                  Set up your AI assistant
+                </Text>
+                <Tag color="blue">Recommended</Tag>
+              </Space>
+              <Paragraph type="secondary" style={{ marginBottom: 6 }}>
+                Get a persistent AI assistant with memory, task management, and pre-configured
+                workflows.
+              </Paragraph>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                API key → Clone assistant framework → Board → Worktree → Launch
+              </Text>
+            </div>
+          </Space>
+        </Card>
 
-        <div style={{ margin: '8px 0' }}>
-          <Text type="secondary">or</Text>
-        </div>
-
-        <Button
-          size="large"
-          block
-          icon={<FolderOpenOutlined />}
-          onClick={() => handleSelectPath('own-repo')}
-          style={{ height: 56, fontSize: 16 }}
-        >
-          I have my own repo
-        </Button>
-        <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: -8 }}>
-          Connect your own repository and start coding with AI
-        </Text>
+        <Card hoverable onClick={() => handleSelectPath('own-repo')} style={{ cursor: 'pointer' }}>
+          <Space align="start" size="middle">
+            <FolderOpenOutlined
+              style={{
+                fontSize: 24,
+                color: token.colorTextSecondary,
+                marginTop: 2,
+                flexShrink: 0,
+              }}
+            />
+            <div>
+              <Text strong style={{ fontSize: 15 }}>
+                Bring your own repository
+              </Text>
+              <Paragraph type="secondary" style={{ marginBottom: 6, marginTop: 4 }}>
+                Connect an existing Git repository and start coding with AI agents.
+              </Paragraph>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                API key → Add repository → Board → Worktree → Launch
+              </Text>
+            </div>
+          </Space>
+        </Card>
       </Space>
     </div>
   );
@@ -1035,10 +1149,35 @@ export function OnboardingWizard({
             <Input
               placeholder="https://github.com/user/repo.git"
               value={repoUrl}
-              onChange={(e) => setRepoUrl(e.target.value)}
+              onChange={(e) => {
+                const value = e.target.value;
+                setRepoUrl(value);
+                // Mirror RepoFormFields: auto-fill slug from URL on every keystroke.
+                // `looksLikeLocalPath` covers the case where the user pastes a
+                // filesystem path into the URL field (handled downstream too).
+                if (!value) return;
+                try {
+                  const looksLikeLocalPath = value.startsWith('/') || value.startsWith('~');
+                  const slug = looksLikeLocalPath
+                    ? extractSlugFromPath(value)
+                    : extractSlugFromUrl(value);
+                  if (slug) setRepoSlug(slug);
+                } catch {
+                  // Partial/invalid URL while typing — leave the slug untouched.
+                }
+              }}
             />
           </Form.Item>
-          <Form.Item label="Slug (optional)">
+          <Form.Item
+            label="Slug (optional)"
+            validateStatus={repoSlug && !isValidSlug(repoSlug) ? 'error' : ''}
+            help={
+              repoSlug && !isValidSlug(repoSlug)
+                ? 'Must be org/name format (e.g. "my-org/my-repo")'
+                : undefined
+            }
+            extra="Auto-detected from URL (editable)"
+          >
             <Input
               placeholder="user/repo"
               value={repoSlug}
@@ -1052,10 +1191,25 @@ export function OnboardingWizard({
             <Input
               placeholder="/path/to/your/repo"
               value={localRepoPath}
-              onChange={(e) => setLocalRepoPath(e.target.value)}
+              onChange={(e) => {
+                const value = e.target.value;
+                setLocalRepoPath(value);
+                if (!value) return;
+                const slug = extractSlugFromPath(value);
+                if (slug) setRepoSlug(slug);
+              }}
             />
           </Form.Item>
-          <Form.Item label="Slug (optional)">
+          <Form.Item
+            label="Slug (optional)"
+            validateStatus={repoSlug && !isValidSlug(repoSlug) ? 'error' : ''}
+            help={
+              repoSlug && !isValidSlug(repoSlug)
+                ? 'Must be org/name format (e.g. "my-org/my-repo")'
+                : undefined
+            }
+            extra="Auto-detected from path (editable)"
+          >
             <Input
               placeholder="local/repo"
               value={repoSlug}
@@ -1171,203 +1325,290 @@ export function OnboardingWizard({
     </div>
   );
 
-  const renderWorktree = () => (
-    <div style={{ padding: '16px 0' }}>
-      <Title level={4}>Create Your Worktree</Title>
-      <Paragraph type="secondary">
-        A worktree is an isolated copy of your repo with its own branch.
-        {path === 'assistant'
-          ? " We'll set up a worktree for your assistant."
-          : ' Choose a name and branch for your worktree.'}
-      </Paragraph>
+  const renderWorktree = () => {
+    const sourceBranch =
+      (createdRepoId ? repoById.get(createdRepoId)?.default_branch : null) || 'main';
+    return (
+      <div style={{ padding: '16px 0' }}>
+        <Title level={4}>Create Your Worktree</Title>
+        <Paragraph type="secondary">
+          A worktree is an isolated copy of your repo with its own branch.
+          {path === 'assistant'
+            ? " We'll set up a worktree for your assistant."
+            : ' Name it whatever you like.'}
+        </Paragraph>
 
-      <Form layout="vertical">
-        {path === 'own-repo' && (
-          <Form.Item label="Worktree Name">
+        <Form layout="vertical">
+          <Form.Item
+            label="Worktree / branch name"
+            extra={
+              <>
+                Used as both the directory name and the new branch name. Forked from{' '}
+                <Text code>{sourceBranch}</Text>.
+              </>
+            }
+          >
             <Input
-              placeholder="my-worktree"
-              value={worktreeName}
-              onChange={(e) => setWorktreeName(sanitizeBranchName(e.target.value))}
+              placeholder={`private-${usernameSlug}`}
+              value={branchName}
+              onChange={(e) => setBranchName(e.target.value)}
             />
           </Form.Item>
-        )}
-        <Form.Item label="Branch Name">
-          <Input
-            placeholder={`private-${usernameSlug}`}
-            value={branchName}
-            onChange={(e) => setBranchName(e.target.value)}
-            addonBefore="branch:"
+        </Form>
+
+        {error && <Alert type="error" title={error} showIcon style={{ marginBottom: 16 }} />}
+
+        <Button
+          type="primary"
+          onClick={handleCreateWorktree}
+          loading={loading}
+          disabled={!branchName.trim()}
+        >
+          Create Worktree
+        </Button>
+      </div>
+    );
+  };
+
+  const renderApiKeys = () => {
+    const hasKey = hasKeyForAgent(selectedAgent);
+    // "Already auth'd" covers both stored credentials (agentic_tools / env vars
+    // / system credentials) AND ambient CLI auth detected by onCheckAuth —
+    // e.g. the user already ran `claude auth login` outside the wizard.
+    const isAuthenticated = hasKey || !!testAuthResult?.authenticated;
+
+    const renderAuthHint = () => {
+      if (selectedAgent === 'claude-code') {
+        return (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16, textAlign: 'left' }}
+            description={
+              <span>
+                You have three ways to authenticate Claude Code: paste an{' '}
+                <Text code style={{ fontSize: 12 }}>
+                  ANTHROPIC_API_KEY
+                </Text>{' '}
+                below, run{' '}
+                <Text code style={{ fontSize: 12 }}>
+                  claude auth login
+                </Text>{' '}
+                in the terminal Agor runs as, or set up a Pro/Max session token from{' '}
+                <Text strong>User Settings → Claude Code</Text> (best for Claude subscribers).
+              </span>
+            }
           />
-          <Text type="secondary" style={{ fontSize: 12, marginTop: 4, display: 'block' }}>
-            A personal branch will be created from main
-          </Text>
-        </Form.Item>
-      </Form>
-
-      {error && <Alert type="error" title={error} showIcon style={{ marginBottom: 16 }} />}
-
-      <Button
-        type="primary"
-        onClick={handleCreateWorktree}
-        loading={loading}
-        disabled={!branchName.trim()}
-      >
-        Create Worktree
-      </Button>
-    </div>
-  );
-
-  const renderApiKeys = () => (
-    <div style={{ padding: '16px 0' }}>
-      <Title level={4}>Choose Your Agent & Configure Credentials</Title>
-
-      <Form layout="vertical">
-        <Form.Item label="Agent">
-          <Select
-            value={selectedAgent}
-            onChange={(value) => {
-              setSelectedAgent(value);
-              setApiKey('');
-              setError(null);
-            }}
-            options={[
-              { value: 'claude-code', label: 'Claude Code (Recommended)' },
-              { value: 'codex', label: 'Codex (OpenAI)' },
-              { value: 'gemini', label: 'Gemini' },
-              { value: 'copilot', label: 'GitHub Copilot' },
-              { value: 'opencode', label: 'OpenCode' },
-            ]}
-            style={{ width: '100%' }}
+        );
+      }
+      if (selectedAgent === 'codex') {
+        return (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16, textAlign: 'left' }}
+            description={
+              <span>
+                Paste an{' '}
+                <Text code style={{ fontSize: 12 }}>
+                  OPENAI_API_KEY
+                </Text>{' '}
+                below, or authenticate via{' '}
+                <Text code style={{ fontSize: 12 }}>
+                  codex
+                </Text>{' '}
+                in the terminal Agor runs as.
+              </span>
+            }
           />
-        </Form.Item>
-      </Form>
+        );
+      }
+      if (AGENT_KEY_CONSOLES[selectedAgent]) {
+        return (
+          <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+            Paste your {apiKeyNameForAgent(selectedAgent)} below. Get one at{' '}
+            <Typography.Link
+              href={AGENT_KEY_CONSOLES[selectedAgent]?.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {AGENT_KEY_CONSOLES[selectedAgent]?.label}
+            </Typography.Link>
+            .
+          </Paragraph>
+        );
+      }
+      return null;
+    };
 
-      {hasKeyForAgent(selectedAgent) ? (
-        <div style={{ textAlign: 'center', padding: '16px 0' }}>
-          <Result
-            icon={<CheckCircleOutlined style={{ color: token.colorSuccess }} />}
-            title={`${AGENT_LABELS[selectedAgent]} API Key Configured`}
-            subTitle={`You're all set to use ${AGENT_LABELS[selectedAgent]}.`}
-          />
-          <Button type="primary" onClick={handleAdvanceFromApiKeys}>
-            Continue
-          </Button>
-        </div>
-      ) : (
-        <>
-          {selectedAgent === 'claude-code' && (
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginBottom: 16, textAlign: 'left' }}
-              title="Using a Claude Max or Pro plan?"
-              description={
-                <span>
-                  If the system user running Agor is already authenticated with the{' '}
-                  <Text code>claude</Text> CLI, you can skip this step — sessions will use that
-                  authentication automatically.
-                </span>
+    return (
+      <div style={{ padding: '16px 0' }}>
+        <Title level={4}>Configure Your Agent</Title>
+
+        <Form layout="vertical">
+          <Form.Item label="Agent">
+            <Select
+              value={selectedAgent}
+              onChange={(value) => {
+                setSelectedAgent(value);
+                setApiKey('');
+                setError(null);
+                setTestAuthResult(null);
+                setOverrideDetectedAuth(false);
+              }}
+              options={[
+                { value: 'claude-code', label: 'Claude Code (Recommended)' },
+                { value: 'codex', label: 'Codex (OpenAI)' },
+                { value: 'gemini', label: 'Gemini' },
+                { value: 'copilot', label: 'GitHub Copilot' },
+                { value: 'opencode', label: 'OpenCode' },
+              ]}
+              style={{ width: '100%' }}
+            />
+          </Form.Item>
+        </Form>
+
+        {testAuthLoading && !testAuthResult ? (
+          <div style={{ textAlign: 'center', padding: '24px 0' }}>
+            <Spin />
+            <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+              Checking authentication…
+            </Paragraph>
+          </div>
+        ) : isAuthenticated && !overrideDetectedAuth ? (
+          <div style={{ textAlign: 'center', padding: '8px 0' }}>
+            <Result
+              style={{ padding: '16px 0' }}
+              icon={<CheckCircleOutlined style={{ color: token.colorSuccess }} />}
+              title={
+                hasKey
+                  ? `${AGENT_LABELS[selectedAgent]} is configured`
+                  : `Already authenticated${testAuthResult?.method ? ` (${testAuthResult.method})` : ''}`
+              }
+              subTitle={
+                testAuthResult?.hint || `You're all set to use ${AGENT_LABELS[selectedAgent]}.`
               }
             />
-          )}
+            <Space direction="vertical" size="small">
+              <Button type="primary" onClick={handleAdvanceFromApiKeys}>
+                Continue
+              </Button>
+              {/* Escape hatch: detected auth may be stale, wrong-account, or
+                  just not what the user wants (e.g. ChatGPT OAuth detected
+                  but they prefer a work API key). */}
+              <Button type="link" onClick={() => setOverrideDetectedAuth(true)}>
+                Use a different API key instead
+              </Button>
+            </Space>
+          </div>
+        ) : (
+          <>
+            {isAuthenticated && overrideDetectedAuth && (
+              <div style={{ marginBottom: 12 }}>
+                <Button
+                  type="link"
+                  onClick={() => {
+                    setOverrideDetectedAuth(false);
+                    setApiKey('');
+                  }}
+                  style={{ padding: 0 }}
+                >
+                  ← Back to detected authentication
+                </Button>
+              </div>
+            )}
+            {renderAuthHint()}
 
-          {AGENT_KEY_CONSOLES[selectedAgent] && (
-            <Paragraph type="secondary">
-              You need an API key for {AGENT_LABELS[selectedAgent]}. Get one at{' '}
-              <a
-                href={AGENT_KEY_CONSOLES[selectedAgent]?.url}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                {AGENT_KEY_CONSOLES[selectedAgent]?.label}
-              </a>
-            </Paragraph>
-          )}
+            {selectedAgent === 'opencode' && (
+              <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+                OpenCode supports 75+ LLM providers. Configure the appropriate API key for your
+                chosen provider below.
+              </Paragraph>
+            )}
 
-          {selectedAgent === 'opencode' && (
-            <Paragraph type="secondary">
-              OpenCode supports 75+ LLM providers. Configure the appropriate API key for your chosen
-              provider below.
-            </Paragraph>
-          )}
+            <Form layout="vertical">
+              <Form.Item label={apiKeyNameForAgent(selectedAgent)}>
+                <Input.Password
+                  placeholder={apiKeyPlaceholder(selectedAgent)}
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                />
+              </Form.Item>
+            </Form>
 
-          <Form layout="vertical">
-            <Form.Item label={`${apiKeyNameForAgent(selectedAgent)}`}>
-              <Input.Password
-                placeholder={apiKeyPlaceholder(selectedAgent)}
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+            {error && <Alert type="error" title={error} showIcon style={{ marginBottom: 16 }} />}
+
+            {testAuthResult && !testAuthResult.authenticated && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16, textAlign: 'left' }}
+                title="Not authenticated"
+                description={testAuthResult.hint}
               />
-            </Form.Item>
-          </Form>
+            )}
 
-          {error && <Alert type="error" title={error} showIcon style={{ marginBottom: 16 }} />}
-
-          <Space>
-            <Button
-              type="primary"
-              onClick={handleSaveApiKey}
-              loading={loading}
-              disabled={!apiKey.trim()}
-              icon={<KeyOutlined />}
-            >
-              Save API Key
-            </Button>
-            <Button type="link" onClick={handleAdvanceFromApiKeys}>
-              Skip for now
-            </Button>
-          </Space>
-        </>
-      )}
-    </div>
-  );
+            <Space wrap>
+              <Button
+                type="primary"
+                onClick={handleSaveApiKey}
+                loading={loading}
+                disabled={!apiKey.trim()}
+                icon={<KeyOutlined />}
+              >
+                Save & Continue
+              </Button>
+              {onCheckAuth && (
+                <Button onClick={handleTestAuth} loading={testAuthLoading} disabled={loading}>
+                  Test Connection
+                </Button>
+              )}
+              <Button onClick={handleAdvanceFromApiKeys} disabled={loading}>
+                Continue without key
+              </Button>
+            </Space>
+            <div style={{ marginTop: 12 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Keys are saved to{' '}
+                <Text strong style={{ fontSize: 12 }}>
+                  User Settings → Agent Setup
+                </Text>{' '}
+                — you can update them any time.
+              </Text>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
 
   const renderLaunch = () => (
     <div style={{ textAlign: 'center', padding: '24px 0' }}>
-      {!createdSessionId ? (
-        <>
-          <Title level={4}>Ready to Launch</Title>
-          <Paragraph type="secondary">
-            {path === 'assistant'
-              ? "Your assistant is set up. Let's create your first session!"
-              : "Your worktree is ready. Let's launch a session!"}
-          </Paragraph>
+      <Title level={4}>Ready to Launch</Title>
+      <Paragraph type="secondary">
+        {path === 'assistant'
+          ? "Your assistant is set up. Let's create your first session!"
+          : "Your worktree is ready. Let's launch a session!"}
+      </Paragraph>
 
-          {error && (
-            <Alert
-              type="error"
-              title={error}
-              showIcon
-              style={{ marginBottom: 16, textAlign: 'left' }}
-            />
-          )}
-
-          <Button
-            type="primary"
-            size="large"
-            icon={<RocketOutlined />}
-            onClick={handleLaunch}
-            loading={loading}
-          >
-            Launch Session
-          </Button>
-        </>
-      ) : (
-        <>
-          <Result
-            status="success"
-            title={
-              path === 'assistant'
-                ? 'Say hello to your assistant!'
-                : 'Tell your session what to work on!'
-            }
-            subTitle="Your Claude Code session is ready. Close this wizard to start chatting."
-          />
-          <Button type="primary" size="large" onClick={handleFinish}>
-            Let's go
-          </Button>
-        </>
+      {error && (
+        <Alert
+          type="error"
+          title={error}
+          showIcon
+          style={{ marginBottom: 16, textAlign: 'left' }}
+        />
       )}
+
+      <Button
+        type="primary"
+        size="large"
+        icon={<RocketOutlined />}
+        onClick={handleLaunch}
+        loading={loading}
+      >
+        Launch Session
+      </Button>
     </div>
   );
 
@@ -1461,6 +1702,30 @@ export function OnboardingWizard({
     }
   }, [currentStep, loading, error, createdBoardId, handleCreateBoard]);
 
+  // Reset auto-test tracker when leaving the api-keys step so the next
+  // visit can re-test (e.g. after the user installs a CLI auth elsewhere).
+  useEffect(() => {
+    if (currentStep !== 'api-keys') {
+      autoTestedAgentRef.current = null;
+    }
+  }, [currentStep]);
+
+  // Auto-run a connection test when the user lands on api-keys (or switches
+  // agents on it). This catches the common case where they've already auth'd
+  // the agent CLI (e.g. `claude auth login`) — surfaces a Continue button
+  // instead of asking for a key they don't need.
+  useEffect(() => {
+    if (currentStep !== 'api-keys' || !onCheckAuth) return;
+    if (autoTestedAgentRef.current === selectedAgent) return;
+    autoTestedAgentRef.current = selectedAgent;
+    setTestAuthResult(null);
+    setTestAuthLoading(true);
+    onCheckAuth(selectedAgent)
+      .then((result) => setTestAuthResult(result))
+      .catch(() => {})
+      .finally(() => setTestAuthLoading(false));
+  }, [currentStep, selectedAgent, onCheckAuth]);
+
   // ─── Footer ───────────────────────────────────────
 
   const footer = (
@@ -1474,45 +1739,63 @@ export function OnboardingWizard({
     >
       {/* Left: Resources */}
       <Space size="middle">
-        <a
+        <Typography.Link
           href="https://agor.live/guide/getting-started"
           target="_blank"
-          rel="noopener noreferrer"
-          style={{ fontSize: 12, color: token.colorTextSecondary }}
+          style={{ fontSize: 12 }}
         >
           Getting Started Docs
-        </a>
-        <a
+        </Typography.Link>
+        <Typography.Link
           href="https://github.com/preset-io/agor"
           target="_blank"
-          rel="noopener noreferrer"
-          style={{ fontSize: 12, color: token.colorTextSecondary }}
+          style={{ fontSize: 12 }}
         >
           GitHub
-        </a>
+        </Typography.Link>
       </Space>
 
-      {/* Right: Skip */}
-      <Popconfirm
-        title="Skip setup?"
-        description={
-          <div style={{ maxWidth: 250 }}>
-            Are you sure? Your assistant has been waiting their whole life to meet you.
-            <br />
-            <br />
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              (You can always come back via Settings)
-            </Text>
-          </div>
-        }
-        okText="Skip anyway"
-        cancelText="Go back"
-        onConfirm={handleSkip}
-      >
-        <Button type="text" size="small" style={{ color: token.colorTextTertiary }}>
-          Skip setup
-        </Button>
-      </Popconfirm>
+      {/* Right: Dev reset + Skip */}
+      <Space size="small">
+        {import.meta.env.DEV && (
+          <Popconfirm
+            title="Reset wizard?"
+            description={
+              <div style={{ maxWidth: 280 }}>
+                Clears local state and onboarding progress in your user preferences. Repos, boards,
+                and worktrees you created stay put.
+              </div>
+            }
+            okText="Reset"
+            cancelText="Cancel"
+            onConfirm={handleReset}
+          >
+            <Button type="text" size="small" style={{ color: token.colorTextTertiary }}>
+              Reset (dev)
+            </Button>
+          </Popconfirm>
+        )}
+        <Popconfirm
+          title="Skip setup?"
+          description={
+            <div style={{ maxWidth: 250 }}>
+              Are you sure? Your assistant has been waiting their whole life to meet you.
+              <br />
+              <br />
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                (You can always come back via Settings)
+              </Text>
+            </div>
+          }
+          okText="Skip anyway"
+          cancelText="Go back"
+          onConfirm={handleSkip}
+        >
+          <Button type="text" size="small" style={{ color: token.colorTextTertiary }}>
+            Skip setup
+          </Button>
+        </Popconfirm>
+      </Space>
     </div>
   );
 
@@ -1547,7 +1830,7 @@ export function OnboardingWizard({
       {renderStepContent()}
 
       {/* Back button (where appropriate) */}
-      {currentStep !== 'welcome' && currentStep !== 'launch' && stepIndex > 1 && !loading && (
+      {currentStep !== 'welcome' && stepIndex > 1 && !loading && (
         <div style={{ marginTop: 16 }}>
           <Button type="link" onClick={handleBack} style={{ padding: 0 }}>
             &larr; Back

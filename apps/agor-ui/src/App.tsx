@@ -1,5 +1,6 @@
 import type {
   Artifact,
+  AuthCheckResult,
   Board,
   CreateLocalRepoRequest,
   CreateMCPServerInput,
@@ -246,7 +247,8 @@ function AppContent() {
 
     if (!currentUser) return;
 
-    // Silent: the wizard closing + navigation is the confirmation here.
+    // Silent + fire-and-forget: wizard closing + navigation is the confirmation here.
+    // Non-critical — if the preference save fails the wizard just re-opens on next login.
     handleUpdateUser(
       currentUser.user_id,
       {
@@ -262,7 +264,7 @@ function AppContent() {
         },
       },
       { silent: true }
-    );
+    ).catch(() => {});
 
     // Clear the assistant pending flag if applicable
     if (result.path === 'assistant' && client) {
@@ -273,11 +275,13 @@ function AppContent() {
       }
     }
 
-    // Navigate to the user's board + session
+    // Navigate to the user's board + session, or to the boards list if they skipped
     if (result.boardId && result.sessionId) {
       navigate(`/b/${result.boardId}/${result.sessionId}/`);
     } else if (result.boardId) {
       navigate(`/b/${result.boardId}/`);
+    } else {
+      navigate('/');
     }
   };
 
@@ -644,7 +648,12 @@ function AppContent() {
         showSuccess('User updated successfully!');
       }
     } catch (error) {
-      showError(`Failed to update user: ${error instanceof Error ? error.message : String(error)}`);
+      if (!options.silent) {
+        showError(
+          `Failed to update user: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+      throw error;
     }
   };
 
@@ -839,6 +848,7 @@ function AppContent() {
         `Failed to add local repository: ${error instanceof Error ? error.message : String(error)}`,
         { key: 'add-local-repo' }
       );
+      throw error;
     }
   };
 
@@ -927,13 +937,17 @@ function AppContent() {
     }
   };
 
-  const handleUpdateWorktree = async (worktreeId: string, updates: WorktreeUpdate) => {
+  const handleUpdateWorktree = async (
+    worktreeId: string,
+    updates: WorktreeUpdate,
+    options: { silent?: boolean } = {}
+  ) => {
     if (!client) return;
     try {
       // Cast to Partial<Worktree> to satisfy Feathers type checking
       // The backend MCP handler properly handles null values for clearing fields
       await client.service('worktrees').patch(worktreeId, updates as Partial<Worktree>);
-      showSuccess('Worktree updated successfully!');
+      if (!options.silent) showSuccess('Worktree updated successfully!');
     } catch (error) {
       showError(
         `Failed to update worktree: ${error instanceof Error ? error.message : String(error)}`
@@ -1303,8 +1317,24 @@ function AppContent() {
           onCreateLocalRepo={handleCreateLocalRepo}
           onCreateWorktree={handleCreateWorktree}
           onCreateSession={handleCreateSession}
-          onUpdateUser={handleUpdateUser}
-          onUpdateWorktree={handleUpdateWorktree}
+          onUpdateUser={(userId, updates) => handleUpdateUser(userId, updates, { silent: true })}
+          onUpdateWorktree={(worktreeId, updates) =>
+            handleUpdateWorktree(worktreeId, updates, { silent: true })
+          }
+          onCheckAuth={async (tool, apiKey) => {
+            if (!client) return { authenticated: false, method: 'none' as const };
+            try {
+              return (await client
+                .service('check-auth')
+                .create({ tool, apiKey })) as AuthCheckResult;
+            } catch {
+              return {
+                authenticated: false,
+                method: 'none' as const,
+                hint: 'Connection check failed.',
+              };
+            }
+          }}
           assistantPending={
             onboardingConfig?.assistantPending ?? onboardingConfig?.persistedAgentPending
           }
