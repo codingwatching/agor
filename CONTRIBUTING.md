@@ -181,8 +181,36 @@ Closes #123
 
 - Reviews usually happen within 2-3 days
 - Maintainers may request changes or ask questions
-- CI checks must pass (linting, type checking)
+- CI checks must pass (see [CI shape](#ci-shape) below)
 - At least one maintainer approval required
+
+### CI shape
+
+PR pushes and merges to `main` both run the same fast, opinionated lane. The
+slower cross-Node-version matrix runs once a day (nightly) and on demand —
+it's not gating either PR merge or merge-to-`main`.
+
+| When | Workflow | What runs |
+|------|----------|-----------|
+| Every PR push **and** every push to `main` | `ci.yml` | install, typecheck, lint, build, unit tests — all on Node 22 |
+| PR / main push that touches `pnpm-lock.yaml` or any `package.json` | `audit.yml` | `pnpm audit` (CRITICAL prod-tree advisories block; HIGH advisory) |
+| PR push (publish-relevant paths only) | `agor-live-smoke.yml` | Pack the published tarball, install with `npm`, boot the daemon, curl `/ui/` |
+| Nightly at 04:00 UTC | `heavy-checks.yml` | Node 22/24/25 install-compat matrix + full `agor-live-smoke` + `audit` (catches ambient CVEs against unchanged deps). On failure, auto-opens / comments on a tracking issue labelled `ci-nightly-failure` |
+| On demand (pre-release etc.) | `heavy-checks.yml` | Same as nightly, triggered via `gh workflow run` or the Actions UI |
+
+**Triggering an ad-hoc heavy run** (e.g. before cutting a release):
+
+```bash
+gh workflow run heavy-checks.yml --ref <ref>
+```
+
+or use the *Run workflow* button on the Actions tab. The same goes for
+`agor-live-smoke.yml` if you only want to test the publish path on a
+specific branch.
+
+**Finding nightly failures:** filter issues by the `ci-nightly-failure`
+label — the auto-managed tracking issue collects every failed nightly until
+someone closes it after the run goes green.
 
 **Making changes:**
 
