@@ -28,6 +28,7 @@ import type {
 } from '@agor/core/types';
 import { ROLES, SessionStatus } from '@agor/core/types';
 import { DrizzleService } from '../adapters/drizzle';
+import { parseLastMessageTruncationLength } from '../utils/query-params.js';
 import {
   determineSpawnIdentity,
   isSuperAdmin,
@@ -94,31 +95,6 @@ export type ExecuteTaskData = {
   stream?: boolean;
   messageSource?: import('@agor/core/types').MessageSource;
 };
-
-/**
- * Parse and validate last_message_truncation_length parameter
- * Feathers delivers query params as strings, so we need to parse and validate
- */
-function parseTruncationLength(value: unknown): number {
-  // Default value
-  const DEFAULT = 500;
-  const MIN = 50;
-  const MAX = 10000;
-
-  if (value === undefined || value === null) {
-    return DEFAULT;
-  }
-
-  // Parse to number
-  const parsed = typeof value === 'number' ? value : Number(value);
-
-  // Validate: must be finite, positive, and within bounds
-  if (!Number.isFinite(parsed) || parsed < MIN || parsed > MAX) {
-    return DEFAULT;
-  }
-
-  return Math.floor(parsed); // Ensure integer
-}
 
 /**
  * Extended sessions service with custom methods
@@ -726,7 +702,9 @@ export class SessionsService extends DrizzleService<Session, Partial<Session>, S
     if (includeLastMessage === true || includeLastMessage === 'true') {
       const truncationLengthQuery = params?.query?.last_message_truncation_length;
       const truncationLengthRoot = params?._last_message_truncation_length;
-      const truncationLength = parseTruncationLength(truncationLengthRoot ?? truncationLengthQuery);
+      const truncationLength = parseLastMessageTruncationLength(
+        truncationLengthRoot ?? truncationLengthQuery
+      );
       const result = await this.sessionRepo.enrichWithLastMessage(
         session as Session,
         truncationLength

@@ -34,8 +34,14 @@ import {
   type SessionID,
   type TaskID,
 } from '../../types.js';
-import type { ITool, StreamingCallbacks, ToolCapabilities } from '../base/index.js';
-import type { MessagesService, SessionsService, TasksService } from '../claude/claude-tool.js';
+import type {
+  ITool,
+  MessagesService,
+  SessionsPatchClient,
+  StreamingCallbacks,
+  TasksService,
+  ToolCapabilities,
+} from '../base/index.js';
 import { createUserMessage } from '../claude/message-builder.js';
 import { DEFAULT_COPILOT_MODEL } from './models.js';
 import { CopilotPromptService } from './prompt-service.js';
@@ -74,7 +80,7 @@ export class CopilotTool implements ITool {
     mcpServerRepo?: MCPServerRepository,
     usersRepo?: UsersRepository,
     permissionService?: PermissionService,
-    sessionsService?: SessionsService
+    sessionsService?: SessionsPatchClient
   ) {
     this.messagesRepo = messagesRepo;
     this.sessionsRepo = sessionsRepo;

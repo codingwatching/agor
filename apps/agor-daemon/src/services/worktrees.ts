@@ -32,6 +32,7 @@ import { isAllowedHealthCheckUrl } from '@agor/core/utils/url';
 import { DrizzleService } from '../adapters/drizzle';
 import { ensureCanTriggerManagedEnv, ensureMinimumRole } from '../utils/authorization.js';
 import { resolveGitImpersonationForWorktree } from '../utils/git-impersonation.js';
+import { parseLastMessageTruncationLength } from '../utils/query-params.js';
 import { generateSessionToken, getDaemonUrl, spawnExecutor } from '../utils/spawn-executor.js';
 import type { InternalEnrichmentParams } from './sessions';
 
@@ -50,31 +51,6 @@ export type WorktreeParams = QueryParams<{
     /** Root-level include_sessions flag (bypasses Feathers query filtering, used by internal service calls) */
     _include_sessions?: boolean | 'true' | 'false';
   };
-
-/**
- * Parse and validate last_message_truncation_length parameter
- * Feathers delivers query params as strings, so we need to parse and validate
- */
-function parseTruncationLength(value: unknown): number {
-  // Default value
-  const DEFAULT = 500;
-  const MIN = 50;
-  const MAX = 10000;
-
-  if (value === undefined || value === null) {
-    return DEFAULT;
-  }
-
-  // Parse to number
-  const parsed = typeof value === 'number' ? value : Number(value);
-
-  // Validate: must be finite, positive, and within bounds
-  if (!Number.isFinite(parsed) || parsed < MIN || parsed > MAX) {
-    return DEFAULT;
-  }
-
-  return Math.floor(parsed); // Ensure integer
-}
 
 /**
  * Process tracking for environment management
@@ -354,7 +330,7 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
 
       // Only enrich with session activity if explicitly requested
       if (params?.query?.include_sessions === true || params?.query?.include_sessions === 'true') {
-        const truncationLength = parseTruncationLength(
+        const truncationLength = parseLastMessageTruncationLength(
           params?.query?.last_message_truncation_length
         );
         return this.worktreeRepo.enrichWithSessionActivity(withZone, truncationLength);
@@ -403,7 +379,9 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
 
     // Only enrich with session activity if explicitly requested
     if (params?.query?.include_sessions === true || params?.query?.include_sessions === 'true') {
-      const truncationLength = parseTruncationLength(params?.query?.last_message_truncation_length);
+      const truncationLength = parseLastMessageTruncationLength(
+        params?.query?.last_message_truncation_length
+      );
       return this.worktreeRepo.enrichWithSessionActivity(withZone, truncationLength);
     }
 
@@ -428,7 +406,9 @@ export class WorktreesService extends DrizzleService<Worktree, Partial<Worktree>
     if (includeSessions === true || includeSessions === 'true') {
       const truncationLengthQuery = params?.query?.last_message_truncation_length;
       const truncationLengthRoot = params?._last_message_truncation_length;
-      const truncationLength = parseTruncationLength(truncationLengthRoot ?? truncationLengthQuery);
+      const truncationLength = parseLastMessageTruncationLength(
+        truncationLengthRoot ?? truncationLengthQuery
+      );
       const result = await this.worktreeRepo.enrichWithSessionActivity(withZone, truncationLength);
       return result;
     }
