@@ -4,13 +4,136 @@
  * Handles loading and saving YAML configuration file.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import { DAEMON, MCP_TOKEN } from './constants';
 import type { AgorConfig, UnknownJson } from './types';
+
+// ---------------------------------------------------------------------------
+// In-memory cache for the default-path config
+//
+// The daemon's hot paths call loadConfig()/loadConfigSync() per-request — 10+
+// times in services/worktrees.ts, services/artifacts.ts, services/terminals.ts,
+// register-routes.ts, etc. Each call re-reads the YAML from disk and parses
+// it. That's wasted work for a file that rarely changes.
+//
+// Strategy: stat-validated cache. On every call, stat() the file (a few
+// microseconds on Linux) and compare (mtimeMs, size). Cache hit → return a
+// fresh deep clone of the parsed config. Cache miss → read + parse + cache.
+//
+// Why a clone and not the cached object itself?
+// Callers mutate the loaded config (`setConfigValue`, `unsetConfigValue`,
+// `ConfigService.patch`) and then call `saveConfig()`. If we returned the
+// shared cache object, a failed save would leave unsaved mutations visible
+// to every subsequent reader. Returning a clone makes the cache effectively
+// immutable from the outside.
+//
+// Why size in addition to mtimeMs?
+// Some filesystems have coarse mtime resolution, and rapid same-tick rewrites
+// can land on the same mtime. Combining mtimeMs with size catches the common
+// "same instant, different bytes" case cheaply. It's not a cryptographic
+// guarantee — a write that preserves size and mtime can still slip through —
+// but in practice the pair is more than enough.
+//
+// Why not fs.watch? Surprising behavior on atomic renames (which is what
+// saveConfig() effectively is), platform quirks, and stat is already free.
+//
+// Custom-path loads via loadConfigFromFile() are NOT cached — they're a
+// startup-only path and adding a Map<path, entry> isn't worth the complexity.
+// ---------------------------------------------------------------------------
+
+interface CacheKey {
+  /** mtimeMs from stat, or `NO_FILE` sentinel when the file doesn't exist. */
+  mtimeMs: number;
+  /** size in bytes, 0 when the file doesn't exist. */
+  size: number;
+}
+
+interface ConfigCacheEntry {
+  path: string;
+  config: AgorConfig;
+  key: CacheKey;
+}
+
+/** Sentinel: file didn't exist at cache time; default config is cached. */
+const NO_FILE: number = -1;
+const NO_FILE_KEY: CacheKey = { mtimeMs: NO_FILE, size: 0 };
+
+let cachedEntry: ConfigCacheEntry | null = null;
+
+function cacheKeyMatches(a: CacheKey, b: CacheKey): boolean {
+  return a.mtimeMs === b.mtimeMs && a.size === b.size;
+}
+
+function statCacheKey(configPath: string): CacheKey | null {
+  try {
+    const stat = statSync(configPath);
+    return { mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return NO_FILE_KEY;
+    }
+    // Stat failed for some non-ENOENT reason — caller should not trust cache.
+    return null;
+  }
+}
+
+/**
+ * Return a deep clone of the cached config if (path, mtime, size) still match
+ * the file on disk. Returns null on any kind of mismatch — caller should
+ * re-read.
+ *
+ * The clone is what makes the cache safe to expose: callers mutate the result
+ * before `saveConfig()` and we don't want those mutations bleeding into the
+ * next reader if the save fails.
+ */
+function readCachedConfig(configPath: string): AgorConfig | null {
+  if (cachedEntry === null || cachedEntry.path !== configPath) {
+    return null;
+  }
+  const currentKey = statCacheKey(configPath);
+  if (currentKey === null || !cacheKeyMatches(currentKey, cachedEntry.key)) {
+    return null;
+  }
+  return structuredClone(cachedEntry.config);
+}
+
+function writeCachedConfig(configPath: string, config: AgorConfig, key: CacheKey): void {
+  // Clone on write too so a caller mutating their own copy can't reach back
+  // through object identity and corrupt the cached value.
+  cachedEntry = { path: configPath, config: structuredClone(config), key };
+}
+
+/**
+ * Invalidate the in-memory config cache. Called from saveConfig() so that
+ * the daemon's next read sees the fresh value.
+ */
+function invalidateConfigCache(): void {
+  cachedEntry = null;
+}
+
+/**
+ * Test-only: reset the in-memory config cache. Prefer this over poking at
+ * module state directly. Production code should not need to call this.
+ */
+export function __resetConfigCacheForTests(): void {
+  invalidateConfigCache();
+}
+
+/**
+ * Parse + validate raw YAML config content. Shared by every load path so
+ * `loadConfig()`, `loadConfigSync()`, and `loadConfigFromFile()` all reject
+ * the same invalid inputs (e.g. deprecated `unix_user_mode: opportunistic`).
+ */
+function parseAndValidateConfig(content: string): AgorConfig {
+  const parsed = yaml.load(content) as AgorConfig | undefined | null;
+  const finalConfig = parsed || {};
+  validateConfig(finalConfig);
+  return finalConfig;
+}
 
 /**
  * Get Agor home directory (~/.agor)
@@ -60,25 +183,57 @@ function validateConfig(config: AgorConfig): void {
  * Load config from ~/.agor/config.yaml
  *
  * Returns default config if file doesn't exist.
+ *
+ * Stat-validated cache: subsequent calls with an unchanged file return a
+ * fresh clone of the parsed result without re-reading or re-parsing YAML.
+ * Callers can mutate the result freely without affecting other readers.
  */
 export async function loadConfig(): Promise<AgorConfig> {
   const configPath = getConfigPath();
 
+  const cached = readCachedConfig(configPath);
+  if (cached !== null) {
+    return cached;
+  }
+
+  // Stat-read-stat: if the file changes mid-read, the two stats won't match
+  // and we skip caching this read entirely (returning the freshly parsed
+  // value but leaving the cache empty so the next call re-reads).
+  let beforeKey: CacheKey | null;
+  let content: string;
+  let afterKey: CacheKey | null;
   try {
-    const content = await fs.readFile(configPath, 'utf-8');
-    const config = yaml.load(content) as AgorConfig;
-    const finalConfig = config || {};
-    validateConfig(finalConfig);
-    return finalConfig;
+    beforeKey = statCacheKey(configPath);
+    if (beforeKey?.mtimeMs === NO_FILE) {
+      const defaults = getDefaultConfig();
+      writeCachedConfig(configPath, defaults, NO_FILE_KEY);
+      return defaults;
+    }
+    content = await fs.readFile(configPath, 'utf-8');
+    afterKey = statCacheKey(configPath);
   } catch (error) {
-    // File doesn't exist or parse error - return default config
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return getDefaultConfig();
+      const defaults = getDefaultConfig();
+      writeCachedConfig(configPath, defaults, NO_FILE_KEY);
+      return defaults;
     }
     throw new Error(
       `Failed to load config: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+
+  let finalConfig: AgorConfig;
+  try {
+    finalConfig = parseAndValidateConfig(content);
+  } catch (error) {
+    throw new Error(
+      `Failed to load config: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  if (beforeKey !== null && afterKey !== null && cacheKeyMatches(beforeKey, afterKey)) {
+    writeCachedConfig(configPath, finalConfig, beforeKey);
+  }
+  return finalConfig;
 }
 
 /**
@@ -89,14 +244,13 @@ export async function loadConfig(): Promise<AgorConfig> {
  */
 export async function loadConfigFromFile(filePath: string): Promise<AgorConfig> {
   const content = await fs.readFile(filePath, 'utf-8');
-  const config = yaml.load(content) as AgorConfig;
-  const finalConfig = config || {};
-  validateConfig(finalConfig);
-  return finalConfig;
+  return parseAndValidateConfig(content);
 }
 
 /**
  * Save config to ~/.agor/config.yaml
+ *
+ * Invalidates the in-memory cache so the next load reflects the fresh value.
  */
 export async function saveConfig(config: AgorConfig): Promise<void> {
   await ensureAgorHome();
@@ -109,6 +263,7 @@ export async function saveConfig(config: AgorConfig): Promise<void> {
   });
 
   await fs.writeFile(configPath, content, 'utf-8');
+  invalidateConfigCache();
 }
 
 /**
@@ -421,23 +576,54 @@ export async function requirePublicBaseUrl(): Promise<string> {
  *
  * Returns default config if file doesn't exist.
  * Use for hot paths where async is not possible.
+ *
+ * Shares the same stat-validated cache and the same parse+validate code as
+ * {@link loadConfig}, so the sync entry point cannot poison the cache with
+ * an invalid config that a later async caller would silently return.
  */
 export function loadConfigSync(): AgorConfig {
   const configPath = getConfigPath();
 
+  const cached = readCachedConfig(configPath);
+  if (cached !== null) {
+    return cached;
+  }
+
+  let beforeKey: CacheKey | null;
+  let content: string;
+  let afterKey: CacheKey | null;
   try {
-    const content = readFileSync(configPath, 'utf-8');
-    const config = yaml.load(content) as AgorConfig;
-    return config || {};
+    beforeKey = statCacheKey(configPath);
+    if (beforeKey?.mtimeMs === NO_FILE) {
+      const defaults = getDefaultConfig();
+      writeCachedConfig(configPath, defaults, NO_FILE_KEY);
+      return defaults;
+    }
+    content = readFileSync(configPath, 'utf-8');
+    afterKey = statCacheKey(configPath);
   } catch (error) {
-    // File doesn't exist or parse error - return default config
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return getDefaultConfig();
+      const defaults = getDefaultConfig();
+      writeCachedConfig(configPath, defaults, NO_FILE_KEY);
+      return defaults;
     }
     throw new Error(
       `Failed to load config: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+
+  let finalConfig: AgorConfig;
+  try {
+    finalConfig = parseAndValidateConfig(content);
+  } catch (error) {
+    throw new Error(
+      `Failed to load config: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  if (beforeKey !== null && afterKey !== null && cacheKeyMatches(beforeKey, afterKey)) {
+    writeCachedConfig(configPath, finalConfig, beforeKey);
+  }
+  return finalConfig;
 }
 
 /**

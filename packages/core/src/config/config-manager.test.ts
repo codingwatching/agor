@@ -8,6 +8,7 @@ import path from 'node:path';
 import yaml from 'js-yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  __resetConfigCacheForTests,
   expandHomePath,
   getAgorHome,
   getConfigPath,
@@ -20,6 +21,7 @@ import {
   getWorktreesDir,
   initConfig,
   loadConfig,
+  loadConfigSync,
   PublicBaseUrlNotConfiguredError,
   requirePublicBaseUrl,
   saveConfig,
@@ -182,6 +184,143 @@ describe('loadConfig', () => {
     expect(loaded.daemon?.port).toBe(4040);
     expect(loaded.defaults).toBeUndefined();
     expect(loaded.display).toBeUndefined();
+  });
+});
+
+describe('loadConfig cache', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agor-cache-'));
+    vi.spyOn(os, 'homedir').mockReturnValue(tempDir);
+    __resetConfigCacheForTests();
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+    __resetConfigCacheForTests();
+  });
+
+  async function writeConfigFile(data: AgorConfig | string): Promise<string> {
+    const agorDir = path.join(tempDir, '.agor');
+    const configPath = path.join(agorDir, 'config.yaml');
+    await fs.mkdir(agorDir, { recursive: true });
+    const body = typeof data === 'string' ? data : yaml.dump(data);
+    await fs.writeFile(configPath, body, 'utf-8');
+    return configPath;
+  }
+
+  it('serves repeated reads from the cache without re-parsing YAML', async () => {
+    await writeConfigFile({ daemon: { port: 4000 } });
+
+    // First call hits the disk and parses; subsequent calls hit the cache.
+    // We prove cache behavior by spying on the YAML parser rather than
+    // relying on object identity (the cache hands out clones, not the
+    // shared object — see "isolated from caller mutation").
+    const yamlLoadSpy = vi.spyOn(yaml, 'load');
+    const first = await loadConfig();
+    const callsAfterFirst = yamlLoadSpy.mock.calls.length;
+    const second = await loadConfig();
+    const third = await loadConfig();
+
+    expect(first.daemon?.port).toBe(4000);
+    expect(second.daemon?.port).toBe(4000);
+    expect(third.daemon?.port).toBe(4000);
+    // No additional yaml.load() invocations after the first.
+    expect(yamlLoadSpy.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it('loadConfigSync shares the same cache as loadConfig', async () => {
+    await writeConfigFile({ daemon: { port: 5555 } });
+
+    const yamlLoadSpy = vi.spyOn(yaml, 'load');
+    const fromAsync = await loadConfig();
+    const callsAfterAsync = yamlLoadSpy.mock.calls.length;
+    const fromSync = loadConfigSync();
+
+    expect(fromAsync.daemon?.port).toBe(5555);
+    expect(fromSync.daemon?.port).toBe(5555);
+    // Sync read also served from cache — no second yaml.load.
+    expect(yamlLoadSpy.mock.calls.length).toBe(callsAfterAsync);
+  });
+
+  it('isolates callers from each other: mutating a returned config does not affect later reads', async () => {
+    await writeConfigFile({ daemon: { port: 4000 } });
+
+    const first = await loadConfig();
+    // Caller mutates the returned object (mimicking setConfigValue style).
+    first.daemon ??= {};
+    first.daemon.port = 9999;
+
+    const second = await loadConfig();
+    // The cache returned a clone, so the mutation didn't leak.
+    expect(second.daemon?.port).toBe(4000);
+  });
+
+  it('saveConfig invalidates the cache so the next read returns the new value', async () => {
+    await saveConfig({ daemon: { port: 4000 } } as AgorConfig);
+    const before = await loadConfig();
+    expect(before.daemon?.port).toBe(4000);
+
+    await saveConfig({ daemon: { port: 9999 } } as AgorConfig);
+    const after = await loadConfig();
+    expect(after.daemon?.port).toBe(9999);
+  });
+
+  it('picks up external file mutations via mtime change', async () => {
+    const configPath = await writeConfigFile({ daemon: { port: 4000 } });
+    expect((await loadConfig()).daemon?.port).toBe(4000);
+
+    // Force a distinct mtime — on filesystems with millisecond resolution,
+    // back-to-back writes can collide.
+    await new Promise((r) => setTimeout(r, 20));
+    await fs.writeFile(configPath, yaml.dump({ daemon: { port: 7777 } }), 'utf-8');
+
+    expect((await loadConfig()).daemon?.port).toBe(7777);
+  });
+
+  it('returns defaults when the file is missing, then re-reads after the file is created', async () => {
+    // No file yet → defaults are cached under the NO_FILE sentinel.
+    const before = await loadConfig();
+    expect(before).toEqual(getDefaultConfig());
+
+    // Create the file. The cached NO_FILE sentinel no longer matches stat,
+    // so the next load re-reads.
+    await writeConfigFile({ daemon: { port: 6666 } });
+    const after = await loadConfig();
+    expect(after.daemon?.port).toBe(6666);
+  });
+
+  it('does not poison the cache on parse error', async () => {
+    await writeConfigFile('invalid: yaml: [content');
+
+    await expect(loadConfig()).rejects.toThrow('Failed to load config');
+
+    // After fixing the file, the next call should succeed (we never cached
+    // a partial / broken value).
+    await new Promise((r) => setTimeout(r, 20));
+    await writeConfigFile({ daemon: { port: 8888 } });
+    const recovered = await loadConfig();
+    expect(recovered.daemon?.port).toBe(8888);
+  });
+
+  it('validates on every load path: loadConfigSync rejects deprecated values too', async () => {
+    // Regression guard for the shared-cache bug: if loadConfigSync had a
+    // separate (un-validated) code path, calling it first could populate
+    // the cache with an invalid config that a later loadConfig() would
+    // silently return.
+    //
+    // YAML written as a raw string because `unix_user_mode: 'opportunistic'`
+    // is intentionally not assignable to `AgorConfig.execution.unix_user_mode`
+    // (the value was deprecated and removed from the type) — that's what
+    // validateConfig() catches at runtime for users who still have the value
+    // in their config.yaml.
+    await writeConfigFile('execution:\n  unix_user_mode: opportunistic\n');
+
+    expect(() => loadConfigSync()).toThrow(/opportunistic.*deprecated/s);
+    // And async path stays consistent.
+    await expect(loadConfig()).rejects.toThrow(/opportunistic.*deprecated/s);
   });
 });
 

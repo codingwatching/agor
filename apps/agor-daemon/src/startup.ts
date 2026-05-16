@@ -62,8 +62,16 @@ async function writeCleanShutdownSentinel(signal: string): Promise<void> {
       JSON.stringify(sentinel),
       'utf8'
     );
-  } catch {
-    // Non-fatal — worst case, startup treats this restart as unexpected
+  } catch (error) {
+    // Non-fatal — worst case, startup treats the next restart as unexpected
+    // and triggers orphan cleanup, which is the safer default. We surface
+    // a single warning so operators debugging crash-classification in
+    // read-only AGOR_HOME deployments (e.g. ConfigMap-mounted) can see
+    // why the sentinel isn't doing anything.
+    console.warn(
+      '[startup] Could not write shutdown sentinel — next restart will be classified as a crash. ' +
+        `Cause: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 }
 
@@ -313,27 +321,34 @@ async function cleanupOrphans(ctx: StartupContext): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function ensureMasterSecret(config: AgorConfig): Promise<void> {
-  if (!process.env.AGOR_MASTER_SECRET) {
-    // Check if we have a saved secret in config
-    const savedSecret = config.daemon?.masterSecret;
-
-    if (savedSecret) {
-      process.env.AGOR_MASTER_SECRET = savedSecret;
+  // AGOR_MASTER_SECRET: env > existing config value > generate-and-persist >
+  // fail-fast. See setup/persisted-secret.ts and the doc §1.5 (H3).
+  //
+  // Same fail-fast reasoning as the JWT path: a fresh master secret on every
+  // restart corrupts every stored encrypted API key.
+  const { randomBytes } = await import('node:crypto');
+  const { resolvePersistedSecret } = await import('./setup/persisted-secret.js');
+  const resolution = await resolvePersistedSecret({
+    name: 'AGOR_MASTER_SECRET (API key encryption)',
+    envVar: 'AGOR_MASTER_SECRET',
+    existing: config.daemon?.masterSecret,
+    configKey: 'daemon.masterSecret',
+    generate: () => randomBytes(32).toString('hex'),
+  });
+  // Side effect: downstream code (encrypted-creds resolver, etc.) reads this
+  // off process.env, not off a parameter. Keep that contract.
+  process.env.AGOR_MASTER_SECRET = resolution.value;
+  switch (resolution.source) {
+    case 'env':
+      console.log('🔐 API key encryption enabled (AGOR_MASTER_SECRET set)');
+      break;
+    case 'config':
       console.log('🔐 Using saved AGOR_MASTER_SECRET from config');
-    } else {
-      // Auto-generate a random master secret and persist it in config
-      const { randomBytes } = await import('node:crypto');
-      const { setConfigValue } = await import('@agor/core/config');
-
-      const generatedSecret = randomBytes(32).toString('hex');
-      await setConfigValue('daemon.masterSecret', generatedSecret);
-      process.env.AGOR_MASTER_SECRET = generatedSecret;
-
+      break;
+    case 'generated':
       console.log('🔐 Generated and saved AGOR_MASTER_SECRET for API key encryption');
       console.log('   Secret stored in ~/.agor/config.yaml');
-    }
-  } else {
-    console.log('🔐 API key encryption enabled (AGOR_MASTER_SECRET set)');
+      break;
   }
 }
 

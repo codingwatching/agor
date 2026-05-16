@@ -32,6 +32,7 @@ import {
   prepareImpersonationEnv,
 } from '@agor/core/unix';
 import jwt from 'jsonwebtoken';
+import { withResolvedConfig } from './build-resolved-config-slice.js';
 
 /**
  * Module-level daemon URL configuration.
@@ -226,20 +227,25 @@ export function spawnExecutor(
 ): void {
   const { executorCommandTemplate, templateVariables, logPrefix = '[Executor]' } = options;
 
+  // Daemon resolves the small config slice the executor needs (permission
+  // timeout, opencode URL, host IP override) so the executor never has to
+  // read config.yaml itself. See build-resolved-config-slice.ts.
+  const payloadWithConfig = withResolvedConfig(payload);
+
   // Decide execution mode: templated or local
   if (executorCommandTemplate) {
-    spawnExecutorWithTemplate(payload, {
+    spawnExecutorWithTemplate(payloadWithConfig, {
       ...options,
       executorCommandTemplate,
       templateVariables: {
-        command: payload.command as string,
+        command: payloadWithConfig.command as string,
         task_id: generateTaskId(),
         ...templateVariables,
       },
       logPrefix,
     });
   } else {
-    spawnExecutorLocal(payload, options);
+    spawnExecutorLocal(payloadWithConfig, options);
   }
 }
 
@@ -262,8 +268,10 @@ function spawnExecutorLocal(payload: Record<string, unknown>, options: SpawnExec
     asUser,
   } = options;
 
-  // Add DAEMON_URL to env so executor doesn't try to read config.yaml
-  // When impersonated, executor can't access /home/agorpg/.agor/config.yaml
+  // Add DAEMON_URL to env so the executor can connect back via Feathers.
+  // The executor itself never reads config.yaml — all config values it
+  // needs are pre-resolved by the daemon and embedded in the payload as
+  // `resolvedConfig` (see buildResolvedConfigSlice).
   const daemonUrl = getDaemonUrl();
 
   // When impersonating, pass minimal env vars and let sudo set HOME correctly

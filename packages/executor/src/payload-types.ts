@@ -8,7 +8,13 @@
  * (filesystem + DB + events). Unix operations are internal to git commands.
  */
 
+import { type ResolvedConfigSlice, ResolvedConfigSliceSchema } from '@agor/core/config';
 import { z } from 'zod';
+
+// Re-export so existing executor consumers (handlers, tool-registry, etc.)
+// keep importing from `../payload-types.js` without churn. The schema and
+// type are owned by @agor/core — see packages/core/src/config/resolved-config-slice.ts.
+export { type ResolvedConfigSlice, ResolvedConfigSliceSchema };
 
 // ═══════════════════════════════════════════════════════════
 // URL Validation
@@ -118,6 +124,13 @@ export const BasePayloadSchema = z.object({
 
   /** Data home directory override */
   dataHome: z.string().optional(),
+
+  /**
+   * Daemon-resolved config slice. See {@link ResolvedConfigSliceSchema}.
+   * Optional so the legacy CLI-args mode still validates; handlers must
+   * apply defaults when missing.
+   */
+  resolvedConfig: ResolvedConfigSliceSchema.optional(),
 });
 
 // ═══════════════════════════════════════════════════════════

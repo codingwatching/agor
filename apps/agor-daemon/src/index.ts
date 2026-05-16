@@ -494,19 +494,35 @@ export async function startDaemon(options?: DaemonStartOptions): Promise<void> {
   // --------------------------------------------------------------------------
   app.configure(rest());
 
-  // Generate or load JWT secret
-  let jwtSecret = config.daemon?.jwtSecret;
-  if (!jwtSecret) {
-    const crypto = await import('node:crypto');
-    jwtSecret = crypto.randomBytes(32).toString('hex');
-    const { setConfigValue } = await import('@agor/core/config');
-    await setConfigValue('daemon.jwtSecret', jwtSecret);
-    console.log(
-      `🔑 Generated and saved persistent JWT secret to config (length=${jwtSecret.length})`
-    );
-  } else {
-    // SECURITY: never log any prefix/substring of the secret. Length only.
-    console.log(`🔑 Loaded existing JWT secret from config (length=${jwtSecret.length})`);
+  // JWT secret: env > existing config value > generate-and-persist >
+  // fail-fast with operator-actionable remediation. See setup/persisted-secret.ts
+  // and context/explorations/daemon-fs-decoupling.md §1.5 (H3).
+  //
+  // Failing-fast is critical: a fresh JWT secret on every restart invalidates
+  // every issued token, which silently breaks every active session.
+  const crypto = await import('node:crypto');
+  const { resolvePersistedSecret } = await import('./setup/persisted-secret.js');
+  const jwtResolution = await resolvePersistedSecret({
+    name: 'JWT secret',
+    envVar: 'AGOR_JWT_SECRET',
+    existing: config.daemon?.jwtSecret,
+    configKey: 'daemon.jwtSecret',
+    generate: () => crypto.randomBytes(32).toString('hex'),
+  });
+  const jwtSecret = jwtResolution.value;
+  // SECURITY: never log any prefix/substring of the secret. Length only.
+  switch (jwtResolution.source) {
+    case 'env':
+      console.log(`🔑 Loaded JWT secret from AGOR_JWT_SECRET env var (length=${jwtSecret.length})`);
+      break;
+    case 'config':
+      console.log(`🔑 Loaded JWT secret from config (length=${jwtSecret.length})`);
+      break;
+    case 'generated':
+      console.log(
+        `🔑 Generated and saved persistent JWT secret to config (length=${jwtSecret.length})`
+      );
+      break;
   }
 
   const socketIOConfig = createSocketIOConfig(app, {
