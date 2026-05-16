@@ -22,7 +22,7 @@ import type {
 // shape.
 import { buildZoneTriggerContext } from '@agor-live/client';
 import { DownOutlined } from '@ant-design/icons';
-import { Alert, Collapse, Form, Input, Modal, Radio, Select, Space, Typography } from 'antd';
+import { Alert, Collapse, Form, Input, Modal, Radio, Select, Space, Spin, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import type { AgenticToolOption } from '../../../types';
 import { getSessionDisplayTitle } from '../../../utils/sessionTitle';
@@ -93,6 +93,10 @@ export const ZoneTriggerModal = ({
 
   // Editable rendered template (user can modify before executing)
   const [editableTemplate, setEditableTemplate] = useState<string>('');
+
+  // Drives a Spin overlay so the user doesn't see the raw `{{...}}` flash
+  // before the daemon's rendered content arrives.
+  const [isRendering, setIsRendering] = useState<boolean>(true);
 
   // Explicit state for session config (survives form mount/unmount cycles)
   const [sessionConfig, setSessionConfig] = useState<{
@@ -206,6 +210,7 @@ export const ZoneTriggerModal = ({
     let cancelled = false;
     if (!client) {
       setEditableTemplate(trigger.template);
+      setIsRendering(false);
       return;
     }
     const selectedSessionForCtx =
@@ -228,8 +233,12 @@ export const ZoneTriggerModal = ({
         : undefined,
     });
 
+    setIsRendering(true);
     renderTemplate(client, trigger.template, context, 'raw').then((rendered) => {
-      if (!cancelled) setEditableTemplate(rendered);
+      if (!cancelled) {
+        setEditableTemplate(rendered);
+        setIsRendering(false);
+      }
     });
 
     return () => {
@@ -293,6 +302,7 @@ export const ZoneTriggerModal = ({
       onCancel={onCancel}
       onOk={handleExecute}
       okText="Execute Trigger"
+      okButtonProps={{ disabled: isRendering }}
       cancelText="Cancel"
       width={700}
     >
@@ -440,17 +450,19 @@ export const ZoneTriggerModal = ({
           <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>
             Prompt (editable)
           </Typography.Text>
-          <Input.TextArea
-            value={editableTemplate}
-            onChange={(e) => setEditableTemplate(e.target.value)}
-            rows={8}
-            style={{
-              fontFamily: 'monospace',
-              fontSize: '13px',
-              lineHeight: '1.5',
-            }}
-            placeholder="Edit the rendered prompt before executing..."
-          />
+          <Spin spinning={isRendering} delay={200} description="Rendering template…">
+            <Input.TextArea
+              value={editableTemplate}
+              onChange={(e) => setEditableTemplate(e.target.value)}
+              rows={8}
+              style={{
+                fontFamily: 'monospace',
+                fontSize: '13px',
+                lineHeight: '1.5',
+              }}
+              placeholder="Edit the rendered prompt before executing..."
+            />
+          </Spin>
         </div>
       </Space>
     </Modal>
