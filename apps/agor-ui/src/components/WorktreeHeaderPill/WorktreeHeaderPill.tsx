@@ -16,6 +16,7 @@ import {
   WarningOutlined,
 } from '@ant-design/icons';
 import { Button, Spin, Tooltip, theme } from 'antd';
+import { useConfirmNukeEnvironment } from '../../hooks/useConfirmNukeEnvironment';
 import { getEffectiveEnv } from '../../utils/environmentConfig';
 import { getEnvironmentState } from '../../utils/environmentState';
 import { Tag } from '../Tag';
@@ -54,6 +55,7 @@ export function WorktreeHeaderPill({
   connectionDisabled = false,
 }: WorktreeHeaderPillProps) {
   const { token } = theme.useToken();
+  const confirmNuke = useConfirmNukeEnvironment();
   const effectiveEnv = getEffectiveEnv(repo);
   const hasConfig = effectiveEnv.hasConfig;
   const env = worktree.environment_instance;
@@ -317,7 +319,7 @@ export function WorktreeHeaderPill({
                   icon={<FireOutlined />}
                   onClick={(e) => {
                     e.stopPropagation();
-                    onNukeEnvironment(worktree.worktree_id);
+                    confirmNuke(() => onNukeEnvironment(worktree.worktree_id));
                   }}
                   disabled={connectionDisabled}
                   style={iconButtonStyle}
