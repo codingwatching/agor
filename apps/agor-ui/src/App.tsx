@@ -34,7 +34,6 @@ import { ConnectionProvider } from './contexts/ConnectionContext';
 import { ServicesConfigContext } from './contexts/ServicesConfigContext';
 import { ThemeProvider, useTheme } from './contexts/ThemeContext';
 import {
-  allInitialLoadItemsDone,
   useAgorClient,
   useAgorData,
   useAuth,
@@ -163,7 +162,8 @@ function AppContent() {
     artifactById,
     sessionMcpServerIds,
     userAuthenticatedMcpServerIds,
-    loadingItems,
+    initialLoadItems,
+    initialLoadComplete,
     loading,
     error: dataError,
   } = useAgorData(client, {
@@ -205,10 +205,10 @@ function AppContent() {
   // workspace is empty — checking map sizes failed for fresh instances with no
   // sessions/boards/repos yet).
   useEffect(() => {
-    if (!loading && !dataError && allInitialLoadItemsDone(loadingItems)) {
+    if (!loading && !dataError && initialLoadComplete) {
       setHasLoadedOnce(true);
     }
-  }, [loading, loadingItems, dataError]);
+  }, [loading, initialLoadComplete, dataError]);
 
   const mustChangePassword = !!user?.must_change_password;
   const loaderPhase = useInitialLoaderPhase({
@@ -216,7 +216,7 @@ function AppContent() {
     loading,
     dataError,
     mustChangePassword,
-    loadingItems,
+    initialLoadComplete,
   });
 
   // Get current user from users Map (real-time updates via WebSocket)
@@ -436,11 +436,7 @@ function AppContent() {
   // Once data is loaded, keep UI mounted and show connection status in header instead
   if (loaderPhase !== 'done') {
     return (
-      <InitialLoadingScreen
-        phase={loaderPhase}
-        connecting={connecting}
-        loadingItems={loadingItems}
-      />
+      <InitialLoadingScreen phase={loaderPhase} connecting={connecting} items={initialLoadItems} />
     );
   }
 
