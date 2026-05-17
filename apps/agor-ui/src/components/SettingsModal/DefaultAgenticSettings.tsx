@@ -34,6 +34,7 @@ export const DefaultAgenticSettings: React.FC<DefaultAgenticSettingsProps> = ({
 
   // Separate form for each tool
   const [claudeForm] = Form.useForm();
+  const [claudeCliForm] = Form.useForm();
   const [codexForm] = Form.useForm();
   const [geminiForm] = Form.useForm();
   const [opencodeForm] = Form.useForm();
@@ -41,6 +42,7 @@ export const DefaultAgenticSettings: React.FC<DefaultAgenticSettingsProps> = ({
 
   const [saving, setSaving] = useState<Record<AgenticToolName, boolean>>({
     'claude-code': false,
+    'claude-code-cli': false,
     codex: false,
     gemini: false,
     opencode: false,
@@ -55,6 +57,8 @@ export const DefaultAgenticSettings: React.FC<DefaultAgenticSettingsProps> = ({
     switch (tool) {
       case 'claude-code':
         return claudeForm;
+      case 'claude-code-cli':
+        return claudeCliForm;
       case 'codex':
         return codexForm;
       case 'gemini':
@@ -124,6 +128,12 @@ export const DefaultAgenticSettings: React.FC<DefaultAgenticSettingsProps> = ({
       label: 'GitHub Copilot',
       tool: 'copilot',
       form: copilotForm,
+    },
+    {
+      key: 'claude-code-cli',
+      label: 'Claude Code CLI',
+      tool: 'claude-code-cli',
+      form: claudeCliForm,
     },
   ];
 

@@ -22,12 +22,19 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { buildClaudeCliSpawn } from '@agor/core/claude-cli';
 import {
   createUserProcessEnvironment,
   loadConfig,
   resolveUserEnvironment,
 } from '@agor/core/config';
-import { type Database, formatShortId, UsersRepository, WorktreeRepository } from '@agor/core/db';
+import {
+  type Database,
+  formatShortId,
+  SessionRepository,
+  UsersRepository,
+  WorktreeRepository,
+} from '@agor/core/db';
 import type { Application } from '@agor/core/feathers';
 import { Forbidden } from '@agor/core/feathers';
 import type { AuthenticatedParams, UserID, WorktreeID } from '@agor/core/types';
@@ -39,11 +46,40 @@ import {
 } from '@agor/core/unix';
 import { generateSessionToken, spawnExecutorFireAndForget } from '../utils/spawn-executor.js';
 import { hasWorktreePermission } from '../utils/worktree-authorization.js';
+import { buildSpawnConfigForSession, isClaudeRunningFor } from './claude-cli-integration.js';
 
 interface CreateTerminalData {
   rows?: number;
   cols?: number;
   worktreeId?: WorktreeID; // Worktree context for Zellij integration
+  /**
+   * Optional Zellij tab name to focus once the executor is up. Used by
+   * the Claude Code CLI adapter's in-pane EmbeddedTerminal to land on
+   * the session's `cli-<short>` tab. Server-only emit (browsers can't
+   * publish `terminal:tab` directly).
+   */
+  focusTabName?: string;
+  /**
+   * For `claude-code-cli` sessions: the Agor session id whose tab the
+   * caller wants opened. When set, the server looks up the session,
+   * builds the `claude` spawn config from `cli_state` + session config,
+   * and emits a **create-with-command** `terminal:tab` event so the
+   * cli-XXX tab exists with `claude` running inside even on cold start.
+   *
+   * Without this, the cold-start path emits a `focus` event for a tab
+   * that doesn't exist yet (since `onCliSessionCreated`'s dispatch lands
+   * in an empty room when no executor is connected at session create
+   * time) — the user-visible bug is "I created a CLI session and the
+   * embedded terminal is just a bash prompt". `ensureCliSessionId`
+   * closes that race: the embedded terminal can be the bootstrap
+   * trigger for the `claude` REPL itself.
+   *
+   * Browsers pass the session id; the server is the only thing that
+   * knows how to assemble safe argv. The tab name we use is
+   * `cli_state.zellij_tab_name` if set (canonical), else derived
+   * deterministically from the session id.
+   */
+  ensureCliSessionId?: string;
 }
 
 /**
@@ -217,11 +253,31 @@ export class TerminalsService {
       }
     }
 
+    // Resolve `ensureCliSessionId` into a concrete spawn config on the
+    // server side. The browser asks "make sure the cli tab for session
+    // X exists" — it doesn't know (and shouldn't know) the actual
+    // `claude --session-id <X> --add-dir <cwd> --permission-mode <Y>`
+    // argv.
+    //
+    // RBAC: enforced inside `resolveEnsureCliTab` against the
+    // **session's actual worktree** (not the caller-supplied
+    // `data.worktreeId`, which may differ or be omitted). Without this
+    // check a caller could pass an `ensureCliSessionId` for a session
+    // whose worktree they don't have `'session'` permission on and get
+    // the daemon to spawn a CLI tab on their behalf.
+    const cliEnsure = await this.resolveEnsureCliTab(
+      data.ensureCliSessionId,
+      data.worktreeId,
+      params
+    );
+
     return this.createExecutorTerminal(
       {
         worktreeId: data.worktreeId,
         cols: data.cols,
         rows: data.rows,
+        focusTabName: data.focusTabName ?? cliEnsure?.tabName,
+        cliEnsure,
       },
       params
     );
@@ -232,6 +288,31 @@ export class TerminalsService {
    */
   cleanup(): void {
     this.cleanupExecutorTerminals();
+  }
+
+  /**
+   * Look for a running `zellij attach <sessionName>` process. Used at
+   * cold-start to detect executors that survived a daemon restart so
+   * we adopt instead of spawning a duplicate.
+   *
+   * **Anchored regex**: `^[^ ]*zellij attach <sessionName>`. Without
+   * the `^` anchor, `pgrep -f` false-positives on ANY process whose
+   * full command line contains the search string — including, e.g., a
+   * sibling `bash -c 'something something zellij attach agor-X'` that
+   * happens to mention it. The anchor restricts the match to processes
+   * whose first argv element is the `zellij` binary (with optional
+   * path prefix).
+   */
+  private async detectExistingExecutor(sessionName: string): Promise<boolean> {
+    try {
+      execSync(`pgrep -f '^[^ ]*zellij attach ${sessionName}'`, {
+        stdio: 'ignore',
+        timeout: 1500,
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -256,11 +337,142 @@ export class TerminalsService {
    *
    * The browser should join the user's terminal channel to receive output.
    */
+  /**
+   * Resolve `ensureCliSessionId` into the spawn args we need to emit at
+   * the executor — `tabName`, `cwd`, `command`, `commandArgs`. Performs
+   * the SessionRepository + worktreeRepository lookups + builds the
+   * `claude` argv via `buildSpawnConfigForSession`/`buildClaudeCliSpawn`.
+   *
+   * **RBAC**: enforces `'session'`-level `hasWorktreePermission` against
+   * the **session's actual worktree** (not the caller-supplied
+   * `claimedWorktreeId`). Without this, a caller could ask the daemon
+   * to ensure-create a CLI tab for a session whose worktree they
+   * shouldn't access. Also throws `Forbidden` when `claimedWorktreeId`
+   * is supplied AND mismatches the session's worktree — defense against
+   * "spoof the worktree to bypass the upstream worktreeId check".
+   *
+   * Returns `null` when the input is undefined, the session doesn't
+   * exist, isn't a CLI session, or its worktree path can't be resolved.
+   * Caller falls back to the prior focus-only behavior in those cases.
+   */
+  private async resolveEnsureCliTab(
+    sessionId: string | undefined,
+    claimedWorktreeId: WorktreeID | undefined,
+    params?: AuthenticatedParams
+  ): Promise<{
+    tabName: string;
+    cwd: string;
+    command: string;
+    commandArgs: string[];
+    sessionId: string;
+  } | null> {
+    if (!sessionId) return null;
+    try {
+      const sessionRepo = new SessionRepository(this.db);
+      const session = await sessionRepo.findById(sessionId).catch(() => null);
+      if (!session || session.agentic_tool !== 'claude-code-cli') return null;
+      // Worktree-spoofing guard: when the caller supplied a worktreeId,
+      // it MUST match the session's. Otherwise the upstream RBAC
+      // (gated on `data.worktreeId`) checked a different worktree than
+      // the one we're about to spawn into.
+      if (claimedWorktreeId && claimedWorktreeId !== session.worktree_id) {
+        throw new Forbidden(
+          `ensureCliSessionId session belongs to a different worktree than the one provided.`
+        );
+      }
+      // Run the same `'session'` permission check the upstream caller
+      // did, but against the *session's* worktree id. This catches the
+      // case where the caller omitted `worktreeId` entirely (so the
+      // upstream check was skipped) and only passed `ensureCliSessionId`.
+      if (params?.provider) {
+        const config = await loadConfig();
+        const rbacEnabled = config.execution?.worktree_rbac === true;
+        if (rbacEnabled) {
+          const callerUserId = params?.user?.user_id as UserID | undefined;
+          if (!callerUserId) {
+            throw new Forbidden('Authentication required to ensure a CLI tab');
+          }
+          const worktreeRepo = new WorktreeRepository(this.db);
+          const wt = await worktreeRepo.findById(session.worktree_id);
+          if (!wt) {
+            throw new Forbidden(`Session's worktree not found: ${session.worktree_id}`);
+          }
+          const isOwner = await worktreeRepo.isOwner(wt.worktree_id, callerUserId);
+          const allowSuperadmin = config.execution?.allow_superadmin === true;
+          const userRole = params?.user?.role as string | undefined;
+          if (
+            !hasWorktreePermission(wt, callerUserId, isOwner, 'session', userRole, allowSuperadmin)
+          ) {
+            throw new Forbidden(
+              `You need 'session' permission on the session's worktree to ensure its CLI tab.`
+            );
+          }
+        }
+      }
+      const worktreeRepo = new WorktreeRepository(this.db);
+      const worktree = await worktreeRepo.findById(session.worktree_id);
+      if (!worktree?.path) return null;
+      const spawnCfg = buildSpawnConfigForSession(session, worktree.path);
+      const built = buildClaudeCliSpawn(spawnCfg);
+      const tabName =
+        session.cli_state?.zellij_tab_name ??
+        spawnCfg.displayName ??
+        `cli-${session.session_id.slice(0, 8)}`;
+      return {
+        tabName,
+        cwd: worktree.path,
+        command: built.bin,
+        commandArgs: built.args,
+        sessionId: session.session_id,
+      };
+    } catch (err) {
+      // Re-throw Forbidden so the caller sees the auth failure — only
+      // swallow unexpected errors (DB hiccup etc.) into a graceful
+      // "no ensure-create" fallback.
+      if (err instanceof Forbidden) throw err;
+      console.warn('[TerminalsService] resolveEnsureCliTab failed', err);
+      return null;
+    }
+  }
+
   private async createExecutorTerminal(
     data: {
       worktreeId?: WorktreeID;
       cols?: number;
       rows?: number;
+      /**
+       * Optional Zellij tab name to focus once the executor is up. Used by
+       * the Claude Code CLI adapter's in-pane EmbeddedTerminal to land on
+       * the session's `cli-<short>` tab rather than the worktree default.
+       *
+       * The focus emit happens server-side because browser sockets are not
+       * allowed to publish on `terminal:tab` (only service tokens may).
+       */
+      focusTabName?: string;
+      /**
+       * Resolved CLI spawn for `ensureCliSessionId`. When set, both the
+       * warm-executor and cold-start paths emit a **create-with-command**
+       * `terminal:tab` event so the cli-XXX tab exists with `claude`
+       * running inside, instead of a plain `focus` that no-ops on a tab
+       * that was never spawned (the original cold-start race). The
+       * executor's `handleTabAction('create')` is already idempotent
+       * (auto-converts to focus when the tab exists), so we can fire
+       * this on every call without worrying about double-spawn.
+       */
+      cliEnsure?: {
+        tabName: string;
+        cwd: string;
+        command: string;
+        commandArgs: string[];
+        /**
+         * Agor session id — used to pgrep for a live `claude` process
+         * bound to it. When the process is dead (Ctrl-D, kill -9, etc.)
+         * we emit `forceRecreate: true` so the executor closes the
+         * stale tab + respawns claude fresh. When alive, we emit a
+         * plain `focus` and preserve scrollback.
+         */
+        sessionId: string;
+      } | null;
     },
     params?: AuthenticatedParams
   ): Promise<{
@@ -273,6 +485,31 @@ export class TerminalsService {
     const userId = params?.user?.user_id as UserID;
     if (!userId) {
       throw new Error('Authentication required for executor terminal');
+    }
+
+    // Cold-start adoption: after a daemon restart, `executorTerminals`
+    // is empty but the browser's PRIOR `zellij attach agor-<short>`
+    // process is still alive (Zellij keeps the session). Without this
+    // check, every browser reload post-restart spawns ANOTHER executor
+    // → multiple processes listening on `user/<id>/terminal` → every
+    // `terminal:tab create` event runs N times → duplicate tabs.
+    //
+    // Detect any running `zellij attach agor-<sessionName>` and adopt
+    // it into the Map so subsequent dispatch reuses the existing
+    // executor instead of fork-bombing.
+    const expectedSessionName = `agor-${formatShortId(userId)}`;
+    if (!this.executorTerminals.get(userId)) {
+      const adopted = await this.detectExistingExecutor(expectedSessionName);
+      if (adopted) {
+        console.log(
+          `[TerminalsService] adopting existing zellij executor for user ${userId.slice(0, 8)} (sessionName=${expectedSessionName})`
+        );
+        this.executorTerminals.set(userId, {
+          sessionName: expectedSessionName,
+          activeWorktrees: new Set(),
+          startedAt: new Date(),
+        });
+      }
     }
 
     // Check if user already has an executor running
@@ -294,6 +531,57 @@ export class TerminalsService {
             tabName: worktree.name,
             cwd: worktree.path,
           });
+
+          // Ensure-create the CLI tab when an `ensureCliSessionId` was
+          // supplied.
+          //
+          // Server-side claude liveness check decides the action:
+          //   - `claude` alive ⇒ `focus` (preserves scrollback)
+          //   - `claude` dead  ⇒ `create` + `forceRecreate: true`
+          //     (closes every stale duplicate of the tab name, then
+          //     spawns fresh with the layout-file claude argv)
+          //
+          // Without this branching, reopening a session whose
+          // foreground claude exited (Ctrl-D, kill -9, post-restart-
+          // before-watchdog-fires) left the user staring at a bash
+          // prompt — the executor's default "tab exists ⇒ focus"
+          // auto-converse focused the stale tab instead of respawning.
+          //
+          // Falls back to the old plain-focus behavior when the caller
+          // provided a `focusTabName` without an `ensureCliSessionId`.
+          if (data.cliEnsure && data.cliEnsure.tabName !== worktree.name) {
+            const ensure = data.cliEnsure;
+            const alive = await isClaudeRunningFor(
+              ensure.sessionId as unknown as import('@agor/core/types').SessionID
+            );
+            setTimeout(() => {
+              if (alive) {
+                this.app.io?.to(`user/${userId}/terminal`).emit('terminal:tab', {
+                  userId,
+                  action: 'focus',
+                  tabName: ensure.tabName,
+                });
+              } else {
+                this.app.io?.to(`user/${userId}/terminal`).emit('terminal:tab', {
+                  userId,
+                  action: 'create',
+                  tabName: ensure.tabName,
+                  cwd: ensure.cwd,
+                  command: ensure.command,
+                  commandArgs: ensure.commandArgs,
+                  forceRecreate: true,
+                });
+              }
+            }, 300);
+          } else if (data.focusTabName && data.focusTabName !== worktree.name) {
+            setTimeout(() => {
+              this.app.io?.to(`user/${userId}/terminal`).emit('terminal:tab', {
+                userId,
+                action: 'focus',
+                tabName: data.focusTabName,
+              });
+            }, 300);
+          }
 
           // Request screen redraw after a short delay to let client join channel first
           setTimeout(() => {
@@ -427,6 +715,46 @@ export class TerminalsService {
       activeWorktrees: new Set([data.worktreeId || 'default']),
       startedAt: new Date(),
     });
+
+    // Cold-start path: the executor hasn't yet attached to its Feathers
+    // channel, so the `onCliSessionCreated` dispatch (if any) landed in
+    // an empty room and was dropped. Re-emit after the executor boots
+    // (~1.5s). Same liveness branching as the warm path — `claude`
+    // alive ⇒ focus, dead ⇒ forceRecreate (close any stale tab from
+    // an earlier daemon instance, then spawn fresh).
+    if (data.cliEnsure) {
+      const ensure = data.cliEnsure;
+      const alive = await isClaudeRunningFor(
+        ensure.sessionId as unknown as import('@agor/core/types').SessionID
+      );
+      setTimeout(() => {
+        if (alive) {
+          this.app.io?.to(`user/${userId}/terminal`).emit('terminal:tab', {
+            userId,
+            action: 'focus',
+            tabName: ensure.tabName,
+          });
+        } else {
+          this.app.io?.to(`user/${userId}/terminal`).emit('terminal:tab', {
+            userId,
+            action: 'create',
+            tabName: ensure.tabName,
+            cwd: ensure.cwd,
+            command: ensure.command,
+            commandArgs: ensure.commandArgs,
+            forceRecreate: true,
+          });
+        }
+      }, 1500);
+    } else if (data.focusTabName) {
+      setTimeout(() => {
+        this.app.io?.to(`user/${userId}/terminal`).emit('terminal:tab', {
+          userId,
+          action: 'focus',
+          tabName: data.focusTabName,
+        });
+      }, 1500);
+    }
 
     return {
       userId,

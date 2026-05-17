@@ -552,6 +552,13 @@ export async function startDaemon(options?: DaemonStartOptions): Promise<void> {
   const allowSuperadmin = config.execution?.allow_superadmin === true;
   const superadminOpts = { allowSuperadmin };
 
+  // Stash the shared Drizzle handle on the Feathers app so utilities
+  // that don't get db passed as a constructor arg (Claude Code CLI
+  // watcher sink/persister, lifecycle hooks fired from after.create
+  // contexts) can resolve it via `getDb(app)`. Existing services that
+  // already receive `db` via constructor injection are unaffected.
+  app.set('database', db);
+
   // --------------------------------------------------------------------------
   // Phase 1: Register services
   // --------------------------------------------------------------------------
@@ -636,4 +643,29 @@ export async function startDaemon(options?: DaemonStartOptions): Promise<void> {
     sessionsService: services.sessionsService,
     terminalsService: services.terminalsService,
   });
+
+  // --------------------------------------------------------------------------
+  // Phase 5: Re-instantiate Claude Code CLI watchers for in-flight sessions.
+  //
+  // Has to run AFTER services are up (we use `app.service('worktrees')` to
+  // resolve cwds + `app.service('messages')` indirectly via the sink) and
+  // AFTER `app.set('database', db)` (the watcher persister uses
+  // `getDb(app)`). Sessions that were mid-turn at the previous daemon
+  // shutdown get their `cli_state.active_turn` rehydrated AND their
+  // stale-task watchdog re-started, so a Ctrl-D'd REPL that straddled
+  // the restart is detected and the task is closed.
+  // --------------------------------------------------------------------------
+  try {
+    const { rehydrateCliWatchers } = await import('./services/claude-cli-integration.js');
+    await rehydrateCliWatchers(app, async (worktreeId) => {
+      try {
+        const worktree = (await app.service('worktrees').get(worktreeId)) as { path?: string };
+        return worktree?.path ?? null;
+      } catch {
+        return null;
+      }
+    });
+  } catch (err) {
+    console.warn('[startup] rehydrateCliWatchers failed (non-fatal):', err);
+  }
 }

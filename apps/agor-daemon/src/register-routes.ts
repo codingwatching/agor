@@ -45,6 +45,7 @@ import type {
   SessionID,
   StreamingEventType,
   Task,
+  TaskID,
   User,
   UUID,
   WorktreeID,
@@ -87,6 +88,7 @@ import {
   registerAuthenticatedRoute,
   requireMinimumRole,
 } from './utils/authorization.js';
+import { buildInitialUserMessage } from './utils/build-initial-user-message.js';
 import { type SessionTurnLocks, withSessionTurnLock } from './utils/session-turn-lock.js';
 import { normalizeMessageSource, runExistingTask } from './utils/task-runner.js';
 import {
@@ -711,6 +713,120 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
   );
 
   /**
+   * Restart the Zellij pane for a Claude Code CLI session.
+   *
+   * Closes the existing `cli-<short>` tab (if any) and re-spawns `claude`
+   * inside a fresh tab against the same JSONL. The session's
+   * `cli_state.watcher_offset` is preserved so the watcher resumes
+   * tailing from wherever it left off — no events are lost across the
+   * restart.
+   *
+   * Use this when claude has crashed / been Ctrl-C'd inside the pane,
+   * when auth changes and you want a clean process, or when the Zellij
+   * pane's foreground has fallen back to bash after `claude` exited.
+   */
+  registerAuthenticatedRoute(
+    app,
+    '/sessions/:id/restart-cli',
+    {
+      async create(_data: unknown, params: RouteParams) {
+        const id = params.route?.id;
+        if (!id) throw new Error('Session ID required');
+        const session = await sessionsService.get(id, params);
+        if (session.agentic_tool !== 'claude-code-cli') {
+          throw new Error(
+            `Restart is only supported for claude-code-cli sessions; this session is ${session.agentic_tool}`
+          );
+        }
+        const targetUserId = session.created_by;
+        if (!targetUserId) throw new Error('Session has no created_by — cannot route restart');
+
+        const tabName = `cli-${session.session_id.slice(0, 8)}`;
+        const channel = `user/${targetUserId}/terminal`;
+
+        // 1) Hard-kill any live `claude` process bound to this session.
+        //    Zellij's `close-tab` SHOULD propagate SIGHUP to its
+        //    foreground, but in practice claude sometimes survives the
+        //    pane death long enough to collide on session-id uniqueness
+        //    ("Session ID … is already in use") when the new spawn
+        //    fires. `pkill -f` against the argv pattern is the reliable
+        //    kill. Match BOTH `--session-id <X>` (first launch) and
+        //    `--resume <X>` (post-restart spawn) — same code path
+        //    `buildClaudeCliSpawn` emits.
+        try {
+          const { spawn: spawnProc } = await import('node:child_process');
+          const killProc = spawnProc(
+            'pkill',
+            ['-f', `claude .*(--session-id|--resume) ${session.session_id}`],
+            { stdio: 'ignore' }
+          );
+          await new Promise<void>((resolve) => {
+            killProc.on('exit', () => resolve());
+            killProc.on('error', () => resolve());
+            // Defensive cap — pkill should be <100ms.
+            setTimeout(() => {
+              try {
+                killProc.kill();
+              } catch {
+                /* already exited */
+              }
+              resolve();
+            }, 2000);
+          });
+        } catch (err) {
+          console.warn('[claude-cli-integration] pkill failed, proceeding anyway', err);
+        }
+
+        // 2) Atomic close-all + create-with-command via `forceRecreate`.
+        //
+        // Previous implementation emitted `close` then waited 800ms
+        // then re-ran `onCliSessionCreated` which emitted `create`.
+        // Two problems:
+        //   - `close` only closed the focused tab (one of potentially
+        //     several duplicates from earlier racing executors), so
+        //     the subsequent `create` would see surviving siblings
+        //     and auto-converse to `focus` — restart "succeeded" but
+        //     claude never actually respawned.
+        //   - The 800ms timer was a guess against an uncoordinated
+        //     race between executors.
+        //
+        // With `forceRecreate: true` the executor closes EVERY tab
+        // matching `tabName` first, then issues `new-tab --layout`
+        // with the freshly-built claude argv — atomic in the
+        // executor's tab-event loop. No timer, no surviving stale
+        // tab, no auto-converse. Restart actually restarts.
+        const worktree = (await app.service('worktrees').get(session.worktree_id, params)) as {
+          path?: string;
+        };
+        const cwd = worktree?.path;
+        if (!cwd) throw new Error('Worktree has no path; cannot restart');
+        const { buildSpawnConfigForSession } = await import('./services/claude-cli-integration.js');
+        const { buildClaudeCliSpawn } = await import('@agor/core/claude-cli');
+        const spawnCfg = buildSpawnConfigForSession(session, cwd);
+        const built = buildClaudeCliSpawn(spawnCfg);
+        if (app.io) {
+          app.io.to(channel).emit('terminal:tab', {
+            userId: targetUserId,
+            action: 'create',
+            tabName,
+            cwd,
+            command: built.bin,
+            commandArgs: built.args,
+            forceRecreate: true,
+          });
+        }
+
+        return { ok: true, tabName };
+      },
+      // biome-ignore lint/suspicious/noExplicitAny: FeathersJS route handler type mismatch
+    } as any,
+    {
+      create: { role: ROLES.MEMBER, action: 'restart claude CLI session' },
+    },
+    requireAuth
+  );
+
+  /**
    * Per-session "turn" lock — single source of truth for "who's allowed to
    * spawn an executor for this session right now" mutual exclusion. Shared
    * by `/sessions/:id/prompt`'s idle branch, `/tasks/:id/run`, and the
@@ -856,20 +972,17 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
           messageMetadata.source = source;
         }
 
-        const userMessage: Message = {
-          message_id: generateId() as UUID,
-          session_id: task.session_id,
+        const userMessage = buildInitialUserMessage({
+          sessionId: task.session_id,
+          taskId: task.task_id,
+          index: messageStartIndex,
+          timestamp: startTimestamp,
+          content: task.full_prompt,
           // Callback messages are typed `system` so the UI shows the special
           // Agor-callback styling. Normal prompts stay `user`.
           type: isCallback ? 'system' : 'user',
-          role: 'user' as Message['role'],
-          index: messageStartIndex,
-          timestamp: startTimestamp,
-          content_preview: task.full_prompt.substring(0, 200),
-          content: task.full_prompt,
-          task_id: task.task_id,
           metadata: Object.keys(messageMetadata).length > 0 ? messageMetadata : undefined,
-        };
+        });
         await app.service('messages').create(userMessage, params);
       } catch (msgErr) {
         // Don't fail the spawn — the executor's createUserMessage fallback
@@ -924,6 +1037,99 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     const useStreaming = options.stream !== false;
     const sessionId = task.session_id;
     const taskId = task.task_id;
+
+    // Claude Code CLI: there is no in-process executor. The `claude` REPL
+    // is already running in the user's Zellij pane. "Prompting" the
+    // session = injecting the prompt text + a newline into that pane's
+    // PTY stdin, exactly as if the user typed it. The watcher (which is
+    // already tailing the session's JSONL) picks up the resulting turn.
+    //
+    // The Agor textarea + MCP `agor_sessions_prompt` both flow through
+    // this code path; for CLI sessions we short-circuit before
+    // `executeTask` and emit `terminal:input` instead.
+    if (session.agentic_tool === 'claude-code-cli') {
+      // Hand the task off to the watcher BEFORE we PTY-inject. The watcher
+      // claims this task on the next `user_message` JSONL line and links
+      // every subsequent assistant/tool message to it — then closes it on
+      // `turn_end`. Without this stash, the watcher would mint a *new*
+      // task on that user line and we'd end up with two task rows per
+      // turn (the empty one from /prompt + the one the watcher minted).
+      //
+      // Import lazily to avoid pulling claude-cli-integration into the
+      // hot-path of every non-CLI prompt.
+      const { setPendingCliTask } = await import('./services/claude-cli-integration.js');
+      setPendingCliTask(sessionId as SessionID, taskId as TaskID, messageStartIndex);
+
+      setImmediate(async () => {
+        try {
+          const targetUserId = session.created_by;
+          if (!targetUserId) {
+            throw new Error('CLI session has no created_by — cannot route PTY injection');
+          }
+          const channel = `user/${targetUserId}/terminal`;
+          const tabName = `cli-${session.session_id.slice(0, 8)}`;
+          const io = (
+            app as unknown as {
+              io?: { to(r: string): { emit(ev: string, p: unknown): void } };
+            }
+          ).io;
+
+          // Focus the session's tab BEFORE injecting input. Zellij sends
+          // terminal:input to whichever pane is currently focused, so
+          // without this step a prompt typed in the Agor textarea while
+          // the user happens to be viewing a sibling tab (e.g. the
+          // worktree's `test-worktree` bash) would land in bash and
+          // produce `bash: hello: command not found`. The 150ms delay
+          // gives Zellij time to process the focus before the input
+          // bytes arrive.
+          io?.to(channel).emit('terminal:tab', {
+            userId: targetUserId,
+            action: 'focus',
+            tabName,
+          });
+          await new Promise((r) => setTimeout(r, 150));
+
+          // Append \r so the REPL submits. Zellij forwards raw bytes
+          // unchanged to claude's pseudo-tty. If the user is currently
+          // mid-typing into the REPL, the bytes interleave — documented
+          // race per the analysis doc § Blind spot #2.
+          const payload = `${promptForExecutor}\r`;
+          io?.to(channel).emit('terminal:input', { userId: targetUserId, input: payload });
+          console.log(
+            `[claude-cli] PTY-injected prompt into ${channel} → tab ${tabName} (task ${taskId.substring(0, 8)}, ${promptForExecutor.length} chars)`
+          );
+          // Task lifecycle is now owned by the watcher's sink: it closes
+          // the task and patches the session back to IDLE on `turn_end`.
+          // We deliberately do NOT pre-complete here.
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(
+            `[claude-cli] PTY injection failed for task ${taskId.substring(0, 8)}: ${msg}`
+          );
+          await safePatch(
+            'tasks',
+            taskId,
+            {
+              status: TaskStatus.FAILED,
+              completed_at: new Date().toISOString(),
+              error_message: `PTY injection failed: ${msg}`,
+            },
+            'Task',
+            params
+          );
+          // Failure path: also flip the session back to IDLE so the user
+          // can retry. The success path lets the watcher handle this on
+          // turn_end.
+          await app
+            .service('sessions')
+            .patch(sessionId, { status: SessionStatus.IDLE, ready_for_prompt: true }, params)
+            .catch(() => {
+              /* best-effort */
+            });
+        }
+      });
+      return updatedTask;
+    }
 
     // Background spawn + failure handling. Returning the patched Task to the
     // caller before this resolves matches the previous behavior — the HTTP

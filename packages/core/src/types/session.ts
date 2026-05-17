@@ -242,6 +242,53 @@ export interface Session {
     provider?: string;
   };
 
+  /**
+   * Claude Code CLI adapter state. Only set when `agentic_tool === 'claude-code-cli'`.
+   * Persisted on the session row's `data` blob so the daemon-side watcher can
+   * resume tailing the JSONL across restarts (see
+   * docs/internal/claude-code-cli-integration-analysis-2026-05-14.md).
+   */
+  cli_state?: {
+    /** Bytes consumed from the JSONL — resume point on watcher restart. */
+    watcher_offset?: number;
+    /** ISO 8601 of the most recent processed JSONL line. Telemetry. */
+    last_event_ts?: string;
+    /** `uuid` of the most recent processed JSONL line. Sanity / dedup. */
+    last_event_uuid?: string;
+    /** Slugged dir under `~/.claude/projects/` (`/` and `.` → `-`). */
+    slug?: string;
+    /** Absolute path to the JSONL file. */
+    jsonl_path?: string;
+    /** Zellij pane handle for PTY-injection targeting. */
+    zellij_pane_id?: string;
+    /** Zellij tab name (`cli-<short>` by convention). */
+    zellij_tab_name?: string;
+    /**
+     * In-flight turn snapshot. Written on `user_message`, set to `null`
+     * on `turn_end` (not undefined — `deepMerge` in
+     * `SessionRepository.update` skips undefined, so an explicit `null`
+     * is the documented "clear this field" signal). Lets the watcher
+     * rehydrate the task linkage for assistant/tool messages that
+     * arrive after a daemon restart — without this, post-restart events
+     * would orphan and `turn_end` would skip closing the task.
+     * Analytics accumulated mid-turn (per-message usage,
+     * lastAssistantRaw) are *not* persisted; only the linkage is
+     * recovered.
+     */
+    active_turn?: {
+      task_id: string;
+      user_message_index: number;
+      started_at_ms: number;
+    } | null;
+  };
+
+  /**
+   * Billing model for this session. CLI sessions default to 'subscription'
+   * (Claude Pro/Max interactive limits), SDK sessions to 'api-key' or
+   * 'unknown'. Drives the cost-UI caption and the 5h billing-window banner.
+   */
+  billing_mode?: 'subscription' | 'api-key' | 'unknown';
+
   // Custom context for Handlebars templates
   /**
    * User-defined JSON context for Handlebars templates in zone triggers
