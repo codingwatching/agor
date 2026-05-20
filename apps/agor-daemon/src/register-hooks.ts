@@ -1482,6 +1482,30 @@ export function registerHooks(ctx: RegisterHooksContext): void {
             return context;
           }
 
+          // Env-var-specific trusted write escape hatch. Set ONLY by the widget
+          // submit path, which has already authorized the caller via
+          // `canResolveWidget` (session-creator OR prompt-tier worktree RBAC)
+          // before calling users.patch on the session creator's behalf.
+          //
+          // Deliberately narrow: only allows `env_vars` + `env_var_scopes`
+          // fields — any attempt to slip in other fields (e.g. role, unix_username)
+          // throws immediately. Field-level admin gates above run first and are
+          // NOT bypassed regardless.
+          //
+          // Grep for: trustedEnvVarWrite — to audit every site that sets it.
+          if (
+            !context.params.provider &&
+            (params as { trustedEnvVarWrite?: boolean }).trustedEnvVarWrite === true
+          ) {
+            const keys = Object.keys(context.data ?? {});
+            if (!keys.every((k) => k === 'env_vars' || k === 'env_var_scopes')) {
+              throw new Forbidden(
+                'trustedEnvVarWrite only permits env_vars and env_var_scopes updates'
+              );
+            }
+            return context;
+          }
+
           // Otherwise forbidden
           throw new Forbidden('You can only update your own profile');
         },

@@ -10,6 +10,7 @@
  */
 
 import {
+  type AgorClient,
   type ContentBlock as CoreContentBlock,
   type DiffEnrichment,
   type Message,
@@ -44,6 +45,10 @@ import {
 } from '../ToolBlock';
 import { ToolIcon } from '../ToolIcon';
 import { ToolUseRenderer } from '../ToolUseRenderer';
+// Side-effect import: registers every built-in widget component with the
+// `WidgetBlock` dispatcher (e.g. `env_vars`).
+import '../Widgets';
+import { WidgetBlock } from './WidgetBlock';
 
 interface ToolUseBlock {
   type: 'tool_use';
@@ -84,6 +89,8 @@ interface MessageBlockProps {
   isFirstPendingPermission?: boolean; // For sequencing permission requests
   isLatestMessage?: boolean; // Whether this is the most recent message (don't collapse by default)
   assistantEmoji?: string; // Emoji override for assistant avatar (replaces tool icon)
+  /** Authenticated Feathers client, forwarded to WidgetBlock for inline-form submission. */
+  client?: AgorClient | null;
   onPermissionDecision?: (
     sessionId: string,
     requestId: string,
@@ -249,6 +256,7 @@ const MessageBlockInner: React.FC<MessageBlockProps> = ({
   isLatestMessage = false,
   onPermissionDecision,
   assistantEmoji,
+  client = null,
 }) => {
   const { token } = theme.useToken();
 
@@ -298,6 +306,18 @@ const MessageBlockInner: React.FC<MessageBlockProps> = ({
   // surrounding agent text already carries the question/answer context.
   if (message.type === 'input_request') {
     return null;
+  }
+
+  // In-conversation interactive widgets. WidgetBlock looks up the registered
+  // component by `metadata.widget.widget_type` and falls back to an
+  // "Unknown widget type" placeholder for forward-compat with newer
+  // daemons. See `docs/internal/in-conversation-widgets-design-2026-05-19.md`.
+  if (message.type === 'widget_request') {
+    return (
+      <div style={{ margin: `${token.sizeUnit * 1.5}px 0` }}>
+        <WidgetBlock message={message} client={client} />
+      </div>
+    );
   }
 
   // Check if this is a Task tool prompt or result (agent-generated, but has user role)
