@@ -22,10 +22,11 @@ import {
   ThunderboltOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
-import { Collapse, Popover, Tooltip, theme } from 'antd';
+import { Badge, Collapse, Popover, Tooltip, theme } from 'antd';
 import type React from 'react';
 import { copyToClipboard } from '../../utils/clipboard';
 import { getContextWindowPercentage } from '../../utils/contextWindow';
+import { parseGitStateSha } from '../../utils/gitState';
 import { type SessionForIds, SessionIdsList } from '../SessionIds';
 import { Tag } from '../Tag';
 
@@ -489,6 +490,18 @@ export const ModelPill: React.FC<ModelPillProps> = ({ model, style }) => {
   );
 };
 
+/**
+ * Small amber dot indicating uncommitted ("dirty") working tree changes.
+ * Mirrors the VSCode unsaved-file affordance. Purely decorative — the parent
+ * pill carries the tooltip that explains both the SHA and the dot, so the
+ * dot is `aria-hidden` to avoid duplicating that label for screen readers.
+ */
+const DirtyDot: React.FC = () => (
+  <span aria-hidden="true" style={{ display: 'inline-flex', flexShrink: 0 }}>
+    <Badge status="warning" />
+  </span>
+);
+
 interface GitShaPillProps extends BasePillProps {
   sha: string;
   isDirty?: boolean;
@@ -499,22 +512,33 @@ export const GitShaPill: React.FC<GitShaPillProps> = ({
   sha,
   isDirty = false,
   showDirtyIndicator = true,
-  size,
   style,
 }) => {
   const { token } = theme.useToken();
-  const cleanSha = sha.replace('-dirty', '');
+  const { cleanSha } = parseGitStateSha(sha);
   const displaySha = cleanSha.substring(0, 7);
+  const showDirty = isDirty && showDirtyIndicator;
+  const tooltip = showDirty
+    ? 'Git commit SHA (working tree has uncommitted changes) · click to copy'
+    : 'Git commit SHA · click to copy';
+
+  const handleClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    await copyToClipboard(cleanSha);
+  };
 
   return (
-    <Tag
-      icon={<GithubOutlined />}
-      color={isDirty && showDirtyIndicator ? PILL_COLORS.warning : PILL_COLORS.git}
-      style={style}
-    >
-      <span style={{ fontFamily: token.fontFamilyCode }}>{displaySha}</span>
-      {isDirty && showDirtyIndicator && ' (dirty)'}
-    </Tag>
+    <Tooltip title={tooltip}>
+      <span
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}
+        onClick={handleClick}
+      >
+        {showDirty && <DirtyDot />}
+        <Tag icon={<GithubOutlined />} color={PILL_COLORS.git} style={style}>
+          <span style={{ fontFamily: token.fontFamilyCode }}>{displaySha}</span>
+        </Tag>
+      </span>
+    </Tooltip>
   );
 };
 
@@ -533,12 +557,16 @@ export const GitStatePill: React.FC<GitStatePillProps> = ({
   style,
 }) => {
   const { token } = theme.useToken();
-  const isDirty = sha.endsWith('-dirty');
-  const cleanSha = sha.replace('-dirty', '');
+  const { cleanSha, isDirty } = parseGitStateSha(sha);
   const displaySha = cleanSha.substring(0, 7);
+  const showDirty = isDirty && showDirtyIndicator;
 
   // Only show branch if it differs from worktree name
   const shouldShowBranch = branch && branch !== worktreeName;
+
+  const tooltip = showDirty
+    ? 'Git commit SHA (working tree has uncommitted changes) · click to copy'
+    : 'Git commit SHA · click to copy';
 
   const handleClick = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -546,17 +574,17 @@ export const GitStatePill: React.FC<GitStatePillProps> = ({
   };
 
   return (
-    <Tooltip title="Click to copy full SHA">
-      <Tag
-        icon={<ForkOutlined />}
-        color={isDirty && showDirtyIndicator ? 'cyan' : PILL_COLORS.git}
-        style={{ ...style, cursor: 'pointer' }}
+    <Tooltip title={tooltip}>
+      <span
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}
         onClick={handleClick}
       >
-        {shouldShowBranch && <span>{branch} : </span>}
-        <span style={{ fontFamily: token.fontFamilyCode }}>{displaySha}</span>
-        {isDirty && showDirtyIndicator && ' (dirty)'}
-      </Tag>
+        {showDirty && <DirtyDot />}
+        <Tag icon={<ForkOutlined />} color={PILL_COLORS.git} style={style}>
+          {shouldShowBranch && <span>{branch} : </span>}
+          <span style={{ fontFamily: token.fontFamilyCode }}>{displaySha}</span>
+        </Tag>
+      </span>
     </Tooltip>
   );
 };
