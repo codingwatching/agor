@@ -10,14 +10,16 @@
 import type {
   Artifact,
   ArtifactBuildStatus,
+  ArtifactID,
   BoardID,
   SandpackTemplate,
   UUID,
   WorktreeID,
 } from '@agor/core/types';
-import { prefixToLikePattern } from '@agor/core/types';
 import { and, eq, like, or } from 'drizzle-orm';
+import { getBaseUrl } from '../../config/config-manager';
 import { generateId } from '../../lib/ids';
+import { getArtifactUrl } from '../../utils/url';
 import type { Database } from '../client';
 import { deleteFrom, insert, select, update } from '../database-wrapper';
 import { type ArtifactInsert, type ArtifactRow, artifacts } from '../schema';
@@ -25,15 +27,27 @@ import {
   AmbiguousIdError,
   type BaseRepository,
   EntityNotFoundError,
+  RESOLVE_SHORT_ID_FETCH_LIMIT,
   RepositoryError,
+  resolveByShortIdPrefix,
 } from './base';
 
 export class ArtifactRepository implements BaseRepository<Artifact, Partial<Artifact>> {
   constructor(private db: Database) {}
 
-  private rowToArtifact(row: ArtifactRow): Artifact {
+  /**
+   * Convert database row to Artifact type.
+   *
+   * `baseUrl` is needed to compute the share-link `url` field. Omitted →
+   * `url` is `null`. Also `null` when the artifact isn't placed on a
+   * board (the `/a/<short>/` URL would resolve the artifact but have
+   * nowhere to switch the canvas to).
+   */
+  private rowToArtifact(row: ArtifactRow, baseUrl?: string): Artifact {
+    const artifactId = row.artifact_id as ArtifactID;
+    const url = baseUrl && row.board_id ? getArtifactUrl(artifactId, baseUrl) : null;
     return {
-      artifact_id: row.artifact_id as UUID,
+      artifact_id: artifactId as UUID,
       worktree_id: (row.worktree_id as WorktreeID) ?? null,
       board_id: row.board_id as BoardID,
       name: row.name,
@@ -56,27 +70,19 @@ export class ArtifactRepository implements BaseRepository<Artifact, Partial<Arti
       updated_at: new Date(row.updated_at).toISOString(),
       archived: Boolean(row.archived),
       archived_at: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
+      url,
     };
   }
 
   async resolveId(id: string): Promise<string> {
-    if (id.length === 36 && id.includes('-')) return id;
-
-    const pattern = prefixToLikePattern(id);
-    const results = await select(this.db)
-      .from(artifacts)
-      .where(like(artifacts.artifact_id, pattern))
-      .all();
-
-    if (results.length === 0) throw new EntityNotFoundError('Artifact', id);
-    if (results.length > 1) {
-      throw new AmbiguousIdError(
-        'Artifact',
-        id,
-        results.map((r: { artifact_id: string }) => r.artifact_id)
-      );
-    }
-    return results[0].artifact_id;
+    return resolveByShortIdPrefix(id, 'Artifact', async (pattern) => {
+      const rows = await select(this.db)
+        .from(artifacts)
+        .where(like(artifacts.artifact_id, pattern))
+        .limit(RESOLVE_SHORT_ID_FETCH_LIMIT)
+        .all();
+      return rows.map((r: { artifact_id: string }) => r.artifact_id);
+    });
   }
 
   async create(data: Partial<Artifact>): Promise<Artifact> {
@@ -118,7 +124,8 @@ export class ArtifactRepository implements BaseRepository<Artifact, Partial<Arti
         .one();
 
       if (!row) throw new RepositoryError('Failed to retrieve created artifact');
-      return this.rowToArtifact(row);
+      const baseUrl = await getBaseUrl();
+      return this.rowToArtifact(row, baseUrl);
     } catch (error) {
       if (error instanceof RepositoryError) throw error;
       throw new RepositoryError(
@@ -135,7 +142,9 @@ export class ArtifactRepository implements BaseRepository<Artifact, Partial<Arti
         .from(artifacts)
         .where(eq(artifacts.artifact_id, fullId))
         .one();
-      return row ? this.rowToArtifact(row) : null;
+      if (!row) return null;
+      const baseUrl = await getBaseUrl();
+      return this.rowToArtifact(row, baseUrl);
     } catch (error) {
       if (error instanceof EntityNotFoundError) return null;
       if (error instanceof AmbiguousIdError) throw error;
@@ -149,7 +158,8 @@ export class ArtifactRepository implements BaseRepository<Artifact, Partial<Arti
   async findAll(): Promise<Artifact[]> {
     try {
       const rows = await select(this.db).from(artifacts).all();
-      return rows.map((row: ArtifactRow) => this.rowToArtifact(row));
+      const baseUrl = await getBaseUrl();
+      return rows.map((row: ArtifactRow) => this.rowToArtifact(row, baseUrl));
     } catch (error) {
       throw new RepositoryError(
         `Failed to find all artifacts: ${error instanceof Error ? error.message : String(error)}`,
@@ -172,7 +182,8 @@ export class ArtifactRepository implements BaseRepository<Artifact, Partial<Arti
       }
 
       const rows = await query.all();
-      return rows.map((row: ArtifactRow) => this.rowToArtifact(row));
+      const baseUrl = await getBaseUrl();
+      return rows.map((row: ArtifactRow) => this.rowToArtifact(row, baseUrl));
     } catch (error) {
       throw new RepositoryError(
         `Failed to find visible artifacts: ${error instanceof Error ? error.message : String(error)}`,
@@ -187,7 +198,8 @@ export class ArtifactRepository implements BaseRepository<Artifact, Partial<Arti
         .from(artifacts)
         .where(eq(artifacts.worktree_id, worktreeId))
         .all();
-      return rows.map((row: ArtifactRow) => this.rowToArtifact(row));
+      const baseUrl = await getBaseUrl();
+      return rows.map((row: ArtifactRow) => this.rowToArtifact(row, baseUrl));
     } catch (error) {
       throw new RepositoryError(
         `Failed to find artifacts by worktree: ${error instanceof Error ? error.message : String(error)}`,
@@ -220,7 +232,8 @@ export class ArtifactRepository implements BaseRepository<Artifact, Partial<Arti
       }
 
       const rows = await query.all();
-      return rows.map((row: ArtifactRow) => this.rowToArtifact(row));
+      const baseUrl = await getBaseUrl();
+      return rows.map((row: ArtifactRow) => this.rowToArtifact(row, baseUrl));
     } catch (error) {
       throw new RepositoryError(
         `Failed to find artifacts by board: ${error instanceof Error ? error.message : String(error)}`,
@@ -285,7 +298,8 @@ export class ArtifactRepository implements BaseRepository<Artifact, Partial<Arti
         .one();
 
       if (!row) throw new EntityNotFoundError('Artifact', id);
-      return this.rowToArtifact(row);
+      const baseUrl = await getBaseUrl();
+      return this.rowToArtifact(row, baseUrl);
     } catch (error) {
       if (error instanceof RepositoryError) throw error;
       throw new RepositoryError(

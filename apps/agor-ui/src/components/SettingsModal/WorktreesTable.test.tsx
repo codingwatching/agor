@@ -14,8 +14,16 @@
 
 import type { Board, Repo, Worktree } from '@agor-live/client';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { WorktreesTable } from './WorktreesTable';
+
+/** WorktreesTable uses useAppNavigation → useNavigate under the hood,
+ *  so the test wraps in a Router. It no longer needs the AppLiveDataProvider
+ *  (table reads navigation maps from its props, not from context). */
+function renderWithProviders(ui: React.ReactElement) {
+  return render(<MemoryRouter>{ui}</MemoryRouter>);
+}
 
 function makeRepo(overrides: Partial<Repo> = {}): Repo {
   return {
@@ -38,7 +46,7 @@ describe('WorktreesTable — source-branch preservation', { timeout: 10_000 }, (
     const worktreeById = new Map<string, Worktree>();
     const sessionsByWorktree = new Map<string, never[]>();
 
-    const { rerender } = render(
+    const { rerender } = renderWithProviders(
       <WorktreesTable
         client={null}
         worktreeById={worktreeById}
@@ -62,13 +70,15 @@ describe('WorktreesTable — source-branch preservation', { timeout: 10_000 }, (
     // Simulate a `repos.patched` WebSocket event by handing the table NEW
     // Map references for repoById and boardById. Same data, different refs.
     rerender(
-      <WorktreesTable
-        client={null}
-        worktreeById={worktreeById}
-        repoById={new Map([[repo.repo_id, repo]])}
-        boardById={new Map<string, Board>()}
-        sessionsByWorktree={sessionsByWorktree as Map<string, never[]>}
-      />
+      <MemoryRouter>
+        <WorktreesTable
+          client={null}
+          worktreeById={worktreeById}
+          repoById={new Map([[repo.repo_id, repo]])}
+          boardById={new Map<string, Board>()}
+          sessionsByWorktree={sessionsByWorktree as Map<string, never[]>}
+        />
+      </MemoryRouter>
     );
 
     expect((screen.getByLabelText(/Source Branch/i) as HTMLInputElement).value).toBe(

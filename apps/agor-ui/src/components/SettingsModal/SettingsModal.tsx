@@ -372,6 +372,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             onRowClick={handleWorktreeRowClick}
             onStartEnvironment={onStartEnvironment}
             onStopEnvironment={onStopEnvironment}
+            onClose={onClose}
           />
         );
       case 'assistants':
@@ -388,6 +389,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             onCreateWorktree={onCreateWorktree}
             onUpdateWorktree={onUpdateWorktree}
             onCreateRepo={onCreateRepo}
+            onClose={onClose}
           />
         );
       case 'cards':
@@ -408,6 +410,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             boardById={boardById}
             onUpdate={onUpdateArtifact}
             onDelete={onDeleteArtifact}
+            onClose={onClose}
           />
         );
       case 'mcp':

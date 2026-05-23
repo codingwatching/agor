@@ -1,27 +1,39 @@
 /**
  * URL State Hook
  *
- * Provides bidirectional synchronization between URL and React state
- * for board and session selection.
+ * Bidirectional sync between URL and React state for board/session
+ * selection, plus URL→state recenter side effects for entity deep
+ * links (worktrees, artifacts).
  *
- * URL format: /b/:boardParam/:sessionParam?
- * - boardParam can be a slug (my-board) or short ID (550e8400)
- * - sessionParam uses short ID (optional)
+ * URL shape — flat entity URLs. Boards are addressable in their own
+ * right; sub-entities (session/worktree/artifact) are keyed by their
+ * short ID with no board prefix. The app resolves the entity, looks
+ * up its current board, and switches if needed. This keeps shared
+ * links stable across board moves.
  *
- * Examples:
- * - /b/main-board
- * - /b/main-board/a1b2c3d4
- * - /b/550e8400/a1b2c3d4
+ *   /                              — root (redirects to first board)
+ *   /b/<boardSlugOrShort>/         — board view
+ *   /s/<sessionShort>/             — session conversation
+ *   /w/<worktreeShort>/            — worktree (board switch + recenter)
+ *   /a/<artifactShort>/            — artifact (board switch + recenter)
+ *
+ * Path shapes are defined in `@agor/core/utils/url` and consumed both
+ * here (relative paths, no `/ui` — react-router prepends it via
+ * basename) and in the server-side URL builders (`getXUrl`, which
+ * compose `baseUrl + UI_MOUNT_PATH + path`).
  */
 
-import { findByShortIdPrefix, shortId } from '@agor-live/client';
+import type { BoardID, SessionID } from '@agor-live/client';
+import { boardPath, ENTITY_PATH_SEGMENTS, sessionPath } from '@agor-live/client';
 import { useCallback, useEffect, useRef } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-
-export interface UrlState {
-  boardParam: string | null;
-  sessionId: string | null;
-}
+import { useRecenterMap } from '../contexts/CanvasNavigationContext';
+import {
+  resolveArtifactFromShortIdPure,
+  resolveBoardFromUrlPure,
+  resolveSessionFromShortIdPure,
+  resolveWorktreeFromShortIdPure,
+} from '../utils/urlResolution';
 
 export interface UseUrlStateOptions {
   /** Current board ID (full UUID) */
@@ -30,76 +42,43 @@ export interface UseUrlStateOptions {
   currentSessionId: string | null;
   /** Map of board ID to board object (for slug lookup) */
   boardById: Map<string, { board_id: string; slug?: string }>;
-  /** Map of session ID to session object (for short ID resolution) */
-  sessionById: Map<string, { session_id: string }>;
+  /** Map of session ID to session object — used to resolve session
+   *  share URLs and to chain through to the session's worktree/board. */
+  sessionById: Map<string, { session_id: string; worktree_id?: string }>;
+  /** Map of worktree ID to worktree — used to resolve worktree share
+   *  URLs (and to look up `worktree.board_id` for session URLs). */
+  worktreeById: Map<string, { worktree_id: string; board_id?: string | null }>;
+  /** Map of artifact ID to artifact — used to resolve artifact share
+   *  URLs and look up `artifact.board_id`. */
+  artifactById: Map<string, { artifact_id: string; board_id?: string | null }>;
   /** Callback when URL indicates a different board */
   onBoardChange: (boardIdOrSlug: string) => void;
   /** Callback when URL indicates a different session */
   onSessionChange: (sessionId: string | null) => void;
 }
 
-/**
- * Extract the canonical short ID for use in URLs.
- *
- * Same `SHORT_ID_LENGTH` (24-char) shape used everywhere else — URLs use the
- * same display length as notifications/pills so users can copy-paste between
- * surfaces and have the prefix round-trip via `findByShortIdPrefix`.
- */
-const urlShortId = (uuid: string) => shortId(uuid);
+/** Slug lookup helper — the core `boardPath` builder takes a slug
+ *  directly; client call sites pass the boardById map and we extract
+ *  here. */
+function slugOf(
+  boardId: string,
+  boardById: Map<string, { board_id: string; slug?: string }>
+): string | null | undefined {
+  return boardById.get(boardId)?.slug;
+}
 
-/**
- * Pure resolver: short-ID prefix → board ID, with ambiguity treated as
- * not-found. Extracted from the hook closure so it can be unit-tested
- * directly. See the doc on `resolveSessionFromShortIdPure` for why we
- * refuse to guess on ambiguous matches.
- */
-export function resolveBoardFromUrlPure(
-  boardParam: string,
-  boardById: Map<string, { board_id: string; slug?: string }>,
-  onAmbiguous?: (param: string, matchCount: number) => void
-): string | null {
-  for (const board of boardById.values()) {
-    if (board.slug === boardParam) {
-      return board.board_id;
-    }
-  }
-  const matches = findByShortIdPrefix(
-    boardParam,
-    Array.from(boardById.values(), (b) => ({ id: b.board_id }))
-  );
-  if (matches.length === 0) return null;
-  if (matches.length === 1) return matches[0].id;
-  onAmbiguous?.(boardParam, matches.length);
-  return null;
+/** `/b/<slug-or-short>/` — slug-aware client wrapper around `boardPath`.
+ *  Exported so deliberate-nav sites (`useAppNavigation.goToBoard`) build
+ *  URLs identically to the state→URL self-heal here. */
+export function buildBoardPath(
+  boardId: string,
+  boardById: Map<string, { board_id: string; slug?: string }>
+): string {
+  return boardPath(boardId as BoardID, slugOf(boardId, boardById));
 }
 
 /**
- * Pure resolver: short-ID prefix → session ID, with ambiguity treated as
- * not-found. Previously this silently routed to the lexicographically-
- * greatest match (newest by UUIDv7's time ordering); that was a deliberate
- * "don't 500 the page" choice when 8-char URLs were collision-prone, but
- * it could silently land a stale deep link on the *wrong* session. With
- * `SHORT_ID_LENGTH` now 24 (~290K same-ms IDs before 1% collision),
- * realistic new URLs are unambiguous, so we'd rather surface the failure
- * than mis-route.
- */
-export function resolveSessionFromShortIdPure(
-  sessionShortId: string,
-  sessionById: Map<string, { session_id: string }>,
-  onAmbiguous?: (shortId: string, matchCount: number) => void
-): string | null {
-  const matches = findByShortIdPrefix(
-    sessionShortId,
-    Array.from(sessionById.values(), (s) => ({ id: s.session_id }))
-  );
-  if (matches.length === 0) return null;
-  if (matches.length === 1) return matches[0].id;
-  onAmbiguous?.(sessionShortId, matches.length);
-  return null;
-}
-
-/**
- * Hook for bidirectional URL state synchronization
+ * Hook for bidirectional URL state synchronization.
  */
 export function useUrlState(options: UseUrlStateOptions) {
   const {
@@ -107,95 +86,121 @@ export function useUrlState(options: UseUrlStateOptions) {
     currentSessionId,
     boardById,
     sessionById,
+    worktreeById,
+    artifactById,
     onBoardChange,
     onSessionChange,
   } = options;
 
   const navigate = useNavigate();
   const location = useLocation();
-  const params = useParams<{ boardParam?: string; sessionParam?: string }>();
+  const params = useParams<{
+    boardParam?: string;
+    sessionShortId?: string;
+    worktreeShortId?: string;
+    artifactShortId?: string;
+  }>();
+  const recenterMap = useRecenterMap();
 
-  // Track if we're currently syncing to prevent loops
+  // Anti-loop / state-mirroring refs
   const syncingRef = useRef(false);
-  // Track the last URL we navigated to
   const lastNavigatedRef = useRef<string | null>(null);
-  // Track current state in refs to avoid dependency issues
   const currentBoardIdRef = useRef(currentBoardId);
   const currentSessionIdRef = useRef(currentSessionId);
-  // Track the last URL params we processed to avoid re-processing
   const lastUrlBoardParamRef = useRef<string | null>(null);
-  const lastUrlSessionParamRef = useRef<string | null>(null);
-  // Track whether we successfully resolved URL params (for retry logic)
-  const urlParamsResolvedRef = useRef<{ board: boolean; session: boolean }>({
+  const lastUrlSessionShortIdRef = useRef<string | null>(null);
+  const lastUrlWorktreeShortIdRef = useRef<string | null>(null);
+  const lastUrlArtifactShortIdRef = useRef<string | null>(null);
+  const urlParamsResolvedRef = useRef({
     board: false,
     session: false,
+    worktree: false,
+    artifact: false,
   });
+  // Pending deferred-recenter timer. Cleared before scheduling a new
+  // one so rapid URL changes don't fire a stale recenter after a newer
+  // navigation has already settled.
+  const deferredRecenterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Keep refs in sync with state
   useEffect(() => {
     currentBoardIdRef.current = currentBoardId;
     currentSessionIdRef.current = currentSessionId;
   }, [currentBoardId, currentSessionId]);
 
-  // Parse URL state
-  const urlBoardParam = params.boardParam || null;
-  const urlSessionParam = params.sessionParam || null;
+  // Clear any pending deferred-recenter timer on unmount so it can't
+  // fire after the consumer is gone.
+  useEffect(() => {
+    return () => {
+      if (deferredRecenterTimerRef.current) {
+        clearTimeout(deferredRecenterTimerRef.current);
+        deferredRecenterTimerRef.current = null;
+      }
+    };
+  }, []);
 
-  // Check if we're on a settings route (should not interfere with board URL state)
+  // Parse URL params (only one of session/worktree/artifact is non-null
+  // for any given URL — they're mutually exclusive paths)
+  const urlBoardParam = params.boardParam || null;
+  const urlSessionShortId = params.sessionShortId || null;
+  const urlWorktreeShortId = params.worktreeShortId || null;
+  const urlArtifactShortId = params.artifactShortId || null;
+
+  // Settings modal overlays the board route — don't fight it
   const isSettingsRoute = location.pathname.startsWith('/settings');
 
-  /**
-   * Build URL from state (Django-style with trailing slash)
-   */
+  /** Build the canonical URL for the current state.
+   *  - Session selected → `/s/<short>/` (board implicit)
+   *  - Board only → `/b/<slug-or-short>/`
+   *  - Neither → `/` */
   const buildUrl = useCallback(
     (boardId: string | null, sessionId: string | null): string => {
-      if (!boardId) return '/';
-
-      // Prefer slug over short ID for beautiful URLs
-      const board = boardById.get(boardId);
-      const boardParam = board?.slug || urlShortId(boardId);
-
-      let url = `/b/${boardParam}`;
-      if (sessionId) {
-        url += `/${urlShortId(sessionId)}`;
-      }
-      return `${url}/`; // Django-style trailing slash
+      if (sessionId) return sessionPath(sessionId as SessionID);
+      if (boardId) return buildBoardPath(boardId, boardById);
+      return '/';
     },
     [boardById]
   );
 
-  /**
-   * Update URL from state (state -> URL)
-   */
+  /** State→URL self-heal. Skipped when on a sticky deep-link
+   *  (`/w/<…>/` or `/a/<…>/`) so share URLs persist in the address bar. */
   const updateUrlFromState = useCallback(() => {
-    if (syncingRef.current) {
-      return;
+    if (syncingRef.current) return;
+
+    // Sticky deep links: don't overwrite `/w/<…>/` or `/a/<…>/` when
+    // no session is open. State (boardId, sessionId=null) can't
+    // represent these URLs, so the rewrite would erase them. The
+    // URL→state effect has already fired the recenter, so leaving the
+    // URL alone is safe.
+    if (currentSessionId === null) {
+      const focusPrefixes = [ENTITY_PATH_SEGMENTS.worktree, ENTITY_PATH_SEGMENTS.artifact];
+      if (focusPrefixes.some((seg) => location.pathname.startsWith(`/${seg}/`))) {
+        return;
+      }
     }
 
     const newUrl = buildUrl(currentBoardId, currentSessionId);
-    // Normalize current path (add trailing slash if missing)
     const currentPath = `${(location.pathname + location.search).replace(/\/$/, '')}/`;
     const normalizedNewUrl = `${newUrl.replace(/\/$/, '')}/`;
 
-    // Only navigate if URL actually changed
     if (normalizedNewUrl !== currentPath && newUrl !== lastNavigatedRef.current) {
       lastNavigatedRef.current = newUrl;
       navigate(newUrl, { replace: true });
     }
   }, [currentBoardId, currentSessionId, buildUrl, location.pathname, location.search, navigate]);
 
-  // Dev-only warning on ambiguous URL prefixes — see `resolveSessionFromShortIdPure`
-  // for the rationale. Returning `null` (not-found) is the production behavior.
-  const warnAmbiguous = useCallback((kind: 'board' | 'session', param: string, n: number) => {
-    if (import.meta.env.DEV) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[useUrlState] ${kind === 'board' ? 'Board' : 'Session'} short ID "${param}" matched ${n} ` +
-          `${kind === 'board' ? 'boards' : 'sessions'}; treating as not-found ` +
-          `(URL must use full UUID or unambiguous prefix).`
-      );
-    }
-  }, []);
+  const warnAmbiguous = useCallback(
+    (kind: 'board' | 'session' | 'worktree' | 'artifact', param: string, n: number) => {
+      if (import.meta.env.DEV) {
+        const capitalized = kind.charAt(0).toUpperCase() + kind.slice(1);
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[useUrlState] ${capitalized} short ID "${param}" matched ${n} ${kind}s; ` +
+            `treating as not-found (URL must use full UUID or unambiguous prefix).`
+        );
+      }
+    },
+    []
+  );
 
   const resolveBoardFromUrl = useCallback(
     (boardParam: string) =>
@@ -204,138 +209,205 @@ export function useUrlState(options: UseUrlStateOptions) {
   );
 
   const resolveSessionFromShortId = useCallback(
-    (sessionShortId: string) =>
-      resolveSessionFromShortIdPure(sessionShortId, sessionById, (p, n) =>
-        warnAmbiguous('session', p, n)
-      ),
+    (shortId: string) =>
+      resolveSessionFromShortIdPure(shortId, sessionById, (p, n) => warnAmbiguous('session', p, n)),
     [sessionById, warnAmbiguous]
   );
 
-  // Sync URL -> State on mount and URL changes
-  // Retries resolution when data becomes available (for deep links)
+  const resolveWorktreeFromShortId = useCallback(
+    (shortId: string) =>
+      resolveWorktreeFromShortIdPure(shortId, worktreeById, (p, n) =>
+        warnAmbiguous('worktree', p, n)
+      ),
+    [worktreeById, warnAmbiguous]
+  );
+
+  const resolveArtifactFromShortId = useCallback(
+    (shortId: string) =>
+      resolveArtifactFromShortIdPure(shortId, artifactById, (p, n) =>
+        warnAmbiguous('artifact', p, n)
+      ),
+    [artifactById, warnAmbiguous]
+  );
+
+  // URL → State sync
   useEffect(() => {
-    // Check if URL params actually changed
     const urlParamsChanged =
       urlBoardParam !== lastUrlBoardParamRef.current ||
-      urlSessionParam !== lastUrlSessionParamRef.current;
+      urlSessionShortId !== lastUrlSessionShortIdRef.current ||
+      urlWorktreeShortId !== lastUrlWorktreeShortIdRef.current ||
+      urlArtifactShortId !== lastUrlArtifactShortIdRef.current;
 
-    // Reset resolution tracking when URL params change
     if (urlParamsChanged) {
-      urlParamsResolvedRef.current = { board: false, session: false };
+      urlParamsResolvedRef.current = {
+        board: false,
+        session: false,
+        worktree: false,
+        artifact: false,
+      };
       lastUrlBoardParamRef.current = urlBoardParam;
-      lastUrlSessionParamRef.current = urlSessionParam;
+      lastUrlSessionShortIdRef.current = urlSessionShortId;
+      lastUrlWorktreeShortIdRef.current = urlWorktreeShortId;
+      lastUrlArtifactShortIdRef.current = urlArtifactShortId;
+      // Cancel any pending deferred recenter from the previous URL —
+      // not just when scheduling a new one. Otherwise `/w/old → /b/board/`
+      // within 50ms would let the old recenter fire after we've
+      // navigated away.
+      if (deferredRecenterTimerRef.current) {
+        clearTimeout(deferredRecenterTimerRef.current);
+        deferredRecenterTimerRef.current = null;
+      }
     }
 
-    // Skip if URL hasn't changed AND we've already resolved everything.
-    //
-    // Invariant: URL→State only re-asserts state when the URL itself changes.
-    // State clears (e.g. user closes panel → `selectedSessionId = null`) are
-    // intentional until State→URL catches up — do NOT "self-heal" state from
-    // a stale URL param here, or you'll fight intentional clears and the panel
-    // will reopen itself. Wipe-on-disconnect is prevented at source (App.tsx
-    // passes `client` directly; missing-board fallback is `connected`-gated).
     const fullyResolved =
-      urlParamsResolvedRef.current.board && urlParamsResolvedRef.current.session;
-    if (!urlParamsChanged && fullyResolved) {
-      return;
-    }
+      urlParamsResolvedRef.current.board &&
+      urlParamsResolvedRef.current.session &&
+      urlParamsResolvedRef.current.worktree &&
+      urlParamsResolvedRef.current.artifact;
+    if (!urlParamsChanged && fullyResolved) return;
 
-    if (!urlBoardParam) {
-      // No board in URL - if we have a current board, update URL
-      // But skip if we're on a settings route (settings modal overlays the board)
+    // No URL params at all → fall back to state→URL
+    if (!urlBoardParam && !urlSessionShortId && !urlWorktreeShortId && !urlArtifactShortId) {
       if (currentBoardIdRef.current && boardById.size > 0 && !isSettingsRoute) {
         updateUrlFromState();
       }
       return;
     }
 
-    // Only try to resolve if we have boards loaded
-    if (boardById.size === 0) {
-      return;
+    // Wait for required data to load before resolving
+    if (urlBoardParam && boardById.size === 0) return;
+    if (urlSessionShortId && (sessionById.size === 0 || worktreeById.size === 0)) return;
+    if (urlWorktreeShortId && worktreeById.size === 0) return;
+    if (urlArtifactShortId && artifactById.size === 0) return;
+
+    // Resolve each URL form into a (board, session, recenterTarget) triple.
+    // Only one of session/worktree/artifact is set per URL.
+    let resolvedBoardId: string | null = null;
+    let resolvedSessionId: string | null = null;
+    let recenterTargetId: string | null = null;
+
+    if (urlBoardParam) {
+      resolvedBoardId = resolveBoardFromUrl(urlBoardParam);
+      if (resolvedBoardId) urlParamsResolvedRef.current.board = true;
     }
 
-    // If we have a session param, also wait for sessions to load
-    if (urlSessionParam && sessionById.size === 0) {
-      return;
+    if (urlSessionShortId) {
+      resolvedSessionId = resolveSessionFromShortId(urlSessionShortId);
+      if (resolvedSessionId) {
+        urlParamsResolvedRef.current.session = true;
+        // Chain session → worktree → board to drive board switch + recenter
+        const session = sessionById.get(resolvedSessionId);
+        const wt = session?.worktree_id ? worktreeById.get(session.worktree_id) : undefined;
+        if (wt?.board_id) {
+          resolvedBoardId = wt.board_id;
+          recenterTargetId = wt.worktree_id;
+        }
+      }
+    } else {
+      urlParamsResolvedRef.current.session = true; // no session param → trivially "resolved"
     }
 
-    // Only sync from URL if the URL actually represents a different board/session
-    const resolvedBoardId = resolveBoardFromUrl(urlBoardParam);
-    const resolvedSessionId = urlSessionParam ? resolveSessionFromShortId(urlSessionParam) : null;
-
-    // Track resolution status
-    if (resolvedBoardId) {
-      urlParamsResolvedRef.current.board = true;
+    if (urlWorktreeShortId) {
+      const worktreeId = resolveWorktreeFromShortId(urlWorktreeShortId);
+      if (worktreeId) {
+        urlParamsResolvedRef.current.worktree = true;
+        const wt = worktreeById.get(worktreeId);
+        if (wt?.board_id) {
+          resolvedBoardId = wt.board_id;
+          recenterTargetId = worktreeId;
+        }
+      }
+    } else {
+      urlParamsResolvedRef.current.worktree = true;
     }
-    if (!urlSessionParam || resolvedSessionId) {
-      urlParamsResolvedRef.current.session = true;
+
+    if (urlArtifactShortId) {
+      const artifactId = resolveArtifactFromShortId(urlArtifactShortId);
+      if (artifactId) {
+        urlParamsResolvedRef.current.artifact = true;
+        const art = artifactById.get(artifactId);
+        if (art?.board_id) {
+          resolvedBoardId = art.board_id;
+          recenterTargetId = artifactId;
+        }
+      }
+    } else {
+      urlParamsResolvedRef.current.artifact = true;
     }
 
-    // Check if URL is different from current state (using refs)
     const boardChanged = resolvedBoardId && resolvedBoardId !== currentBoardIdRef.current;
-    const sessionChanged = resolvedSessionId !== currentSessionIdRef.current;
+    // Session URLs imply opening the panel; non-session URLs (board, worktree,
+    // artifact) imply closing it.
+    const targetSessionId = urlSessionShortId ? resolvedSessionId : null;
+    const sessionChanged = targetSessionId !== currentSessionIdRef.current;
 
     if (boardChanged || sessionChanged) {
       syncingRef.current = true;
-
-      if (boardChanged) {
-        onBoardChange(resolvedBoardId);
-      }
-
-      if (sessionChanged) {
-        onSessionChange(resolvedSessionId);
-      }
-
-      // Reset sync flag after a tick to allow state updates
+      if (boardChanged && resolvedBoardId) onBoardChange(resolvedBoardId);
+      if (sessionChanged) onSessionChange(targetSessionId);
       setTimeout(() => {
         syncingRef.current = false;
       }, 0);
     }
+
+    // Recenter on the deep-link target. Deferred so concurrent layout
+    // changes (the most common one: session panel opening/closing as
+    // the URL adds/drops the session segment) flush before we measure
+    // the viewport. Without this, setCenter would use stale dimensions
+    // and the target would land off-center. ~50ms covers React's
+    // commit + ResizeObserver firing; invisible against the 400ms
+    // recenter animation. Stored in a ref so a follow-up URL change
+    // can cancel a stale pending recenter before it fires.
+    if (urlParamsChanged && recenterTargetId && resolvedBoardId) {
+      // Any pending timer was cleared at the top of this effect when
+      // `urlParamsChanged` flipped — safe to schedule fresh.
+      const target = recenterTargetId;
+      const boardId = resolvedBoardId;
+      deferredRecenterTimerRef.current = setTimeout(() => {
+        deferredRecenterTimerRef.current = null;
+        recenterMap(target, { boardId });
+      }, 50);
+    }
   }, [
     urlBoardParam,
-    urlSessionParam,
+    urlSessionShortId,
+    urlWorktreeShortId,
+    urlArtifactShortId,
     boardById.size,
-    sessionById.size,
+    sessionById,
+    worktreeById,
+    artifactById,
     resolveBoardFromUrl,
     resolveSessionFromShortId,
+    resolveWorktreeFromShortId,
+    resolveArtifactFromShortId,
     onBoardChange,
     onSessionChange,
     updateUrlFromState,
     isSettingsRoute,
+    recenterMap,
   ]);
 
-  // Sync State -> URL when state changes
+  // State → URL self-heal
   useEffect(() => {
-    if (syncingRef.current) {
-      return;
-    }
+    if (syncingRef.current) return;
+    if (isSettingsRoute) return;
+    if (boardById.size === 0) return;
 
-    // Skip if we're on a settings route (settings modal overlays the board)
-    if (isSettingsRoute) {
-      return;
-    }
-
-    // Only sync if we have boards loaded
-    if (boardById.size === 0) {
-      return;
-    }
-
-    // Don't overwrite URL if we're still trying to resolve incoming URL params
-    // This prevents the race where we redirect before data is loaded
-    // For board+session URLs, wait for both to be resolved
-    if (urlBoardParam && !urlParamsResolvedRef.current.board) {
-      return;
-    }
-    if (urlSessionParam && !urlParamsResolvedRef.current.session) {
-      return;
-    }
+    // Don't overwrite URL while we're still trying to resolve incoming URL params
+    if (urlBoardParam && !urlParamsResolvedRef.current.board) return;
+    if (urlSessionShortId && !urlParamsResolvedRef.current.session) return;
+    if (urlWorktreeShortId && !urlParamsResolvedRef.current.worktree) return;
+    if (urlArtifactShortId && !urlParamsResolvedRef.current.artifact) return;
 
     updateUrlFromState();
-  }, [boardById.size, urlBoardParam, urlSessionParam, updateUrlFromState, isSettingsRoute]);
-
-  return {
+  }, [
+    boardById.size,
     urlBoardParam,
-    urlSessionParam,
-    buildUrl,
-  };
+    urlSessionShortId,
+    urlWorktreeShortId,
+    urlArtifactShortId,
+    updateUrlFromState,
+    isSettingsRoute,
+  ]);
 }

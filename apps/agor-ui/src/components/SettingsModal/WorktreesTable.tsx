@@ -1,6 +1,7 @@
 import type { AgorClient, Board, Repo, Session, Worktree } from '@agor-live/client';
 import { isAssistant } from '@agor-live/client';
 import {
+  AimOutlined,
   BranchesOutlined,
   DeleteOutlined,
   EditOutlined,
@@ -8,9 +9,22 @@ import {
   PlusOutlined,
   RobotOutlined,
 } from '@ant-design/icons';
-import { Button, Empty, Form, Input, Modal, Select, Space, Table, Typography, theme } from 'antd';
+import {
+  Button,
+  Empty,
+  Form,
+  Input,
+  Modal,
+  Select,
+  Space,
+  Table,
+  Tooltip,
+  Typography,
+  theme,
+} from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { mapToArray } from '@/utils/mapHelpers';
+import { useAppNavigation } from '../../hooks/useAppNavigation';
 import { ArchiveDeleteWorktreeModal } from '../ArchiveDeleteWorktreeModal';
 import { ArchiveToggleButton } from '../ArchiveToggleButton';
 import { WorktreeFormFields } from '../WorktreeFormFields';
@@ -44,6 +58,9 @@ interface WorktreesTableProps {
   onRowClick?: (worktree: Worktree) => void;
   onStartEnvironment?: (worktreeId: string) => void;
   onStopEnvironment?: (worktreeId: string) => void;
+  /** Close the parent Settings modal. Used by the recenter action so the
+   *  canvas isn't obscured by the modal after pan/zoom. */
+  onClose?: () => void;
 }
 
 export const WorktreesTable: React.FC<WorktreesTableProps> = ({
@@ -58,10 +75,26 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
   onRowClick,
   onStartEnvironment,
   onStopEnvironment,
+  onClose,
 }) => {
   const repos = mapToArray(repoById);
   const boards = mapToArray(boardById);
   const { token } = theme.useToken();
+  // Reuses the `worktreeById` prop so we don't read the same data via
+  // both props and context. Only goToWorktree is used from this table.
+  const navigation = useAppNavigation({ boardById, worktreeById });
+
+  const handleRecenter = useCallback(
+    (worktree: Worktree) => {
+      // Close the modal first so the canvas isn't obscured by it after
+      // the pan/zoom. goToWorktree pushes the flat `/w/<short>/` URL;
+      // useUrlState's URL→state effect resolves the worktree, switches
+      // boards if needed, and fires the recenter via recenterMap.
+      onClose?.();
+      navigation.goToWorktree(worktree.worktree_id);
+    },
+    [onClose, navigation]
+  );
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [form] = Form.useForm();
   const [useSameBranchName, setUseSameBranchName] = useState(true);
@@ -337,9 +370,22 @@ export const WorktreesTable: React.FC<WorktreesTableProps> = ({
     {
       title: 'Actions',
       key: 'actions',
-      width: 130,
+      width: 160,
       render: (_: unknown, record: Worktree) => (
         <Space size="small">
+          {!record.archived && record.board_id && (
+            <Tooltip title="Center map on worktree">
+              <Button
+                type="text"
+                size="small"
+                icon={<AimOutlined />}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleRecenter(record);
+                }}
+              />
+            </Tooltip>
+          )}
           <ArchiveToggleButton
             archived={record.archived}
             onToggle={(nextArchived) => {

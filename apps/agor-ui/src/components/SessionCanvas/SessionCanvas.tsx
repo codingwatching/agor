@@ -56,6 +56,10 @@ import './SessionCanvas.css';
 import { shortId } from '@agor-live/client';
 import { mapToArray } from '@/utils/mapHelpers';
 import { DEFAULT_BACKGROUNDS } from '../../constants/ui';
+import {
+  useConsumePendingRecenter,
+  useRegisterRecenter,
+} from '../../contexts/CanvasNavigationContext';
 import { useMutationGate } from '../../contexts/ConnectionContext';
 import { useCursorTracking } from '../../hooks/useCursorTracking';
 import { usePresence } from '../../hooks/usePresence';
@@ -855,6 +859,44 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
       []
     );
 
+    // Pan/zoom the canvas onto any React Flow node by id (worktree card,
+    // artifact, comment, etc.). Returns true if the node was found on the
+    // current board; callers (conversation header, settings tables) can
+    // surface a fallback when the node lives elsewhere. Uses the node's
+    // absolute position so zone-pinned children (with `parentId` set)
+    // recenter correctly.
+    //
+    // ID-shape note: worktree nodes use `worktree_id` as their React Flow
+    // `id`, but artifact nodes use `board_object.object_id` (with the
+    // logical `artifact_id` on `data.artifactId`). Rather than thread a
+    // boardObjectById lookup through every caller, we accept the logical
+    // id and fall back to a `data.artifactId` scan when `getNode` misses.
+    const recenterOnNode = useCallback((nodeId: string): boolean => {
+      const instance = reactFlowInstanceRef.current;
+      if (!instance) return false;
+      const allNodes = instance.getNodes();
+      let node = instance.getNode(nodeId);
+      if (!node) {
+        // Logical-id fallback: artifact callers pass artifact_id; find
+        // the node whose data references it. Extendable to other
+        // logical-id mismatches in the future.
+        node = allNodes.find((n) => n.data?.artifactId === nodeId);
+      }
+      if (!node) return false;
+      const absPos = getNodeAbsolutePosition(node, allNodes);
+      const width = node.width ?? 500;
+      const height = node.height ?? 200;
+      instance.setCenter(absPos.x + width / 2, absPos.y + height / 2, {
+        zoom: instance.getZoom(),
+        duration: 400,
+      });
+      return true;
+    }, []);
+
+    useRegisterRecenter(recenterOnNode);
+
+    const consumePendingRecenter = useConsumePendingRecenter();
+
     // Cursor tracking hook
     useCursorTracking({
       client,
@@ -1314,6 +1356,15 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
 
       // Use a small delay to ensure DOM has updated
       const timer = setTimeout(() => {
+        // Cross-board recenter: if someone asked to recenter on a node that
+        // lives on this (newly-loaded) board, honor it instead of fitView.
+        // Falls back to fitView when the pending target isn't on this board
+        // either (stale/unknown id).
+        const pendingId = consumePendingRecenter();
+        if (pendingId && recenterOnNode(pendingId)) {
+          lastFitBoardIdRef.current = board?.board_id ?? null;
+          return;
+        }
         reactFlowInstanceRef.current?.fitView({
           padding: 0.2, // 20% padding around nodes
           minZoom: 0.1, // Allow zooming out far enough to see widely-spaced nodes
@@ -1325,7 +1376,7 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
       }, 100);
 
       return () => clearTimeout(timer);
-    }, [isReactFlowReady, nodes.length, board?.board_id]); // isReactFlowReady + board_id triggers check, nodes.length gates execution
+    }, [isReactFlowReady, nodes.length, board?.board_id, consumePendingRecenter, recenterOnNode]);
 
     // Intercept onNodesChange to detect resize events
     const onNodesChange = useCallback(

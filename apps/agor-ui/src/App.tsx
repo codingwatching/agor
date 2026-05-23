@@ -2,6 +2,7 @@ import type {
   Artifact,
   AuthCheckResult,
   Board,
+  BoardID,
   CreateLocalRepoRequest,
   CreateMCPServerInput,
   CreateRepoRequest,
@@ -17,7 +18,13 @@ import type {
   UUID,
   Worktree,
 } from '@agor-live/client';
-import { getRepoReferenceOptions } from '@agor-live/client';
+import {
+  boardPath,
+  ENTITY_PATH_SEGMENTS,
+  getRepoReferenceOptions,
+  sessionPath,
+  UI_MOUNT_PATH,
+} from '@agor-live/client';
 import { Alert, App as AntApp, ConfigProvider, Spin, theme } from 'antd';
 import { useEffect, useState } from 'react';
 import { BrowserRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
@@ -30,6 +37,7 @@ import { LoginPage } from './components/LoginPage';
 import { MobileApp } from './components/mobile/MobileApp';
 import { OnboardingWizard } from './components/OnboardingWizard';
 import type { WorktreeUpdate } from './components/WorktreeModal/tabs/GeneralTab';
+import { CanvasNavigationProvider } from './contexts/CanvasNavigationContext';
 import { ConnectionProvider } from './contexts/ConnectionContext';
 import { ServicesConfigContext } from './contexts/ServicesConfigContext';
 import { ThemeProvider, useTheme } from './contexts/ThemeContext';
@@ -290,11 +298,13 @@ function AppContent() {
       }
     }
 
-    // Navigate to the user's board + session, or to the boards list if they skipped
-    if (result.boardId && result.sessionId) {
-      navigate(`/b/${result.boardId}/${result.sessionId}/`);
+    // Navigate to the user's board + session, or to the boards list if they
+    // skipped. Use the centralized path builders — the old
+    // `/b/<board>/<session>/` shape was removed when we flattened entity URLs.
+    if (result.sessionId) {
+      navigate(sessionPath(result.sessionId as SessionID));
     } else if (result.boardId) {
-      navigate(`/b/${result.boardId}/`);
+      navigate(boardPath(result.boardId as BoardID, boardById.get(result.boardId)?.slug));
     } else {
       navigate('/');
     }
@@ -1303,6 +1313,89 @@ function AppContent() {
     setOpenNewWorktree(false);
   };
 
+  // All desktop entity URLs (/b/, /s/, /w/, /a/) render the same
+  // AgorApp — the multiple routes exist so react-router's useParams
+  // (read inside useUrlState) populates the right named params for
+  // each URL shape (board / session / worktree / artifact). Extract
+  // the element once instead of duplicating the (long) prop list.
+  const desktopAppElement = (
+    <AgorApp
+      client={client}
+      user={currentUser}
+      connected={connected}
+      connecting={connecting}
+      sessionById={sessionById}
+      sessionsByWorktree={sessionsByWorktree}
+      availableAgents={AVAILABLE_AGENTS}
+      boardById={boardById}
+      boardObjectById={boardObjectById}
+      commentById={commentById}
+      cardById={cardById}
+      cardTypeById={cardTypeById}
+      repoById={repoById}
+      worktreeById={worktreeById}
+      userById={userById}
+      mcpServerById={mcpServerById}
+      sessionMcpServerIds={sessionMcpServerIds}
+      userAuthenticatedMcpServerIds={userAuthenticatedMcpServerIds}
+      initialBoardId={Array.from(boardById.values())[0]?.board_id}
+      openSettingsTab={settingsTabToOpen}
+      onSettingsClose={handleSettingsClose}
+      openUserSettings={openUserSettings}
+      onUserSettingsClose={handleUserSettingsClose}
+      openNewWorktreeModal={openNewWorktree}
+      onNewWorktreeModalClose={handleNewWorktreeModalClose}
+      onCreateSession={handleCreateSession}
+      onForkSession={handleForkSession}
+      onBtwForkSession={handleBtwForkSession}
+      onSpawnSession={handleSpawnSession}
+      onSendPrompt={handleSendPrompt}
+      onUpdateSession={handleUpdateSession}
+      onDeleteSession={handleDeleteSession}
+      onCreateBoard={handleCreateBoard}
+      onUpdateBoard={handleUpdateBoard}
+      onDeleteBoard={handleDeleteBoard}
+      onArchiveBoard={handleArchiveBoard}
+      onUnarchiveBoard={handleUnarchiveBoard}
+      onCreateRepo={handleCreateRepo}
+      onCreateLocalRepo={handleCreateLocalRepo}
+      onUpdateRepo={handleUpdateRepo}
+      onDeleteRepo={handleDeleteRepo}
+      onArchiveOrDeleteWorktree={handleArchiveOrDeleteWorktree}
+      onUnarchiveWorktree={handleUnarchiveWorktree}
+      onUpdateWorktree={handleUpdateWorktree}
+      onCreateWorktree={handleCreateWorktree}
+      onStartEnvironment={handleStartEnvironment}
+      onStopEnvironment={handleStopEnvironment}
+      onNukeEnvironment={handleNukeEnvironment}
+      onExecuteScheduleNow={handleExecuteScheduleNow}
+      onCreateUser={handleCreateUser}
+      onUpdateUser={handleUpdateUser}
+      onDeleteUser={handleDeleteUser}
+      onCreateMCPServer={handleCreateMCPServer}
+      onDeleteMCPServer={handleDeleteMCPServer}
+      gatewayChannelById={gatewayChannelById}
+      onCreateGatewayChannel={handleCreateGatewayChannel}
+      onUpdateGatewayChannel={handleUpdateGatewayChannel}
+      onDeleteGatewayChannel={handleDeleteGatewayChannel}
+      artifactById={artifactById}
+      onUpdateArtifact={handleUpdateArtifact}
+      onDeleteArtifact={handleDeleteArtifact}
+      onUpdateSessionMcpServers={handleUpdateSessionMcpServers}
+      onUpdateSessionEnvSelections={handleUpdateSessionEnvSelections}
+      onSendComment={handleSendComment}
+      onReplyComment={handleReplyComment}
+      onResolveComment={handleResolveComment}
+      onToggleReaction={handleToggleReaction}
+      onDeleteComment={handleDeleteComment}
+      onLogout={logout}
+      onRetryConnection={retryConnection}
+      instanceLabel={instanceConfig?.label}
+      instanceDescription={instanceConfig?.description}
+      webTerminalEnabled={featuresConfig?.webTerminal === true}
+    />
+  );
+
   // Render main app
   return (
     <ServicesConfigContext.Provider value={servicesConfig}>
@@ -1391,257 +1484,31 @@ function AppContent() {
             }
           />
 
-          {/* Desktop routes - board with session (Django-style trailing slash) */}
+          {/* Desktop routes — flat entity URLs. Boards have their own
+              path because they're a destination; sub-entities (session,
+              worktree, artifact) get top-level paths keyed by short ID
+              so they're stable across board moves. The app resolves the
+              entity at click time, looks up its current board, and
+              switches if needed. Path segments come from the shared
+              `ENTITY_PATH_SEGMENTS` constant so this list and the
+              URL/path builders can't drift. See
+              `packages/core/src/utils/url.ts`. */}
+          <Route path={`/${ENTITY_PATH_SEGMENTS.board}/:boardParam/`} element={desktopAppElement} />
           <Route
-            path="/b/:boardParam/:sessionParam/"
-            element={
-              <>
-                <AgorApp
-                  client={client}
-                  user={currentUser}
-                  connected={connected}
-                  connecting={connecting}
-                  sessionById={sessionById}
-                  sessionsByWorktree={sessionsByWorktree}
-                  availableAgents={AVAILABLE_AGENTS}
-                  boardById={boardById}
-                  boardObjectById={boardObjectById}
-                  commentById={commentById}
-                  cardById={cardById}
-                  cardTypeById={cardTypeById}
-                  repoById={repoById}
-                  worktreeById={worktreeById}
-                  userById={userById}
-                  mcpServerById={mcpServerById}
-                  sessionMcpServerIds={sessionMcpServerIds}
-                  userAuthenticatedMcpServerIds={userAuthenticatedMcpServerIds}
-                  initialBoardId={Array.from(boardById.values())[0]?.board_id}
-                  openSettingsTab={settingsTabToOpen}
-                  onSettingsClose={handleSettingsClose}
-                  openUserSettings={openUserSettings}
-                  onUserSettingsClose={handleUserSettingsClose}
-                  openNewWorktreeModal={openNewWorktree}
-                  onNewWorktreeModalClose={handleNewWorktreeModalClose}
-                  onCreateSession={handleCreateSession}
-                  onForkSession={handleForkSession}
-                  onBtwForkSession={handleBtwForkSession}
-                  onSpawnSession={handleSpawnSession}
-                  onSendPrompt={handleSendPrompt}
-                  onUpdateSession={handleUpdateSession}
-                  onDeleteSession={handleDeleteSession}
-                  onCreateBoard={handleCreateBoard}
-                  onUpdateBoard={handleUpdateBoard}
-                  onDeleteBoard={handleDeleteBoard}
-                  onArchiveBoard={handleArchiveBoard}
-                  onUnarchiveBoard={handleUnarchiveBoard}
-                  onCreateRepo={handleCreateRepo}
-                  onCreateLocalRepo={handleCreateLocalRepo}
-                  onUpdateRepo={handleUpdateRepo}
-                  onDeleteRepo={handleDeleteRepo}
-                  onArchiveOrDeleteWorktree={handleArchiveOrDeleteWorktree}
-                  onUnarchiveWorktree={handleUnarchiveWorktree}
-                  onUpdateWorktree={handleUpdateWorktree}
-                  onCreateWorktree={handleCreateWorktree}
-                  onStartEnvironment={handleStartEnvironment}
-                  onStopEnvironment={handleStopEnvironment}
-                  onNukeEnvironment={handleNukeEnvironment}
-                  onExecuteScheduleNow={handleExecuteScheduleNow}
-                  onCreateUser={handleCreateUser}
-                  onUpdateUser={handleUpdateUser}
-                  onDeleteUser={handleDeleteUser}
-                  onCreateMCPServer={handleCreateMCPServer}
-                  onDeleteMCPServer={handleDeleteMCPServer}
-                  gatewayChannelById={gatewayChannelById}
-                  onCreateGatewayChannel={handleCreateGatewayChannel}
-                  onUpdateGatewayChannel={handleUpdateGatewayChannel}
-                  onDeleteGatewayChannel={handleDeleteGatewayChannel}
-                  artifactById={artifactById}
-                  onUpdateArtifact={handleUpdateArtifact}
-                  onDeleteArtifact={handleDeleteArtifact}
-                  onUpdateSessionMcpServers={handleUpdateSessionMcpServers}
-                  onUpdateSessionEnvSelections={handleUpdateSessionEnvSelections}
-                  onSendComment={handleSendComment}
-                  onReplyComment={handleReplyComment}
-                  onResolveComment={handleResolveComment}
-                  onToggleReaction={handleToggleReaction}
-                  onDeleteComment={handleDeleteComment}
-                  onLogout={logout}
-                  onRetryConnection={retryConnection}
-                  instanceLabel={instanceConfig?.label}
-                  instanceDescription={instanceConfig?.description}
-                  webTerminalEnabled={featuresConfig?.webTerminal === true}
-                />
-              </>
-            }
+            path={`/${ENTITY_PATH_SEGMENTS.session}/:sessionShortId/`}
+            element={desktopAppElement}
+          />
+          <Route
+            path={`/${ENTITY_PATH_SEGMENTS.worktree}/:worktreeShortId/`}
+            element={desktopAppElement}
+          />
+          <Route
+            path={`/${ENTITY_PATH_SEGMENTS.artifact}/:artifactShortId/`}
+            element={desktopAppElement}
           />
 
-          {/* Desktop routes - board only (Django-style trailing slash) */}
-          <Route
-            path="/b/:boardParam/"
-            element={
-              <>
-                <AgorApp
-                  client={client}
-                  user={currentUser}
-                  connected={connected}
-                  connecting={connecting}
-                  sessionById={sessionById}
-                  sessionsByWorktree={sessionsByWorktree}
-                  availableAgents={AVAILABLE_AGENTS}
-                  boardById={boardById}
-                  boardObjectById={boardObjectById}
-                  commentById={commentById}
-                  cardById={cardById}
-                  cardTypeById={cardTypeById}
-                  repoById={repoById}
-                  worktreeById={worktreeById}
-                  userById={userById}
-                  mcpServerById={mcpServerById}
-                  sessionMcpServerIds={sessionMcpServerIds}
-                  userAuthenticatedMcpServerIds={userAuthenticatedMcpServerIds}
-                  initialBoardId={Array.from(boardById.values())[0]?.board_id}
-                  openSettingsTab={settingsTabToOpen}
-                  onSettingsClose={handleSettingsClose}
-                  openUserSettings={openUserSettings}
-                  onUserSettingsClose={handleUserSettingsClose}
-                  openNewWorktreeModal={openNewWorktree}
-                  onNewWorktreeModalClose={handleNewWorktreeModalClose}
-                  onCreateSession={handleCreateSession}
-                  onForkSession={handleForkSession}
-                  onBtwForkSession={handleBtwForkSession}
-                  onSpawnSession={handleSpawnSession}
-                  onSendPrompt={handleSendPrompt}
-                  onUpdateSession={handleUpdateSession}
-                  onDeleteSession={handleDeleteSession}
-                  onCreateBoard={handleCreateBoard}
-                  onUpdateBoard={handleUpdateBoard}
-                  onDeleteBoard={handleDeleteBoard}
-                  onArchiveBoard={handleArchiveBoard}
-                  onUnarchiveBoard={handleUnarchiveBoard}
-                  onCreateRepo={handleCreateRepo}
-                  onCreateLocalRepo={handleCreateLocalRepo}
-                  onUpdateRepo={handleUpdateRepo}
-                  onDeleteRepo={handleDeleteRepo}
-                  onArchiveOrDeleteWorktree={handleArchiveOrDeleteWorktree}
-                  onUnarchiveWorktree={handleUnarchiveWorktree}
-                  onUpdateWorktree={handleUpdateWorktree}
-                  onCreateWorktree={handleCreateWorktree}
-                  onStartEnvironment={handleStartEnvironment}
-                  onStopEnvironment={handleStopEnvironment}
-                  onNukeEnvironment={handleNukeEnvironment}
-                  onExecuteScheduleNow={handleExecuteScheduleNow}
-                  onCreateUser={handleCreateUser}
-                  onUpdateUser={handleUpdateUser}
-                  onDeleteUser={handleDeleteUser}
-                  onCreateMCPServer={handleCreateMCPServer}
-                  onDeleteMCPServer={handleDeleteMCPServer}
-                  gatewayChannelById={gatewayChannelById}
-                  onCreateGatewayChannel={handleCreateGatewayChannel}
-                  onUpdateGatewayChannel={handleUpdateGatewayChannel}
-                  onDeleteGatewayChannel={handleDeleteGatewayChannel}
-                  artifactById={artifactById}
-                  onUpdateArtifact={handleUpdateArtifact}
-                  onDeleteArtifact={handleDeleteArtifact}
-                  onUpdateSessionMcpServers={handleUpdateSessionMcpServers}
-                  onUpdateSessionEnvSelections={handleUpdateSessionEnvSelections}
-                  onSendComment={handleSendComment}
-                  onReplyComment={handleReplyComment}
-                  onResolveComment={handleResolveComment}
-                  onToggleReaction={handleToggleReaction}
-                  onDeleteComment={handleDeleteComment}
-                  onLogout={logout}
-                  onRetryConnection={retryConnection}
-                  instanceLabel={instanceConfig?.label}
-                  instanceDescription={instanceConfig?.description}
-                  webTerminalEnabled={featuresConfig?.webTerminal === true}
-                />
-              </>
-            }
-          />
-
-          {/* Desktop routes - fallback for root path */}
-          <Route
-            path="/*"
-            element={
-              <>
-                <AgorApp
-                  client={client}
-                  user={currentUser}
-                  connected={connected}
-                  connecting={connecting}
-                  sessionById={sessionById}
-                  sessionsByWorktree={sessionsByWorktree}
-                  availableAgents={AVAILABLE_AGENTS}
-                  boardById={boardById}
-                  boardObjectById={boardObjectById}
-                  commentById={commentById}
-                  cardById={cardById}
-                  cardTypeById={cardTypeById}
-                  repoById={repoById}
-                  worktreeById={worktreeById}
-                  userById={userById}
-                  mcpServerById={mcpServerById}
-                  sessionMcpServerIds={sessionMcpServerIds}
-                  userAuthenticatedMcpServerIds={userAuthenticatedMcpServerIds}
-                  initialBoardId={Array.from(boardById.values())[0]?.board_id}
-                  openSettingsTab={settingsTabToOpen}
-                  onSettingsClose={handleSettingsClose}
-                  openUserSettings={openUserSettings}
-                  onUserSettingsClose={handleUserSettingsClose}
-                  openNewWorktreeModal={openNewWorktree}
-                  onNewWorktreeModalClose={handleNewWorktreeModalClose}
-                  onCreateSession={handleCreateSession}
-                  onForkSession={handleForkSession}
-                  onBtwForkSession={handleBtwForkSession}
-                  onSpawnSession={handleSpawnSession}
-                  onSendPrompt={handleSendPrompt}
-                  onUpdateSession={handleUpdateSession}
-                  onDeleteSession={handleDeleteSession}
-                  onCreateBoard={handleCreateBoard}
-                  onUpdateBoard={handleUpdateBoard}
-                  onDeleteBoard={handleDeleteBoard}
-                  onArchiveBoard={handleArchiveBoard}
-                  onUnarchiveBoard={handleUnarchiveBoard}
-                  onCreateRepo={handleCreateRepo}
-                  onCreateLocalRepo={handleCreateLocalRepo}
-                  onUpdateRepo={handleUpdateRepo}
-                  onDeleteRepo={handleDeleteRepo}
-                  onArchiveOrDeleteWorktree={handleArchiveOrDeleteWorktree}
-                  onUnarchiveWorktree={handleUnarchiveWorktree}
-                  onUpdateWorktree={handleUpdateWorktree}
-                  onCreateWorktree={handleCreateWorktree}
-                  onStartEnvironment={handleStartEnvironment}
-                  onStopEnvironment={handleStopEnvironment}
-                  onNukeEnvironment={handleNukeEnvironment}
-                  onExecuteScheduleNow={handleExecuteScheduleNow}
-                  onCreateUser={handleCreateUser}
-                  onUpdateUser={handleUpdateUser}
-                  onDeleteUser={handleDeleteUser}
-                  onCreateMCPServer={handleCreateMCPServer}
-                  onDeleteMCPServer={handleDeleteMCPServer}
-                  gatewayChannelById={gatewayChannelById}
-                  onCreateGatewayChannel={handleCreateGatewayChannel}
-                  onUpdateGatewayChannel={handleUpdateGatewayChannel}
-                  onDeleteGatewayChannel={handleDeleteGatewayChannel}
-                  artifactById={artifactById}
-                  onUpdateArtifact={handleUpdateArtifact}
-                  onDeleteArtifact={handleDeleteArtifact}
-                  onUpdateSessionMcpServers={handleUpdateSessionMcpServers}
-                  onUpdateSessionEnvSelections={handleUpdateSessionEnvSelections}
-                  onSendComment={handleSendComment}
-                  onReplyComment={handleReplyComment}
-                  onResolveComment={handleResolveComment}
-                  onToggleReaction={handleToggleReaction}
-                  onDeleteComment={handleDeleteComment}
-                  onLogout={logout}
-                  onRetryConnection={retryConnection}
-                  instanceLabel={instanceConfig?.label}
-                  instanceDescription={instanceConfig?.description}
-                  webTerminalEnabled={featuresConfig?.webTerminal === true}
-                />
-              </>
-            }
-          />
+          {/* Fallback for unknown / root paths */}
+          <Route path="/*" element={desktopAppElement} />
         </Routes>
       </ConnectionProvider>
     </ServicesConfigContext.Provider>
@@ -1655,7 +1522,13 @@ function AppWrapper() {
     <ConfigProvider theme={getCurrentThemeConfig()}>
       <AntApp>
         <ErrorBoundary variant="global">
-          <AppContent />
+          {/* CanvasNavigationProvider lives outside the agor `App` body so
+              hooks called in that body (useUrlState, useAppNavigation) can
+              read the canvas-nav context. The inner App component used to
+              wrap its own JSX in this provider; that's been removed. */}
+          <CanvasNavigationProvider>
+            <AppContent />
+          </CanvasNavigationProvider>
         </ErrorBoundary>
       </AntApp>
     </ConfigProvider>
@@ -1663,8 +1536,11 @@ function AppWrapper() {
 }
 
 function App() {
-  // Determine base path: '/ui' in production (served by daemon), '/' in dev mode
-  const basename = import.meta.env.BASE_URL === '/ui/' ? '/ui' : '';
+  // Determine base path: UI_MOUNT_PATH ('/ui') in production (served by
+  // daemon at that prefix), '' in dev mode (vite serves at /). Pulled
+  // from the shared core constant so this stays consistent with the
+  // daemon's static-serving block and the server-side URL builders.
+  const basename = import.meta.env.BASE_URL === `${UI_MOUNT_PATH}/` ? UI_MOUNT_PATH : '';
 
   return (
     <BrowserRouter basename={basename}>

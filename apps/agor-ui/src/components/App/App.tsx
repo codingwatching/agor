@@ -33,6 +33,8 @@ import {
 import { mapToArray } from '@/utils/mapHelpers';
 import { AppActionsProvider } from '../../contexts/AppActionsContext';
 import { AppEntityDataProvider, AppLiveDataProvider } from '../../contexts/AppDataContext';
+import { useRegisterBoardSwitcher } from '../../contexts/CanvasNavigationContext';
+import { useAppNavigation } from '../../hooks/useAppNavigation';
 import { useBoardTitle } from '../../hooks/useBoardTitle';
 import { useEventStream } from '../../hooks/useEventStream';
 import { useFaviconStatus } from '../../hooks/useFaviconStatus';
@@ -65,6 +67,15 @@ import { WorktreeModal, type WorktreeModalTab } from '../WorktreeModal';
 import type { WorktreeUpdate } from '../WorktreeModal/tabs/GeneralTab';
 
 const { Content } = Layout;
+
+/** Lives inside CanvasNavigationProvider so cross-board recenter calls can
+ *  ask App to switch boards. Renders nothing. */
+const BoardSwitcherBridge: React.FC<{ setCurrentBoardId: (id: string) => void }> = ({
+  setCurrentBoardId,
+}) => {
+  useRegisterBoardSwitcher(setCurrentBoardId);
+  return null;
+};
 
 export interface AppProps {
   client: AgorClient | null;
@@ -375,12 +386,26 @@ export const App: React.FC<AppProps> = ({
     currentSessionId: effectiveSelectedSessionId,
     boardById,
     sessionById,
+    worktreeById,
+    artifactById,
     onBoardChange: (boardId) => {
       setCurrentBoardIdInternal(boardId);
     },
     onSessionChange: (sessionId) => {
       setSelectedSessionId(sessionId);
     },
+  });
+
+  // Central navigation API. Every deliberate "go to X" call site routes
+  // through this so the URL stays the single source of truth and the back
+  // button restores prior board+session+camera. The hook reads live data
+  // via refs internally so its function identities stay stable across
+  // socket churn — important because they flow into memoized children.
+  const navigation = useAppNavigation({
+    boardById,
+    sessionById,
+    worktreeById,
+    artifactById,
   });
 
   // Wrapper to update board ID (updates both state and URL via hook)
@@ -457,9 +482,12 @@ export const App: React.FC<AppProps> = ({
 
   // Stable handler so SessionPanel's React.memo bailout isn't defeated by a
   // fresh inline arrow on every App render (App re-renders on every live patch).
+  // Routes through URL nav so the back button works (push, not replace).
+  // With the flat entity-URL scheme there's no `closeSession` — closing
+  // the panel is the same as navigating to the board we're already on.
   const handleCloseSessionPanel = useCallback(() => {
-    setSelectedSessionId(null);
-  }, []);
+    if (currentBoardId) navigation.goToBoard(currentBoardId);
+  }, [navigation, currentBoardId]);
 
   const handleCloseTerminal = () => {
     setTerminalOpen(false);
@@ -517,12 +545,14 @@ export const App: React.FC<AppProps> = ({
     );
   };
 
-  // Refs for the data this handler reads. Using refs (vs useCallback deps)
-  // means `handleSessionClick` keeps a stable identity across renders even
-  // as `sessionById` / `worktreeById` change on every socket event. Without
-  // this, the handler reference flips on every patch and gets passed into
-  // SessionCanvas → initialNodes deps → recomputed → every WorktreeCard
-  // memo fails. Pattern: ref holds latest values; closure never changes.
+  // Refs for the data `handleSessionClick` reads. Using refs (vs
+  // useCallback deps) keeps the handler's identity stable across
+  // socket-driven map churn — important because it flows through
+  // SessionCanvas → initialNodes deps and a flipping identity would
+  // cascade re-renders into every WorktreeCard. Inline `useRef(...)`
+  // rather than going through a helper so biome's
+  // `useExhaustiveDependencies` heuristic recognizes the refs as
+  // stable and doesn't false-positive on `.current.get` reads.
   const sessionByIdRef = useRef(sessionById);
   sessionByIdRef.current = sessionById;
   const worktreeByIdRef = useRef(worktreeById);
@@ -530,8 +560,6 @@ export const App: React.FC<AppProps> = ({
 
   const handleSessionClick = useCallback(
     (sessionId: string) => {
-      setSelectedSessionId(sessionId);
-
       const session = sessionByIdRef.current.get(sessionId);
 
       // Best-effort: clear highlight flags when opening the conversation.
@@ -553,8 +581,13 @@ export const App: React.FC<AppProps> = ({
           .patch(worktree.worktree_id, { needs_attention: false })
           .catch(() => {});
       }
+
+      // Route through URL nav so deep links / back-forward / cross-board
+      // recenter all funnel through the same pipe. setSelectedSessionId
+      // happens via useUrlState's onSessionChange callback.
+      navigation.goToSession(sessionId);
     },
-    [client]
+    [client, navigation]
   );
 
   const handlePermissionDecision = useCallback(
@@ -747,6 +780,7 @@ export const App: React.FC<AppProps> = ({
     <AppEntityDataProvider value={appEntityDataValue}>
       <AppLiveDataProvider value={appLiveDataValue}>
         <AppActionsProvider value={appActionsValue}>
+          <BoardSwitcherBridge setCurrentBoardId={setCurrentBoardId} />
           <Layout style={{ height: '100vh' }}>
             <AppHeader
               user={user}
@@ -780,7 +814,7 @@ export const App: React.FC<AppProps> = ({
               hasUserMentions={hasUserMentions}
               boards={mapToArray(boardById)}
               currentBoardId={currentBoardId}
-              onBoardChange={setCurrentBoardId}
+              onBoardChange={navigation.goToBoard}
               worktreeById={worktreeById}
               boardById={boardById}
               onUserClick={(
@@ -788,9 +822,10 @@ export const App: React.FC<AppProps> = ({
                 boardId?: BoardID,
                 cursor?: { x: number; y: number }
               ) => {
-                // Navigate to the user's board
+                // Navigate to the user's board (pushes history, so back
+                // button returns to the previous board)
                 if (boardId) {
-                  setCurrentBoardId(boardId);
+                  navigation.goToBoard(boardId);
                   // TODO: If cursor position is provided, we could pan to that position
                   // This would require exposing a method on SessionCanvasRef
                 }
@@ -1123,7 +1158,7 @@ export const App: React.FC<AppProps> = ({
               onClose={() => setListDrawerOpen(false)}
               boards={mapToArray(boardById)}
               currentBoardId={currentBoardId}
-              onBoardChange={setCurrentBoardId}
+              onBoardChange={navigation.goToBoard}
               sessionsByWorktree={sessionsByWorktree}
               worktreeById={worktreeById}
               repoById={repoById}
