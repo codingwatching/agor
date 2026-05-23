@@ -381,14 +381,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             repoById={repoById}
             boardById={boardById}
             sessionsByWorktree={sessionsByWorktree}
+            userById={userById}
             client={client}
             onArchiveOrDelete={onArchiveOrDeleteWorktree}
             onRowClick={handleWorktreeRowClick}
             onCreateWorktree={onCreateWorktree}
             onUpdateWorktree={onUpdateWorktree}
             onCreateRepo={onCreateRepo}
-            onStartEnvironment={onStartEnvironment}
-            onStopEnvironment={onStopEnvironment}
           />
         );
       case 'cards':
