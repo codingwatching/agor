@@ -232,18 +232,28 @@ export const GlobalSearch: React.FC<GlobalSearchProps> = ({
         <div
           role="listbox"
           id={GLOBAL_SEARCH_LISTBOX_ID}
+          // Anchored to the right edge of the input (input lives in the
+          // right cluster of the navbar) so the popover grows leftward
+          // and doesn't overflow the viewport.
+          //
+          // Flex column so the chip row stays sticky at the top and the
+          // result body takes whatever vertical space is left up to 85vh.
+          // Without `min-height: 0` on the scrollable child, flex children
+          // refuse to shrink below their content height and scroll breaks.
           style={{
             position: 'absolute',
             top: '100%',
-            left: 0,
             right: 0,
+            width: 600,
+            maxHeight: '85vh',
+            display: 'flex',
+            flexDirection: 'column',
             marginTop: 4,
             background: token.colorBgElevated,
             border: `1px solid ${token.colorBorderSecondary}`,
             borderRadius: token.borderRadiusLG,
             boxShadow: token.boxShadowSecondary,
             zIndex: 1000,
-            minWidth: 480,
           }}
         >
           <SearchChipRow
