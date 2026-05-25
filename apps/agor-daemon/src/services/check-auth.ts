@@ -13,6 +13,7 @@
  *   codex CLI writes after `codex login`). Executor reads from the same path,
  *   so a green check matches session behavior in simple Unix mode
  * - Server-based tools (opencode): always ready
+ * - Cursor SDK: API-key presence check; the SDK validates the key at session start
  *
  * Resolution precedence (when no raw key is provided by the caller):
  *   user encrypted key → config.yaml → env var → native auth
@@ -40,6 +41,20 @@ const FETCH_TIMEOUT_MS = 8_000;
 const SDK_AUTH_PROBE_TIMEOUT_MS = 10_000;
 // Codex treats the OAuth session as stale after ~8 days (per OpenAI docs).
 const CODEX_SESSION_STALE_MS = 8 * 24 * 60 * 60 * 1000;
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /**
  * Verify Claude Code auth by spawning the SDK in streaming-input mode and
@@ -195,6 +210,15 @@ async function validateApiKey(tool: string, key: string): Promise<boolean> {
         headers.Authorization = `token ${key}`;
         headers.Accept = 'application/vnd.github.v3+json';
         break;
+      }
+      case 'cursor': {
+        const { Cursor } = await import('@cursor/sdk');
+        await withTimeout(
+          Cursor.me({ apiKey: key }),
+          FETCH_TIMEOUT_MS,
+          'Cursor auth check timed out'
+        );
+        return true;
       }
       default:
         return false;

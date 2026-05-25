@@ -48,6 +48,7 @@ const GLOBAL_TOOL_FIELDS: Record<AgenticToolName, AgenticToolFieldConfig[]> = {
   codex: TOOL_FIELD_CONFIGS.codex.filter((f) => f.field !== 'OPENAI_BASE_URL'),
   gemini: TOOL_FIELD_CONFIGS.gemini,
   copilot: TOOL_FIELD_CONFIGS.copilot,
+  cursor: TOOL_FIELD_CONFIGS.cursor,
   opencode: TOOL_FIELD_CONFIGS.opencode,
 };
 
@@ -344,6 +345,21 @@ export const AgenticToolsSection: React.FC<AgenticToolsSectionProps> = ({ client
             children: (
               <ApiKeyTabContent
                 tool="copilot"
+                fieldStatus={fieldStatus}
+                keysError={keysError}
+                savingKeys={savingKeys}
+                onSave={handleSaveKey}
+                onClear={handleClearKey}
+                onClearError={() => setKeysError(null)}
+              />
+            ),
+          },
+          {
+            key: 'cursor',
+            label: 'Cursor SDK',
+            children: (
+              <ApiKeyTabContent
+                tool="cursor"
                 fieldStatus={fieldStatus}
                 keysError={keysError}
                 savingKeys={savingKeys}
