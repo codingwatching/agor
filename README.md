@@ -60,6 +60,11 @@ Requires **Node.js ≥ 22.12** ([install](https://nodejs.org)).
 
 ```bash
 npm install -g agor-live
+```
+
+Prefer Homebrew on macOS or Linux? See the [Getting Started guide](https://agor.live/guide/getting-started) for the brew install path.
+
+```bash
 agor init           # creates ~/.agor/ and database
 agor daemon start   # runs in the background
 agor open           # opens the UI
