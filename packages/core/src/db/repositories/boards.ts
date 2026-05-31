@@ -4,9 +4,9 @@
  * Type-safe CRUD operations for boards with short ID support.
  */
 
-import type { Board, BoardExportBlob, BoardObject, UUID } from '@agor/core/types';
-import { BRANCH_PERMISSION_LEVELS } from '@agor/core/types';
-import { and, eq, exists, inArray, isNotNull, like, ne, or, sql } from 'drizzle-orm';
+import type { Board, BoardExportBlob, BoardObject, Branch, UUID } from '@agor/core/types';
+import { BRANCH_PERMISSION_LEVELS, isAssistant } from '@agor/core/types';
+import { and, eq, exists, inArray, isNotNull, isNull, like, ne, or, sql } from 'drizzle-orm';
 import * as yaml from 'js-yaml';
 import { getBaseUrl } from '../../config/config-manager';
 import { generateId } from '../../lib/ids';
@@ -23,6 +23,7 @@ import {
   RepositoryError,
   resolveByShortIdPrefix,
 } from './base';
+import { BranchRepository } from './branches';
 
 /**
  * Board repository implementation
@@ -55,6 +56,8 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
       board_id: boardId,
       name: row.name,
       slug,
+      primary_assistant_id:
+        (row.primary_assistant_id as Board['primary_assistant_id']) ?? undefined,
       created_at: new Date(row.created_at).toISOString(),
       last_updated: row.updated_at
         ? new Date(row.updated_at).toISOString()
@@ -82,6 +85,7 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
       board_id: boardId,
       name: board.name ?? 'Untitled Board',
       slug: board.slug !== undefined ? board.slug : null,
+      primary_assistant_id: board.primary_assistant_id ?? null,
       created_at: new Date(board.created_at ?? now),
       updated_at: board.last_updated ? new Date(board.last_updated) : new Date(now),
       created_by: board.created_by,
@@ -95,6 +99,14 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
         custom_context: board.custom_context,
       },
     };
+  }
+
+  private rejectGenericPrimaryAssistantWrite(data: Partial<Board>, operation: string): void {
+    if (Object.hasOwn(data, 'primary_assistant_id')) {
+      throw new RepositoryError(
+        `Cannot ${operation} primary_assistant_id via generic board writes; use setPrimaryAssistant() or clearPrimaryAssistant()`
+      );
+    }
   }
 
   /**
@@ -158,6 +170,7 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
    */
   async create(data: Partial<Board>): Promise<Board> {
     try {
+      this.rejectGenericPrimaryAssistantWrite(data, 'set');
       const boardId = data.board_id ?? generateId();
       const baseUrl = await getBaseUrl();
       let finalSlug: string | undefined;
@@ -324,6 +337,7 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
    */
   async update(id: string, updates: Partial<Board>): Promise<Board> {
     try {
+      this.rejectGenericPrimaryAssistantWrite(updates, 'set');
       const fullId = await this.resolveId(id);
 
       // Get current board to merge updates
@@ -355,6 +369,7 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
       const setData: Record<string, unknown> = {
         name: insertData.name,
         slug: insertData.slug,
+        primary_assistant_id: insertData.primary_assistant_id,
         updated_at: new Date(),
         data: insertData.data,
       };
@@ -405,6 +420,178 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
         error
       );
     }
+  }
+
+  /**
+   * Get the branch designated as this board's primary assistant.
+   */
+  async getPrimaryAssistant(boardId: string): Promise<Branch | null> {
+    try {
+      const board = await this.findById(boardId);
+      if (!board?.primary_assistant_id) return null;
+
+      const branchRepo = new BranchRepository(this.db);
+      return branchRepo.findById(board.primary_assistant_id);
+    } catch (error) {
+      if (error instanceof EntityNotFoundError) return null;
+      if (error instanceof AmbiguousIdError) throw error;
+      throw new RepositoryError(
+        `Failed to get primary assistant: ${error instanceof Error ? error.message : String(error)}`,
+        error
+      );
+    }
+  }
+
+  /**
+   * Set a board's primary assistant after validating that the branch is an
+   * assistant branch already attached to the board.
+   */
+  async setPrimaryAssistant(boardId: string, branchId: string): Promise<Board> {
+    try {
+      const fullBoardId = await this.resolveId(boardId);
+      const board = await this.findById(fullBoardId);
+      if (!board) throw new EntityNotFoundError('Board', boardId);
+
+      const branch = await this.getValidatedPrimaryAssistantBranch(fullBoardId, branchId);
+
+      await update(this.db, boards)
+        .set({
+          primary_assistant_id: branch.branch_id,
+          updated_at: new Date(),
+        })
+        .where(eq(boards.board_id, fullBoardId))
+        .run();
+
+      const updated = await this.findById(fullBoardId);
+      if (!updated) throw new RepositoryError('Failed to retrieve updated board');
+      return updated;
+    } catch (error) {
+      if (error instanceof RepositoryError) throw error;
+      if (error instanceof EntityNotFoundError) throw error;
+      if (error instanceof AmbiguousIdError) throw error;
+      throw new RepositoryError(
+        `Failed to set primary assistant: ${error instanceof Error ? error.message : String(error)}`,
+        error
+      );
+    }
+  }
+
+  /**
+   * Set a board's primary assistant only when it is currently unset.
+   *
+   * Returns the updated board when this call wins the race, or null when the
+   * board already had a primary assistant by the time the conditional update
+   * ran. The same branch/board/assistant invariants as setPrimaryAssistant()
+   * are validated before attempting the conditional write.
+   */
+  async setPrimaryAssistantIfUnset(boardId: string, branchId: string): Promise<Board | null> {
+    try {
+      const fullBoardId = await this.resolveId(boardId);
+      const branch = await this.getValidatedPrimaryAssistantBranch(fullBoardId, branchId);
+
+      const result = await update(this.db, boards)
+        .set({
+          primary_assistant_id: branch.branch_id,
+          updated_at: new Date(),
+        })
+        .where(and(eq(boards.board_id, fullBoardId), isNull(boards.primary_assistant_id)))
+        .run();
+
+      if (result.rowsAffected === 0) return null;
+
+      const updated = await this.findById(fullBoardId);
+      if (!updated) throw new RepositoryError('Failed to retrieve updated board');
+      return updated;
+    } catch (error) {
+      if (error instanceof RepositoryError) throw error;
+      if (error instanceof EntityNotFoundError) throw error;
+      if (error instanceof AmbiguousIdError) throw error;
+      throw new RepositoryError(
+        `Failed to set primary assistant if unset: ${error instanceof Error ? error.message : String(error)}`,
+        error
+      );
+    }
+  }
+
+  /**
+   * Clear a board's primary assistant only if it still points at branchId.
+   *
+   * This keeps board metadata consistent when an assistant branch is moved off
+   * a board without clearing a newer primary assistant assignment by mistake.
+   */
+  async clearPrimaryAssistantIfMatches(boardId: string, branchId: string): Promise<Board | null> {
+    try {
+      const fullBoardId = await this.resolveId(boardId);
+      const branch = await new BranchRepository(this.db).findById(branchId);
+      if (!branch) throw new EntityNotFoundError('Branch', branchId);
+
+      const result = await update(this.db, boards)
+        .set({ primary_assistant_id: null, updated_at: new Date() })
+        .where(
+          and(eq(boards.board_id, fullBoardId), eq(boards.primary_assistant_id, branch.branch_id))
+        )
+        .run();
+
+      if (result.rowsAffected === 0) return null;
+
+      const updated = await this.findById(fullBoardId);
+      if (!updated) throw new EntityNotFoundError('Board', boardId);
+      return updated;
+    } catch (error) {
+      if (error instanceof RepositoryError) throw error;
+      if (error instanceof EntityNotFoundError) throw error;
+      if (error instanceof AmbiguousIdError) throw error;
+      throw new RepositoryError(
+        `Failed to clear primary assistant if matched: ${error instanceof Error ? error.message : String(error)}`,
+        error
+      );
+    }
+  }
+
+  /**
+   * Clear a board's primary assistant pointer without deleting either entity.
+   */
+  async clearPrimaryAssistant(boardId: string): Promise<Board> {
+    try {
+      const fullBoardId = await this.resolveId(boardId);
+      await update(this.db, boards)
+        .set({ primary_assistant_id: null, updated_at: new Date() })
+        .where(eq(boards.board_id, fullBoardId))
+        .run();
+
+      const updated = await this.findById(fullBoardId);
+      if (!updated) throw new EntityNotFoundError('Board', boardId);
+      return updated;
+    } catch (error) {
+      if (error instanceof RepositoryError) throw error;
+      if (error instanceof EntityNotFoundError) throw error;
+      if (error instanceof AmbiguousIdError) throw error;
+      throw new RepositoryError(
+        `Failed to clear primary assistant: ${error instanceof Error ? error.message : String(error)}`,
+        error
+      );
+    }
+  }
+
+  private async getValidatedPrimaryAssistantBranch(
+    fullBoardId: string,
+    branchId: string
+  ): Promise<Branch> {
+    const branchRepo = new BranchRepository(this.db);
+    const branch = await branchRepo.findById(branchId);
+    if (!branch) throw new EntityNotFoundError('Branch', branchId);
+
+    if (branch.board_id !== fullBoardId) {
+      throw new RepositoryError('Primary assistant branch must belong to the board');
+    }
+    if (!isAssistant(branch)) {
+      throw new RepositoryError('Primary assistant branch must be an assistant branch');
+    }
+    if (branch.archived) {
+      throw new RepositoryError('Primary assistant branch must be active');
+    }
+
+    return branch;
   }
 
   /**

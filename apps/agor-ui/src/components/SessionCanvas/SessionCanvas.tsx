@@ -97,6 +97,7 @@ interface SessionCanvasProps {
   userById: Map<string, User>; // Map-based user storage
   repoById: Map<string, Repo>; // Map-based repo storage
   branches: Branch[];
+  primaryAssistantId?: string | null;
   branchById: Map<string, Branch>;
   boardObjectById: Map<string, BoardEntityObject>; // Map-based board object storage
   commentById: Map<string, BoardComment>; // Map-based comment storage
@@ -339,6 +340,7 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
       sessionsByBranch,
       repoById,
       branches,
+      primaryAssistantId,
       branchById,
       boardObjectById,
       commentById,
@@ -641,6 +643,10 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
       const nodes: Node[] = [];
 
       branches.forEach((branch, index) => {
+        if (primaryAssistantId && branch.branch_id === primaryAssistantId) {
+          return;
+        }
+
         // Find board object for this branch (if positioned on this board)
         const boardObject = boardObjectByBranch.get(branch.branch_id);
 
@@ -722,6 +728,7 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
     }, [
       board,
       branches,
+      primaryAssistantId,
       boardObjectByBranch,
       repoById,
       sessionsByBranch,
@@ -2117,6 +2124,7 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
                 }
               },
               onEdit: handleEditMarkdownNote,
+              onDelete: deleteObject,
             },
           },
         ];
@@ -2156,6 +2164,7 @@ const SessionCanvas = forwardRef<SessionCanvasRef, SessionCanvasProps>(
       markdownWidth,
       setNodes,
       handleEditMarkdownNote,
+      deleteObject,
       mutationGate.canMutate,
     ]);
 

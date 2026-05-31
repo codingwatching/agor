@@ -68,7 +68,6 @@ export interface CreateDialogProps {
   open: boolean;
   onClose: () => void;
   repoById: Map<string, Repo>;
-  boardById: Map<string, Board>;
   currentBoardId?: string;
   defaultPosition?: { x: number; y: number };
   availableAgents: AgenticToolOption[];
@@ -99,14 +98,13 @@ export const CreateDialog: React.FC<CreateDialogProps> = ({
   open,
   onClose,
   repoById,
-  boardById,
   currentBoardId,
   defaultPosition,
   availableAgents,
   mcpServerById,
   currentUser,
   client,
-  defaultTab = 'branch',
+  defaultTab = 'assistant',
   onCreateBranch,
   onCreateBoard,
   onCreateRepo,
@@ -220,6 +218,35 @@ export const CreateDialog: React.FC<CreateDialogProps> = ({
 
   const tabItems = [
     {
+      key: 'assistant',
+      label: (
+        <span>
+          <RobotOutlined style={{ marginRight: 8 }} />
+          Assistant
+        </span>
+      ),
+      children: (
+        <div>
+          <Alert
+            type="info"
+            showIcon
+            description={PURPOSE_TEXT.assistant}
+            style={{ marginBottom: 16 }}
+          />
+          <AssistantTab
+            repoById={repoById}
+            onValidityChange={handleAssistantValid}
+            formRef={assistantFormRef}
+            onCreateRepo={onCreateRepo}
+            availableAgents={availableAgents}
+            mcpServerById={mcpServerById}
+            currentUser={currentUser}
+            client={client}
+          />
+        </div>
+      ),
+    },
+    {
       key: 'branch',
       label: (
         <span>
@@ -241,36 +268,6 @@ export const CreateDialog: React.FC<CreateDialogProps> = ({
             defaultPosition={defaultPosition}
             onValidityChange={handleBranchValid}
             formRef={branchFormRef}
-          />
-        </div>
-      ),
-    },
-    {
-      key: 'assistant',
-      label: (
-        <span>
-          <RobotOutlined style={{ marginRight: 8 }} />
-          Assistant
-        </span>
-      ),
-      children: (
-        <div>
-          <Alert
-            type="info"
-            showIcon
-            description={PURPOSE_TEXT.assistant}
-            style={{ marginBottom: 16 }}
-          />
-          <AssistantTab
-            repoById={repoById}
-            boardById={boardById}
-            onValidityChange={handleAssistantValid}
-            formRef={assistantFormRef}
-            onCreateRepo={onCreateRepo}
-            availableAgents={availableAgents}
-            mcpServerById={mcpServerById}
-            currentUser={currentUser}
-            client={client}
           />
         </div>
       ),

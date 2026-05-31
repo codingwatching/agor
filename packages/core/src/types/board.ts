@@ -153,6 +153,7 @@ export interface AppBoardObject {
   title: string;
   /** Optional description */
   description?: string;
+
   /** Sandpack template (default: 'react') */
   template: SandpackTemplate;
   /** File map: path -> code content */
@@ -212,6 +213,7 @@ export interface Board {
   slug?: string;
 
   description?: string;
+  primary_assistant_id?: BranchID;
 
   /**
    * DEPRECATED: Sessions and layout are now tracked in board_objects table

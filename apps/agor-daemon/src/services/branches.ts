@@ -11,9 +11,14 @@ import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { ENVIRONMENT, isBranchRbacEnabled, loadConfig, PAGINATION } from '@agor/core/config';
-import { BranchRepository, type BranchWithZoneAndSessions, type Database } from '@agor/core/db';
+import {
+  BoardRepository,
+  BranchRepository,
+  type BranchWithZoneAndSessions,
+  type Database,
+} from '@agor/core/db';
 import { renderBranchSnapshot } from '@agor/core/environment/render-snapshot';
-import { type Application, Forbidden, NotAuthenticated } from '@agor/core/feathers';
+import { type Application, BadRequest, Forbidden, NotAuthenticated } from '@agor/core/feathers';
 import type {
   AuthenticatedParams,
   BoardID,
@@ -24,7 +29,7 @@ import type {
   UserID,
   UUID,
 } from '@agor/core/types';
-import { ROLES } from '@agor/core/types';
+import { isAssistant, ROLES } from '@agor/core/types';
 import { getGidFromGroupName, spawnEnvironmentCommand } from '@agor/core/unix';
 import { resolveHostIpAddress } from '@agor/core/utils/host-ip';
 import { isAllowedHealthCheckUrl } from '@agor/core/utils/url';
@@ -68,6 +73,7 @@ interface ManagedProcess {
  */
 export class BranchesService extends DrizzleService<Branch, Partial<Branch>, BranchParams> {
   private branchRepo: BranchRepository;
+  private boardRepo: BoardRepository;
   private db: Database;
   private app: Application;
   private processes = new Map<BranchID, ManagedProcess>();
@@ -91,6 +97,7 @@ export class BranchesService extends DrizzleService<Branch, Partial<Branch>, Bra
     });
 
     this.branchRepo = branchRepo;
+    this.boardRepo = new BoardRepository(db);
     this.db = db;
     this.app = app;
   }
@@ -266,10 +273,140 @@ export class BranchesService extends DrizzleService<Branch, Partial<Branch>, Bra
       const withDefaults = await Promise.all(
         data.map((item) => this.applyBranchCreateDefaults(item))
       );
-      return super.create(withDefaults, params) as Promise<Branch[]>;
+      const created = (await super.create(withDefaults, params)) as Branch[];
+      await Promise.all(created.map((branch) => this.maybeSetBoardPrimaryAssistant(branch)));
+      return created;
     }
     const withDefaults = await this.applyBranchCreateDefaults(data);
-    return super.create(withDefaults, params) as Promise<Branch>;
+    const created = (await super.create(withDefaults, params)) as Branch;
+    await this.maybeSetBoardPrimaryAssistant(created);
+    return created;
+  }
+
+  private async maybeSetBoardPrimaryAssistant(branch: Branch): Promise<void> {
+    if (!branch.board_id || !isAssistant(branch)) return;
+
+    try {
+      const updatedBoard = await this.boardRepo.setPrimaryAssistantIfUnset(
+        branch.board_id,
+        branch.branch_id
+      );
+      if (updatedBoard) {
+        this.app.service('boards').emit('patched', updatedBoard);
+      }
+    } catch (error) {
+      console.warn(
+        `⚠️ Failed to set primary assistant for board ${branch.board_id}:`,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  }
+
+  private isPlainObject(value: unknown): value is Record<string, unknown> {
+    return (
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      !(value instanceof Date) &&
+      Object.getPrototypeOf(value) === Object.prototype
+    );
+  }
+
+  /**
+   * Mirrors BranchRepository's patch merge semantics so we can reject
+   * assistant/non-assistant conversions before the repository writes them.
+   */
+  private mergePatchPreview(
+    target: Record<string, unknown>,
+    source: Record<string, unknown>
+  ): Record<string, unknown> {
+    const result = { ...target };
+
+    for (const key in source) {
+      if (!Object.hasOwn(source, key)) continue;
+
+      const sourceValue = source[key];
+      const targetValue = target[key];
+
+      if (sourceValue === undefined) continue;
+      if (sourceValue === null || Array.isArray(sourceValue)) {
+        result[key] = sourceValue;
+        continue;
+      }
+
+      if (this.isPlainObject(sourceValue) && this.isPlainObject(targetValue)) {
+        result[key] = this.mergePatchPreview(targetValue, sourceValue);
+        continue;
+      }
+
+      result[key] = sourceValue;
+    }
+
+    return result;
+  }
+
+  private assertAssistantKindIsStable(currentBranch: Branch, patchData: Partial<Branch>): void {
+    const wouldBeBranch = this.mergePatchPreview(
+      currentBranch as unknown as Record<string, unknown>,
+      patchData as Record<string, unknown>
+    ) as unknown as Branch;
+    if (isAssistant(currentBranch) === isAssistant(wouldBeBranch)) return;
+
+    throw new BadRequest(
+      'Branches cannot be converted between assistant and non-assistant types. Create a new branch or assistant instead.'
+    );
+  }
+
+  private async maintainPrimaryAssistantAfterPatch(
+    previousBranch: Branch,
+    updatedBranch: Branch
+  ): Promise<void> {
+    const oldBoardId = previousBranch.board_id;
+    const newBoardId = updatedBranch.board_id;
+    const wasAssistant = isAssistant(previousBranch);
+    const isNowAssistant = isAssistant(updatedBranch);
+
+    const shouldClearOldPrimary = Boolean(
+      oldBoardId &&
+        wasAssistant &&
+        (oldBoardId !== newBoardId || !isNowAssistant || updatedBranch.archived === true)
+    );
+
+    const shouldSetNewPrimary = Boolean(
+      newBoardId &&
+        isNowAssistant &&
+        updatedBranch.archived !== true &&
+        (oldBoardId !== newBoardId || previousBranch.archived === true)
+    );
+
+    if (!shouldClearOldPrimary && !shouldSetNewPrimary) return;
+
+    try {
+      if (shouldClearOldPrimary) {
+        const updatedOldBoard = await this.boardRepo.clearPrimaryAssistantIfMatches(
+          oldBoardId!,
+          previousBranch.branch_id
+        );
+        if (updatedOldBoard) {
+          this.app.service('boards').emit('patched', updatedOldBoard);
+        }
+      }
+
+      if (shouldSetNewPrimary) {
+        const updatedNewBoard = await this.boardRepo.setPrimaryAssistantIfUnset(
+          newBoardId!,
+          updatedBranch.branch_id
+        );
+        if (updatedNewBoard) {
+          this.app.service('boards').emit('patched', updatedNewBoard);
+        }
+      }
+    } catch (error) {
+      console.warn(
+        `⚠️ Failed to maintain primary assistant pointer for branch ${updatedBranch.branch_id}:`,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
   }
 
   /**
@@ -284,14 +421,17 @@ export class BranchesService extends DrizzleService<Branch, Partial<Branch>, Bra
     data: Partial<Branch>,
     params?: BranchParams
   ): Promise<BranchWithZoneAndSessions> {
-    // Get current branch to check if board_id is changing
+    // Get current branch to check type/board changes
     const currentBranch = await super.get(id, params);
+    this.assertAssistantKindIsStable(currentBranch, data);
+
     const oldBoardId = currentBranch.board_id;
     const boardIdProvided = Object.hasOwn(data, 'board_id');
     const newBoardId = data.board_id;
 
     // Call parent patch
     const updatedBranch = (await super.patch(id, data, params)) as Branch;
+    await this.maintainPrimaryAssistantAfterPatch(currentBranch, updatedBranch);
 
     // Handle board_objects changes if board_id changed
     if (!boardIdProvided) {
