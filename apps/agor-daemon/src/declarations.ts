@@ -110,6 +110,12 @@ export interface TasksServiceImpl extends Service<Task, Partial<Task>, FeathersP
   ): Promise<Task>;
   fail(id: string, data: { error?: string }, params?: FeathersParams): Promise<Task>;
   getOrphaned(params?: FeathersParams): Promise<Task[]>;
+  getActiveWithExecutorHeartbeat(params?: FeathersParams): Promise<Task[]>;
+  failForLostHeartbeat(
+    id: string,
+    data: { completed_at?: string; error_message: string },
+    params?: FeathersParams
+  ): Promise<Task>;
 }
 
 /**

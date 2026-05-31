@@ -9,7 +9,7 @@ import {
   type ChildCompletionContext,
   renderChildCompletionCallback,
 } from '@agor/core/callbacks/child-completion-template';
-import { PAGINATION } from '@agor/core/config';
+import { PAGINATION, resolveExecutorHeartbeatConfig } from '@agor/core/config';
 import { type Database, shortId, TaskRepository } from '@agor/core/db';
 import type { Application } from '@agor/core/feathers';
 import type {
@@ -23,6 +23,10 @@ import type {
 import { TaskStatus } from '@agor/core/types';
 import { DrizzleService } from '../adapters/drizzle';
 import { appendSystemMessage } from '../utils/append-system-message.js';
+import {
+  type ExecutorHeartbeatCallbackPayload,
+  ExecutorHeartbeatCallbackRunner,
+} from '../utils/executor-heartbeat-callback.js';
 import { ensureRepoOriginAlignedById } from '../utils/realign-repo-origin';
 import type { SessionsService } from './sessions';
 
@@ -32,7 +36,18 @@ import type { SessionsService } from './sessions';
 export type TaskParams = QueryParams<{
   session_id?: string;
   status?: Task['status'];
-}>;
+}> & {
+  /**
+   * Internal-only: terminal task patches normally transition the owning session
+   * back to idle. Heartbeat-loss handling marks the session failed instead.
+   */
+  suppressTerminalSessionIdle?: boolean;
+  /**
+   * Internal-only: terminal task patches normally drain queued work for the
+   * owning session. Heartbeat-loss handling must not auto-start queued prompts.
+   */
+  suppressTerminalQueueProcessing?: boolean;
+};
 
 /**
  * Extended tasks service with custom methods
@@ -41,6 +56,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
   private taskRepo: TaskRepository;
   private app: Application;
   private db: Database;
+  private heartbeatCallbackRunner: ExecutorHeartbeatCallbackRunner;
 
   constructor(db: Database, app: Application) {
     const taskRepo = new TaskRepository(db);
@@ -57,6 +73,8 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
     this.taskRepo = taskRepo;
     this.app = app;
     this.db = db;
+    const heartbeatConfig = resolveExecutorHeartbeatConfig(app.get?.('config')?.execution);
+    this.heartbeatCallbackRunner = new ExecutorHeartbeatCallbackRunner(heartbeatConfig);
   }
 
   /**
@@ -148,6 +166,54 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
     return result;
   }
 
+  async getActiveWithExecutorHeartbeat(): Promise<Task[]> {
+    return this.taskRepo.findActiveWithExecutorHeartbeat();
+  }
+
+  async failForLostHeartbeat(
+    id: string,
+    data: { completed_at?: string; error_message: string },
+    params?: TaskParams
+  ): Promise<Task> {
+    const result = await this.patch(
+      id,
+      {
+        status: TaskStatus.FAILED,
+        completed_at: data.completed_at,
+        error_message: data.error_message,
+      },
+      {
+        ...params,
+        suppressTerminalSessionIdle: true,
+        suppressTerminalQueueProcessing: true,
+      }
+    );
+    return result as Task;
+  }
+
+  private async handleExecutorHeartbeat(task: Task, heartbeatAt: string): Promise<void> {
+    const payload: ExecutorHeartbeatCallbackPayload = {
+      event: 'executor_heartbeat',
+      task_id: task.task_id,
+      session_id: task.session_id,
+      last_executor_heartbeat_at: heartbeatAt,
+    };
+
+    try {
+      const session = await this.app.service('sessions').get(task.session_id);
+      if (session?.branch_id) {
+        payload.branch_id = session.branch_id;
+      }
+    } catch (error) {
+      console.warn(
+        `⚠️  [TasksService] Could not resolve branch_id for heartbeat task ${shortId(task.task_id)}:`,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+
+    this.heartbeatCallbackRunner.run(payload);
+  }
+
   /**
    * Override patch to detect task completion and:
    * 1. Atomically update session status to IDLE when task reaches terminal state
@@ -214,6 +280,17 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
 
     const result = await super.patch(id, data, params);
 
+    if (data.last_executor_heartbeat_at && !Array.isArray(result)) {
+      this.handleExecutorHeartbeat(result as Task, data.last_executor_heartbeat_at).catch(
+        (error) => {
+          console.warn(
+            `⚠️  [TasksService] Executor heartbeat callback failed for task ${shortId((result as Task).task_id)}:`,
+            error
+          );
+        }
+      );
+    }
+
     // If task is being marked as completed, failed, or stopped (terminal status)
     if (
       data.status === TaskStatus.COMPLETED ||
@@ -273,6 +350,10 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
           if (isUserInitiatedStop) {
             console.log(
               `⏭️ [TasksService] Skipping session IDLE update for STOPPED task ${shortId(task.task_id)} — stop endpoint handles session state`
+            );
+          } else if (params?.suppressTerminalSessionIdle) {
+            console.log(
+              `⏭️ [TasksService] Skipping session IDLE update for task ${shortId(task.task_id)} (${data.status}) due to internal patch params`
             );
           } else {
             await this.app.service('sessions').patch(
@@ -375,7 +456,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
           // IMPORTANT: Now that session is idle, process any queued tasks (including callbacks)
           // This handles the case where callbacks were queued while this session was running
           const sessionsService = this.app.service('sessions') as unknown as SessionsService;
-          if (sessionsService.triggerQueueProcessing) {
+          if (!params?.suppressTerminalQueueProcessing && sessionsService.triggerQueueProcessing) {
             await sessionsService.triggerQueueProcessing(task.session_id);
           }
         } catch (error) {
