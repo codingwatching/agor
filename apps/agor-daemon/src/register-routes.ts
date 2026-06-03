@@ -106,6 +106,8 @@ import {
 } from './utils/branch-authorization.js';
 import { buildInitialUserMessage } from './utils/build-initial-user-message.js';
 import { buildPrompterPrefixedPrompt } from './utils/build-prompter-prefix.js';
+import { canControlCliSession } from './utils/mcp-token-authorization.js';
+import { ensureScheduleRunsAsCaller } from './utils/schedule-hooks.js';
 import { findActiveTasksForSession } from './utils/session-tasks.js';
 import { type SessionTurnLocks, withSessionTurnLock } from './utils/session-turn-lock.js';
 import { normalizeMessageSource, runExistingTask } from './utils/task-runner.js';
@@ -744,6 +746,16 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
         }
         const targetUserId = session.created_by;
         if (!targetUserId) throw new Error('Session has no created_by — cannot route restart');
+        if (
+          params.provider &&
+          !canControlCliSession({
+            callerUserId: params.user?.user_id,
+            callerRole: params.user?.role,
+            sessionCreatedBy: session.created_by,
+          })
+        ) {
+          throw new Forbidden('You can only restart Claude CLI sessions you created.');
+        }
 
         const tabName = `cli-${shortId(session.session_id)}`;
         const channel = `user/${targetUserId}/terminal`;
@@ -804,9 +816,14 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
         };
         const cwd = branch?.path;
         if (!cwd) throw new Error('Branch has no path; cannot restart');
-        const { buildSpawnConfigForSession } = await import('./services/claude-cli-integration.js');
+        const { buildSpawnConfigForSession, writeClaudeCliMcpConfigForSession } = await import(
+          './services/claude-cli-integration.js'
+        );
         const { buildClaudeCliSpawn } = await import('@agor/core/claude-cli');
-        const spawnCfg = buildSpawnConfigForSession(session, cwd);
+        const mcpConfigPath = await writeClaudeCliMcpConfigForSession(app, session, {
+          actor: params.user ?? null,
+        });
+        const spawnCfg = buildSpawnConfigForSession(session, cwd, { mcpConfigPath });
         const built = buildClaudeCliSpawn(spawnCfg);
         if (app.io) {
           app.io.to(channel).emit('terminal:tab', {
@@ -2911,6 +2928,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
         // / params.branch / params.isBranchOwner) match every other
         // schedule-touching path.
         loadScheduleAndBranch(scheduleRepository, branchRepository),
+        ensureScheduleRunsAsCaller(superadminOpts),
         branchRbacEnabled
           ? ensureBranchPermission('all', 'run schedule', superadminOpts)
           : (context: HookContext) => {
