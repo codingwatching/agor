@@ -13,13 +13,22 @@ import type {
   UUID,
 } from '@agor/core/types';
 import { BRANCH_PERMISSION_LEVELS } from '@agor/core/types';
-import { and, desc, eq, getTableColumns, inArray, isNotNull, like, or, sql } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, inArray, like, sql } from 'drizzle-orm';
 import { getBaseUrl } from '../../config/config-manager';
 import { generateId } from '../../lib/ids';
 import { getBranchUrl } from '../../utils/url';
 import type { Database } from '../client';
 import { deleteFrom, insert, lockRowForUpdate, select, txAsDb, update } from '../database-wrapper';
-import { type BranchInsert, type BranchRow, branches, branchOwners } from '../schema';
+import {
+  type BranchGroupGrantRow,
+  type BranchInsert,
+  type BranchRow,
+  branches,
+  branchGroupGrants,
+  branchOwners,
+  groupMemberships,
+  groups,
+} from '../schema';
 import {
   type BaseRepository,
   EntityNotFoundError,
@@ -27,7 +36,12 @@ import {
   RepositoryError,
   resolveByShortIdPrefix,
 } from './base';
+import { activeGroupGrantAccessExists, visibleBranchAccessCondition } from './branch-access';
 import { deepMerge } from './merge-utils';
+
+const BRANCH_PERMISSION_RANK = Object.fromEntries(
+  BRANCH_PERMISSION_LEVELS.map((level, index) => [level, index - 1])
+) as Record<NonNullable<Branch['others_can']>, number>;
 
 /**
  * Session activity summary for a branch
@@ -412,6 +426,66 @@ export class BranchRepository implements BaseRepository<Branch, Partial<Branch>>
   }
 
   /**
+   * Resolve the highest group grant for a user on a branch.
+   *
+   * Direct branch owners are handled separately; this only considers groups
+   * the user belongs to and explicit branch_group_grants rows.
+   */
+  async getBestGroupGrantForUser(
+    branchId: BranchID,
+    userId: UUID
+  ): Promise<{ can: NonNullable<Branch['others_can']>; groupIds: string[] } | null> {
+    const rows = await select(this.db)
+      .from(branchGroupGrants)
+      .innerJoin(
+        groupMemberships,
+        and(
+          eq(groupMemberships.group_id, branchGroupGrants.group_id),
+          eq(groupMemberships.user_id, userId)
+        )
+      )
+      .innerJoin(
+        groups,
+        and(eq(groups.group_id, branchGroupGrants.group_id), eq(groups.archived, false))
+      )
+      .where(
+        and(
+          eq(branchGroupGrants.branch_id, branchId),
+          inArray(branchGroupGrants.can, BRANCH_PERMISSION_LEVELS)
+        )
+      )
+      .all();
+
+    let best: NonNullable<Branch['others_can']> | null = null;
+    const groupIds: string[] = [];
+    for (const row of rows as Array<{ branch_group_grants: BranchGroupGrantRow }>) {
+      const can = row.branch_group_grants.can as NonNullable<Branch['others_can']>;
+      groupIds.push(row.branch_group_grants.group_id);
+      if (!best || BRANCH_PERMISSION_RANK[can] > BRANCH_PERMISSION_RANK[best]) {
+        best = can;
+      }
+    }
+    return best ? { can: best, groupIds } : null;
+  }
+
+  /**
+   * Resolve app-layer branch permission excluding global superadmin bypass.
+   * Order: direct owner → highest group grant → others_can fallback.
+   */
+  async resolveUserPermission(
+    branch: Branch,
+    userId: UUID
+  ): Promise<NonNullable<Branch['others_can']>> {
+    if (await this.isOwner(branch.branch_id, userId)) return 'all';
+    const groupGrant = await this.getBestGroupGrantForUser(branch.branch_id, userId);
+    const others = branch.others_can ?? 'session';
+    if (!groupGrant) return others;
+    return BRANCH_PERMISSION_RANK[groupGrant.can] >= BRANCH_PERMISSION_RANK[others]
+      ? groupGrant.can
+      : others;
+  }
+
+  /**
    * Get all owners of a branch
    *
    * @param branchId - Branch ID (full UUID or short ID)
@@ -537,13 +611,7 @@ export class BranchRepository implements BaseRepository<Branch, Partial<Branch>>
    */
   async findAccessibleBranches(userId: UUID, filter?: { archived?: boolean }): Promise<Branch[]> {
     const conditions = [
-      or(
-        isNotNull(branchOwners.user_id),
-        inArray(
-          branches.others_can,
-          BRANCH_PERMISSION_LEVELS.filter((l) => l !== 'none')
-        )
-      ),
+      visibleBranchAccessCondition(activeGroupGrantAccessExists(this.db, userId)),
     ];
 
     // Apply archived filter at SQL level
@@ -563,7 +631,14 @@ export class BranchRepository implements BaseRepository<Branch, Partial<Branch>>
       .all();
 
     const baseUrl = await getBaseUrl();
-    return rows.map((row: BranchRow) => this.rowToBranch(row, baseUrl));
+    const seen = new Set<string>();
+    const result: Branch[] = [];
+    for (const row of rows as BranchRow[]) {
+      if (seen.has(row.branch_id)) continue;
+      seen.add(row.branch_id);
+      result.push(this.rowToBranch(row, baseUrl));
+    }
+    return result;
   }
 
   /**

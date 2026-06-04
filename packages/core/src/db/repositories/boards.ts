@@ -5,8 +5,8 @@
  */
 
 import type { Board, BoardExportBlob, BoardObject, Branch, UUID } from '@agor/core/types';
-import { BRANCH_PERMISSION_LEVELS, isAssistant } from '@agor/core/types';
-import { and, eq, exists, inArray, isNotNull, isNull, like, ne, or, sql } from 'drizzle-orm';
+import { isAssistant } from '@agor/core/types';
+import { and, eq, exists, isNull, like, ne, or, sql } from 'drizzle-orm';
 import * as yaml from 'js-yaml';
 import { getBaseUrl } from '../../config/config-manager';
 import { generateId } from '../../lib/ids';
@@ -23,6 +23,7 @@ import {
   RepositoryError,
   resolveByShortIdPrefix,
 } from './base';
+import { activeGroupGrantAccessExists, visibleBranchAccessCondition } from './branch-access';
 import { BranchRepository } from './branches';
 
 /**
@@ -305,7 +306,6 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
    * @returns Array of board ids the user can see
    */
   async findVisibleBoardIds(userId: UUID): Promise<string[]> {
-    const permissiveLevels = BRANCH_PERMISSION_LEVELS.filter((l) => l !== 'none');
     // Raw drizzle builder for the EXISTS subquery — `exists()` expects a
     // drizzle SelectQueryBuilder, not the cross-dialect wrapper shape, and
     // the subquery doesn't need `.all()` / `.one()` execution methods.
@@ -321,7 +321,7 @@ export class BoardRepository implements BaseRepository<Board, Partial<Board>> {
         .where(
           and(
             eq(branches.board_id, boards.board_id),
-            or(isNotNull(branchOwners.user_id), inArray(branches.others_can, permissiveLevels))
+            visibleBranchAccessCondition(activeGroupGrantAccessExists(this.db, userId))
           )
         )
     );
