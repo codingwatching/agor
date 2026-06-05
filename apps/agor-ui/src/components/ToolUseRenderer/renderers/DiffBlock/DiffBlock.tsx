@@ -262,6 +262,7 @@ export const DiffBlock: React.FC<DiffBlockProps> = ({
           display: 'flex',
           alignItems: 'center',
           gap: 6,
+          minWidth: 0,
           padding: `${token.sizeUnit * 0.75}px ${token.sizeUnit}px`,
           cursor: 'pointer',
           borderRadius: expanded
@@ -280,16 +281,30 @@ export const DiffBlock: React.FC<DiffBlockProps> = ({
           <RightOutlined style={{ fontSize: 10, color: token.colorTextSecondary }} />
         )}
 
-        <Typography.Text strong style={{ fontSize: token.fontSizeSM }}>
-          {operationLabel(operationType)}
-        </Typography.Text>
+        <Tooltip title={operationLabel(operationType)}>
+          <Typography.Text
+            strong
+            style={{
+              fontSize: token.fontSizeSM,
+              maxWidth: 96,
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+          >
+            {operationLabel(operationType)}
+          </Typography.Text>
+        </Tooltip>
 
         <Tooltip title={filePath}>
           <Typography.Text
             code
             style={{
               fontSize: token.fontSizeSM - 1,
-              maxWidth: 300,
+              minWidth: 0,
+              flex: '1 1 auto',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
