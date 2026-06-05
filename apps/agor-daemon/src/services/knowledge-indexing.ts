@@ -2,7 +2,6 @@ import { loadConfig } from '@agor/core/config';
 import {
   AppVariableRepository,
   type Database,
-  executeRaw,
   isPostgresDatabase,
   kbDocumentUnits,
   select,
@@ -22,6 +21,7 @@ import {
   KNOWLEDGE_EMBEDDINGS_API_KEY,
   KNOWLEDGE_EMBEDDINGS_NAMESPACE,
 } from '../knowledge/embeddings.js';
+import { getKnowledgePgvectorCapability } from '../knowledge/pgvector.js';
 
 const STATUSES: KnowledgeEmbeddingStatus[] = [
   'not_configured',
@@ -66,39 +66,38 @@ export class KnowledgeIndexingStatusService {
       counts[row.status] = Number(row.count) || 0;
     }
 
-    let pgvectorAvailable = false;
-    if (isPostgresDatabase(this.db)) {
-      try {
-        const pgvectorRows = await executeRaw(
-          this.db,
-          sql`SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') AS available`
-        );
-        const first = pgvectorRows.rows?.[0] as { available?: boolean } | undefined;
-        pgvectorAvailable = Boolean(first?.available);
-      } catch {
-        pgvectorAvailable = false;
-      }
-    }
+    const pgvector = await getKnowledgePgvectorCapability(this.db);
+    const semanticEnabled = semantic.enabled === true;
+    const embeddingConfigUsable = isUsableOpenAIEmbeddingConfig(
+      semantic,
+      Boolean(apiKey?.value_encrypted)
+    );
+    const configured = isPostgresDatabase(this.db) && pgvector.available && embeddingConfigUsable;
 
     const indexer = (this.app as unknown as { get?: (key: string) => unknown } | undefined)?.get?.(
       'knowledgeEmbeddingIndexer'
     ) as { getLastIndexedAt?: () => Date | null; getLastError?: () => string | null } | undefined;
+    const lastError = semanticEnabled
+      ? ((configured ? indexer?.getLastError?.() : null) ??
+        (!pgvector.available ? pgvector.reason : null))
+      : null;
 
     return {
-      enabled: semantic.enabled === true,
-      configured:
-        isPostgresDatabase(this.db) &&
-        pgvectorAvailable &&
-        isUsableOpenAIEmbeddingConfig(semantic, Boolean(apiKey?.value_encrypted)),
+      enabled: semanticEnabled,
+      configured,
       dialect: isPostgresDatabase(this.db) ? 'postgresql' : 'sqlite',
-      pgvector_available: pgvectorAvailable,
+      pgvector_available: pgvector.available,
+      pgvector_extension_installed: pgvector.extensionInstalled,
+      pgvector_storage_ready: pgvector.storageReady,
+      pgvector_reason: pgvector.reason,
+      pgvector_setup_hint: pgvector.setupHint,
       provider: semantic.provider ?? 'openai',
       model: semantic.model ?? DEFAULT_OPENAI_EMBEDDING_MODEL,
       dimensions: semantic.dimensions ?? DEFAULT_OPENAI_EMBEDDING_DIMENSIONS,
       chunks: counts,
       queue_depth: counts.pending + counts.stale,
       last_indexed_at: indexer?.getLastIndexedAt?.() ?? null,
-      last_error: indexer?.getLastError?.() ?? null,
+      last_error: lastError,
     };
   }
 }

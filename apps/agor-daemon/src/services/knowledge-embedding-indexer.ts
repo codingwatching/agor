@@ -24,6 +24,7 @@ import {
   SUPPORTED_OPENAI_EMBEDDING_MODELS,
   sha256Text,
 } from '../knowledge/embeddings.js';
+import { ensureKnowledgePgvectorStorage } from '../knowledge/pgvector.js';
 
 const DEFAULT_TICK_MS = 30_000;
 
@@ -80,6 +81,11 @@ export class KnowledgeEmbeddingIndexer {
     return this.lastIndexedAt;
   }
 
+  private idle(): 0 {
+    this.lastError = null;
+    return 0;
+  }
+
   private async ensureEmbeddingSpace(params: {
     provider: string;
     model: string;
@@ -116,8 +122,8 @@ export class KnowledgeEmbeddingIndexer {
     if (this.running) return;
     this.running = true;
     try {
-      await this.indexBatch();
-      this.lastError = null;
+      const indexed = await this.indexBatch();
+      if (indexed > 0 || !this.lastError) this.lastError = null;
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
       throw error;
@@ -129,17 +135,17 @@ export class KnowledgeEmbeddingIndexer {
   async indexBatch(): Promise<number> {
     const config = await loadConfig();
     const semantic = config.knowledge?.semantic_search;
-    if (semantic?.enabled !== true) return 0;
-    if (semantic.indexing?.paused === true) return 0;
-    if (!isPostgresDatabase(this.db)) return 0;
+    if (semantic?.enabled !== true) return this.idle();
+    if (semantic.indexing?.paused === true) return this.idle();
+    if (!isPostgresDatabase(this.db)) return this.idle();
     const provider = semantic.provider ?? 'openai';
-    if (provider !== 'openai') return 0;
+    if (provider !== 'openai') return this.idle();
 
     const apiKey = await this.variables.getPlain(
       KNOWLEDGE_EMBEDDINGS_NAMESPACE,
       KNOWLEDGE_EMBEDDINGS_API_KEY
     );
-    if (!apiKey) return 0;
+    if (!apiKey) return this.idle();
 
     const model = semantic.model ?? DEFAULT_OPENAI_EMBEDDING_MODEL;
     if (!SUPPORTED_OPENAI_EMBEDDING_MODELS.has(model)) {
@@ -152,7 +158,15 @@ export class KnowledgeEmbeddingIndexer {
       );
     }
 
+    const pgvector = await ensureKnowledgePgvectorStorage(this.db);
+    if (!pgvector.available) {
+      this.lastError = pgvector.reason ?? 'Knowledge pgvector storage is unavailable';
+      return 0;
+    }
+
     const batchSize = Math.min(Math.max(semantic.indexing?.batch_size ?? 32, 1), 128);
+    this.lastError = null;
+
     const rows = (await select(this.db)
       .from(kbDocumentUnits)
       .where(
@@ -161,7 +175,7 @@ export class KnowledgeEmbeddingIndexer {
       .orderBy(kbDocumentUnits.created_at)
       .limit(batchSize)
       .all()) as PendingUnitRow[];
-    if (rows.length === 0) return 0;
+    if (rows.length === 0) return this.idle();
 
     const embeddingSpaceId = await this.ensureEmbeddingSpace({ provider, model, dimensions });
     let results: Awaited<ReturnType<OpenAIEmbeddingProvider['embed']>>;
