@@ -27,6 +27,12 @@ const _MAX_FILE_RESULTS = 10;
 const MAX_USER_RESULTS = 5;
 const MAX_EMOJI_RESULTS = 15;
 const DEBOUNCE_MS = 300;
+const AUTOCOMPLETE_POPOVER_VIEWPORT_MARGIN = 8;
+const AUTOCOMPLETE_POPOVER_WIDTH = 320;
+const AUTOCOMPLETE_POPOVER_MAX_HEIGHT = 300;
+const EMPTY_SLASH_COMMANDS: string[] = [];
+const EMPTY_SKILLS: string[] = [];
+const EMPTY_KB_DOCS: KbDocMention[] = [];
 
 interface FileResult {
   path: string;
@@ -340,15 +346,17 @@ export const AutocompleteTextarea = React.forwardRef<
       userById,
       autoSize,
       onFilesDrop,
-      slashCommands = [],
-      skills = [],
-      kbDocs = [],
+      slashCommands = EMPTY_SLASH_COMMANDS,
+      skills = EMPTY_SKILLS,
+      kbDocs = EMPTY_KB_DOCS,
       highlightWhenEmpty = false,
     },
     ref
   ) => {
     const { token } = theme.useToken();
     const textareaRef = useRef<{ current: HTMLTextAreaElement | null }>({ current: null });
+    const wrapperRef = useRef<HTMLDivElement>(null);
+    const popoverRef = useRef<React.ElementRef<typeof Popover> | null>(null);
     const popoverContentRef = useRef<HTMLDivElement>(null);
     const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
     const [isDragOver, setIsDragOver] = useState(false);
@@ -369,10 +377,13 @@ export const AutocompleteTextarea = React.forwardRef<
     const [scrollTop, setScrollTop] = useState(0);
     const overlayRef = useRef<HTMLDivElement>(null);
 
-    // Popover offset (in px) so the dropdown anchors near the trigger caret
-    // rather than the textarea's bottom-left. Anchored to the trigger index so
-    // it stays put as the user types the query.
-    const [popoverOffset, setPopoverOffset] = useState<[number, number]>([0, 0]);
+    // Position a zero-size Popover anchor at the trigger caret, then let AntD's
+    // placement engine flip between bottom/top and left/right edge alignments
+    // near viewport boundaries.
+    const [popoverAnchor, setPopoverAnchor] = useState<[number, number]>([0, 0]);
+    const [popoverPlacement, setPopoverPlacement] = useState<'bottomLeft' | 'topLeft'>(
+      'bottomLeft'
+    );
 
     /**
      * Synchronize overlay scroll with textarea scroll
@@ -393,18 +404,33 @@ export const AutocompleteTextarea = React.forwardRef<
 
     /**
      * Anchor the popover near the trigger caret. Recomputed when the popover
-     * opens, the trigger moves, or the text/scroll reflows. With the Popover's
-     * `bottomLeft` placement the popup's top-left aligns to the wrapper's
-     * bottom-left, so we offset back up to the caret line.
+     * opens, the trigger moves, or the text/scroll reflows. The actual Popover
+     * target is a zero-size span at this position so AntD can use its built-in
+     * auto flip/overflow behavior instead of us maintaining custom placement
+     * math.
      */
-    React.useEffect(() => {
+    React.useLayoutEffect(() => {
       if (!showPopover || triggerIndex < 0) return;
       const textarea = textareaRef.current?.current;
-      if (!textarea) return;
+      const wrapper = wrapperRef.current;
+      if (!textarea || !wrapper) return;
       const { left, top, lineHeight } = getCaretCoordinates(textarea, value, triggerIndex);
-      const offsetX = Math.max(0, left - textarea.scrollLeft);
-      const offsetY = top + lineHeight - scrollTop - textarea.offsetHeight;
-      setPopoverOffset([offsetX, offsetY]);
+      const textareaRect = textarea.getBoundingClientRect();
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const caretTopInWrapper = textareaRect.top - wrapperRect.top + top - scrollTop;
+      const caretTopInViewport = textareaRect.top + top - scrollTop;
+      const caretBottomInViewport = caretTopInViewport + lineHeight;
+      const spaceAbove = caretTopInViewport;
+      const spaceBelow = window.innerHeight - caretBottomInViewport;
+      const shouldPlaceAbove =
+        spaceBelow < AUTOCOMPLETE_POPOVER_MAX_HEIGHT + AUTOCOMPLETE_POPOVER_VIEWPORT_MARGIN &&
+        spaceAbove > spaceBelow;
+
+      setPopoverPlacement(shouldPlaceAbove ? 'topLeft' : 'bottomLeft');
+      setPopoverAnchor([
+        textareaRect.left - wrapperRect.left + Math.max(0, left - textarea.scrollLeft),
+        shouldPlaceAbove ? caretTopInWrapper : caretTopInWrapper + lineHeight,
+      ]);
     }, [showPopover, triggerIndex, scrollTop, value]);
 
     /**
@@ -415,7 +441,7 @@ export const AutocompleteTextarea = React.forwardRef<
         const children = popoverContentRef.current.children;
         if (highlightedIndex < children.length) {
           const highlightedElement = children[highlightedIndex];
-          if (highlightedElement) {
+          if (highlightedElement && typeof highlightedElement.scrollIntoView === 'function') {
             highlightedElement.scrollIntoView({
               behavior: 'smooth',
               block: 'nearest',
@@ -537,10 +563,34 @@ export const AutocompleteTextarea = React.forwardRef<
       return options;
     }, [triggerType, fileResults, emojiResults, slashCommandResults, kbDocs, query, filterUsers]);
 
+    const popoverAnchorKey = `${popoverPlacement}:${popoverAnchor[0]}:${popoverAnchor[1]}`;
+
+    /**
+     * The Popover target is a zero-size span that moves as the caret anchor
+     * changes. rc-trigger does not necessarily realign an already-open popup
+     * when only the target element's CSS left/top changes, so explicitly ask
+     * AntD to re-align after every anchor or placement update.
+     */
+    React.useLayoutEffect(() => {
+      if (!showPopover || autocompleteOptions.length === 0) return;
+
+      popoverRef.current?.forceAlign();
+      const anchorKeyAtSchedule = popoverAnchorKey;
+      const realignTimer = window.setTimeout(() => {
+        if (anchorKeyAtSchedule === popoverAnchorKey) {
+          popoverRef.current?.forceAlign();
+        }
+      }, 0);
+
+      return () => {
+        window.clearTimeout(realignTimer);
+      };
+    }, [showPopover, autocompleteOptions.length, popoverAnchorKey]);
+
     /**
      * Auto-highlight first selectable item when options change
      */
-    React.useEffect(() => {
+    React.useLayoutEffect(() => {
       if (autocompleteOptions.length > 0 && showPopover) {
         // Find first non-heading item and highlight it
         const firstItemIndex = autocompleteOptions.findIndex((item) => !('heading' in item));
@@ -907,12 +957,21 @@ export const AutocompleteTextarea = React.forwardRef<
     const popoverContent = (
       <div
         ref={popoverContentRef}
+        onMouseDown={(e) => {
+          // Keep focus in the textarea so arrow-key navigation continues to
+          // work after interacting with the suggestion list.
+          e.preventDefault();
+        }}
         style={{
-          maxHeight: '300px',
+          width: `min(${AUTOCOMPLETE_POPOVER_WIDTH}px, calc(100vw - ${
+            AUTOCOMPLETE_POPOVER_VIEWPORT_MARGIN * 2
+          }px))`,
+          maxWidth: `calc(100vw - ${AUTOCOMPLETE_POPOVER_VIEWPORT_MARGIN * 2}px)`,
+          maxHeight: `min(${AUTOCOMPLETE_POPOVER_MAX_HEIGHT}px, calc(100vh - ${
+            AUTOCOMPLETE_POPOVER_VIEWPORT_MARGIN * 2
+          }px))`,
           overflowY: 'auto',
-          minWidth: '250px',
-          border: `1px solid ${token.colorBorder}`,
-          borderRadius: token.borderRadius,
+          minWidth: `min(250px, calc(100vw - ${AUTOCOMPLETE_POPOVER_VIEWPORT_MARGIN * 2}px))`,
         }}
       >
         {isLoading && (
@@ -1089,131 +1148,145 @@ export const AutocompleteTextarea = React.forwardRef<
     const shouldHighlightEmpty = highlightWhenEmpty && !value.trim();
 
     return (
-      <Popover
-        content={popoverContent}
-        open={showPopover && autocompleteOptions.length > 0}
-        trigger={[]}
-        placement="bottomLeft"
-        align={{
-          offset: popoverOffset,
-          overflow: { adjustX: true, adjustY: true },
-        }}
-        overlayStyle={{ paddingTop: 4 }}
+      <div
+        ref={wrapperRef}
+        style={{ position: 'relative', width: '100%' }}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        onPaste={handlePaste}
       >
-        <div
-          style={{ position: 'relative', width: '100%' }}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onPaste={handlePaste}
+        <Popover
+          ref={popoverRef}
+          content={popoverContent}
+          open={showPopover && autocompleteOptions.length > 0}
+          trigger={[]}
+          placement={popoverPlacement}
+          autoAdjustOverflow
+          arrow={false}
         >
-          {/* Drag-over overlay */}
-          {isDragOver && (
-            <div
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                backgroundColor: `${token.colorPrimary}10`,
-                border: `2px dashed ${token.colorPrimary}`,
-                borderRadius: token.borderRadius,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                zIndex: 10,
-                pointerEvents: 'none',
-              }}
-            >
-              <Text strong style={{ color: token.colorPrimary }}>
-                Drop files here to upload
-              </Text>
-            </div>
-          )}
-
-          {/* Highlighting overlay (behind textarea) */}
-          {hasHighlights && (
-            <div
-              ref={overlayRef}
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                pointerEvents: 'none',
-                whiteSpace: 'pre-wrap',
-                wordWrap: 'break-word',
-                color: 'transparent',
-                overflow: 'hidden',
-                fontFamily: token.fontFamily,
-                fontSize: token.fontSize,
-                lineHeight: token.lineHeight,
-                padding: '4px 11px',
-                border: '1px solid transparent',
-                borderRadius: token.borderRadius,
-                zIndex: 0,
-              }}
-              aria-hidden="true"
-            >
-              <div
-                style={{
-                  transform: `translateY(-${scrollTop}px)`,
-                }}
-              >
-                {highlightMentions(value, highlightColor)}
-              </div>
-            </div>
-          )}
-
-          {/* Textarea (with transparent background to show highlights) */}
-          <TextArea
-            ref={(node) => {
-              let textarea: HTMLTextAreaElement | null = null;
-              if (
-                node &&
-                typeof node === 'object' &&
-                'resizableTextArea' in node &&
-                node.resizableTextArea &&
-                typeof node.resizableTextArea === 'object' &&
-                'textArea' in node.resizableTextArea &&
-                node.resizableTextArea.textArea instanceof HTMLTextAreaElement
-              ) {
-                textarea = node.resizableTextArea.textArea;
-              }
-              if (textarea) {
-                textareaRef.current.current = textarea;
-                if (typeof ref === 'function') {
-                  ref(textarea);
-                } else if (ref) {
-                  try {
-                    ref.current = textarea;
-                  } catch {
-                    // Read-only ref, ignore
-                  }
-                }
-              }
-            }}
-            value={value}
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            placeholder={placeholder}
-            autoSize={autoSize || { minRows: 2, maxRows: 10 }}
-            className="agor-textarea agor-textarea-with-highlights"
+          <span
+            key={popoverAnchorKey}
+            aria-hidden="true"
+            data-popover-anchor-key={popoverAnchorKey}
+            tabIndex={-1}
             style={{
-              borderColor: shouldHighlightEmpty ? token.colorPrimary : token.colorBorder,
-              boxShadow: shouldHighlightEmpty
-                ? `0 0 0 ${token.controlOutlineWidth}px ${token.controlOutline}`
-                : undefined,
-              backgroundColor: hasHighlights ? 'transparent' : undefined,
-              transition: 'border-color 0.2s ease, box-shadow 0.2s ease',
-              position: 'relative',
-              zIndex: 1,
+              position: 'absolute',
+              left: popoverAnchor[0],
+              top: popoverAnchor[1],
+              width: 0,
+              height: 0,
+              pointerEvents: 'none',
             }}
           />
-        </div>
-      </Popover>
+        </Popover>
+
+        {/* Drag-over overlay */}
+        {isDragOver && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: `${token.colorPrimary}10`,
+              border: `2px dashed ${token.colorPrimary}`,
+              borderRadius: token.borderRadius,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 10,
+              pointerEvents: 'none',
+            }}
+          >
+            <Text strong style={{ color: token.colorPrimary }}>
+              Drop files here to upload
+            </Text>
+          </div>
+        )}
+
+        {/* Highlighting overlay (behind textarea) */}
+        {hasHighlights && (
+          <div
+            ref={overlayRef}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              pointerEvents: 'none',
+              whiteSpace: 'pre-wrap',
+              wordWrap: 'break-word',
+              color: 'transparent',
+              overflow: 'hidden',
+              fontFamily: token.fontFamily,
+              fontSize: token.fontSize,
+              lineHeight: token.lineHeight,
+              padding: '4px 11px',
+              border: '1px solid transparent',
+              borderRadius: token.borderRadius,
+              zIndex: 0,
+            }}
+            aria-hidden="true"
+          >
+            <div
+              style={{
+                transform: `translateY(-${scrollTop}px)`,
+              }}
+            >
+              {highlightMentions(value, highlightColor)}
+            </div>
+          </div>
+        )}
+
+        {/* Textarea (with transparent background to show highlights) */}
+        <TextArea
+          ref={(node) => {
+            let textarea: HTMLTextAreaElement | null = null;
+            if (
+              node &&
+              typeof node === 'object' &&
+              'resizableTextArea' in node &&
+              node.resizableTextArea &&
+              typeof node.resizableTextArea === 'object' &&
+              'textArea' in node.resizableTextArea &&
+              node.resizableTextArea.textArea instanceof HTMLTextAreaElement
+            ) {
+              textarea = node.resizableTextArea.textArea;
+            }
+            if (textarea) {
+              textareaRef.current.current = textarea;
+              if (typeof ref === 'function') {
+                ref(textarea);
+              } else if (ref) {
+                try {
+                  ref.current = textarea;
+                } catch {
+                  // Read-only ref, ignore
+                }
+              }
+            }
+          }}
+          value={value}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          autoSize={autoSize || { minRows: 2, maxRows: 10 }}
+          className="agor-textarea agor-textarea-with-highlights"
+          style={{
+            borderColor: shouldHighlightEmpty ? token.colorPrimary : token.colorBorder,
+            boxShadow: shouldHighlightEmpty
+              ? `0 0 0 ${token.controlOutlineWidth}px ${token.controlOutline}`
+              : undefined,
+            backgroundColor: hasHighlights ? 'transparent' : undefined,
+            transition: 'border-color 0.2s ease, box-shadow 0.2s ease',
+            position: 'relative',
+            zIndex: 1,
+          }}
+        />
+      </div>
     );
   }
 );
