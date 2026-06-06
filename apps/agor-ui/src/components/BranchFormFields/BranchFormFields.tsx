@@ -7,8 +7,25 @@
  */
 
 import type { Board, Repo } from '@agor-live/client';
-import { Checkbox, Form, Input, InputNumber, Radio, Select, Space, Typography } from 'antd';
-import { useState } from 'react';
+import {
+  Checkbox,
+  Form,
+  Input,
+  InputNumber,
+  Radio,
+  Select,
+  Space,
+  Tooltip,
+  Typography,
+} from 'antd';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  BRANCH_STORAGE_MODES,
+  type BranchStorageConfig,
+  type BranchStorageMode,
+  getStorageModeLabel,
+  resolveUiBranchStorageConfig,
+} from '@/utils/branchStorage';
 import { mapToArray } from '@/utils/mapHelpers';
 
 /**
@@ -38,6 +55,8 @@ export interface BranchFormFieldsProps {
   useSameBranchName?: boolean;
   /** Callback when checkbox changes */
   onUseSameBranchNameChange?: (checked: boolean) => void;
+  /** Resolved server branch storage policy from /health features.branchStorage. */
+  branchStorageConfig?: BranchStorageConfig;
 }
 
 export const BranchFormFields: React.FC<BranchFormFieldsProps> = ({
@@ -52,6 +71,7 @@ export const BranchFormFields: React.FC<BranchFormFieldsProps> = ({
   onFormChange,
   useSameBranchName: controlledUseSameBranchName,
   onUseSameBranchNameChange,
+  branchStorageConfig,
 }) => {
   const [internalUseSameBranchName, setInternalUseSameBranchName] = useState(true);
   const [refType, setRefType] = useState<'branch' | 'tag'>('branch');
@@ -61,6 +81,27 @@ export const BranchFormFields: React.FC<BranchFormFieldsProps> = ({
   const setUseSameBranchName = onUseSameBranchNameChange ?? setInternalUseSameBranchName;
 
   const form = Form.useFormInstance();
+  const storageFieldName = `${fieldPrefix}storage_mode`;
+  const { defaultMode: defaultStorageMode, allowedModes: allowedStorageModes } = useMemo(
+    () => resolveUiBranchStorageConfig(branchStorageConfig),
+    [branchStorageConfig]
+  );
+  const previousDefaultStorageMode = useRef<BranchStorageMode | undefined>(undefined);
+
+  useEffect(() => {
+    const current = form.getFieldValue(storageFieldName) as BranchStorageMode | undefined;
+    const previousDefault = previousDefaultStorageMode.current;
+    if (
+      !current ||
+      !allowedStorageModes.includes(current) ||
+      (previousDefault !== undefined &&
+        current === previousDefault &&
+        current !== defaultStorageMode)
+    ) {
+      form.setFieldValue(storageFieldName, defaultStorageMode);
+    }
+    previousDefaultStorageMode.current = defaultStorageMode;
+  }, [allowedStorageModes, defaultStorageMode, form, storageFieldName]);
 
   const handleCheckboxChange = (checked: boolean) => {
     setUseSameBranchName(checked);
@@ -191,9 +232,9 @@ export const BranchFormFields: React.FC<BranchFormFieldsProps> = ({
       )}
 
       <Form.Item
-        name={`${fieldPrefix}storage_mode`}
+        name={storageFieldName}
         label="Storage"
-        initialValue="worktree"
+        initialValue={defaultStorageMode}
         tooltip={
           'How the branch is materialised on disk. ' +
           '"Worktree" uses git\'s native shared-base model (legacy default). ' +
@@ -201,10 +242,34 @@ export const BranchFormFields: React.FC<BranchFormFieldsProps> = ({
           'git clone — credentials and config are isolated from sibling branches. ' +
           'See context/explorations/clone-redesign.md.'
         }
+        extra={
+          allowedStorageModes.length === 1
+            ? `${getStorageModeLabel(allowedStorageModes[0])} is the only storage mode enabled on this Agor instance. Administrators configure this with execution.branch_storage.allowed_modes.`
+            : `Default on this Agor instance: ${getStorageModeLabel(defaultStorageMode)}.`
+        }
       >
         <Radio.Group onChange={() => onFormChange?.()}>
-          <Radio value="worktree">Worktree (default)</Radio>
-          <Radio value="clone">Clone</Radio>
+          {BRANCH_STORAGE_MODES.map((mode) => {
+            const disabled = !allowedStorageModes.includes(mode);
+            const defaultSuffix = mode === defaultStorageMode ? ' (default)' : '';
+            const label = `${getStorageModeLabel(mode)}${defaultSuffix}`;
+            return (
+              <Tooltip
+                key={mode}
+                title={
+                  disabled
+                    ? `${getStorageModeLabel(mode)} storage is disabled on this Agor instance by execution.branch_storage.allowed_modes.`
+                    : undefined
+                }
+              >
+                <span>
+                  <Radio value={mode} disabled={disabled}>
+                    {label}
+                  </Radio>
+                </span>
+              </Tooltip>
+            );
+          })}
         </Radio.Group>
       </Form.Item>
 

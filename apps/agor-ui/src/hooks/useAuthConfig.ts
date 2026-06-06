@@ -9,6 +9,7 @@ import type { ManagedEnvExecutionMode } from '@agor/core/environment/webhook';
 import type { DaemonServicesConfig } from '@agor-live/client';
 import { useEffect, useState } from 'react';
 import { getDaemonUrl } from '../config/daemon';
+import type { BranchStorageConfig } from '../utils/branchStorage';
 
 interface AuthConfig {
   requireAuth: boolean;
@@ -38,7 +39,7 @@ interface OnboardingConfig {
   systemCredentials?: SystemCredentials;
 }
 
-interface FeaturesConfig {
+export interface FeaturesConfig {
   /**
    * Whether the web terminal is enabled for members (execution.allow_web_terminal).
    * Defaults to true when the daemon config key is unset.
@@ -66,6 +67,12 @@ interface FeaturesConfig {
   multiUser?: boolean;
   /** Experimental Cursor SDK provider enabled on the daemon. */
   cursorSdk?: boolean;
+  /**
+   * Resolved branch storage policy from execution.branch_storage.
+   * Defaults server-side to { defaultMode: 'worktree',
+   * allowedModes: ['worktree', 'clone'] } when unset.
+   */
+  branchStorage?: BranchStorageConfig;
 }
 
 interface HealthResponse {

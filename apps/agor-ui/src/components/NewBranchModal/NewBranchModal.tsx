@@ -1,6 +1,8 @@
 import type { Repo } from '@agor-live/client';
 import { Button, Form, Modal } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { BranchStorageConfig } from '@/utils/branchStorage';
+import { normalizeBranchStorageMode } from '@/utils/branchStorage';
 import { mapToArray } from '@/utils/mapHelpers';
 import { BranchFormFields } from '../BranchFormFields';
 import type { BranchTabConfig } from '../CreateDialog/tabs/BranchTab';
@@ -15,6 +17,7 @@ export interface NewBranchModalProps {
   repoById: Map<string, Repo>;
   currentBoardId?: string; // Auto-fill board if provided
   defaultPosition?: { x: number; y: number }; // Default position on canvas (center of viewport)
+  branchStorageConfig?: BranchStorageConfig;
 }
 
 export const NewBranchModal: React.FC<NewBranchModalProps> = ({
@@ -24,6 +27,7 @@ export const NewBranchModal: React.FC<NewBranchModalProps> = ({
   repoById,
   currentBoardId,
   defaultPosition,
+  branchStorageConfig,
 }) => {
   const [form] = Form.useForm();
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
@@ -97,7 +101,7 @@ export const NewBranchModal: React.FC<NewBranchModalProps> = ({
     const values = await form.validateFields();
 
     const refType = values.refType || 'branch';
-    const storageMode: 'worktree' | 'clone' = values.storage_mode ?? 'worktree';
+    const storageMode = normalizeBranchStorageMode(values.storage_mode, branchStorageConfig);
     // Depth only applies to clone-mode and only when the input has a
     // positive value. The form's validator already rejects bad numbers;
     // empty / cleared input → undefined → full clone at the daemon layer.
@@ -170,6 +174,7 @@ export const NewBranchModal: React.FC<NewBranchModalProps> = ({
           defaultBranch={selectedRepo?.default_branch || 'main'}
           showUrlFields={true}
           onFormChange={handleValuesChange}
+          branchStorageConfig={branchStorageConfig}
         />
       </Form>
     </Modal>
