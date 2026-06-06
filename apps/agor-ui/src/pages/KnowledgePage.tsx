@@ -369,6 +369,58 @@ const normalizeFolderPath = (folder?: string | null) => {
   }
 };
 
+export function resolveActiveKnowledgeDocument<T extends { document_id: string }>(args: {
+  activeDocId: string | null;
+  draftDocument: T | null;
+  documents: T[];
+  activeDocSnapshot: T | null;
+}): T | null {
+  const { activeDocId, activeDocSnapshot, documents, draftDocument } = args;
+  if (activeDocId === DRAFT_DOCUMENT_ID) return draftDocument;
+  if (!activeDocId) return null;
+
+  return (
+    documents.find((doc) => doc.document_id === activeDocId) ??
+    (activeDocSnapshot?.document_id === activeDocId ? activeDocSnapshot : null)
+  );
+}
+
+export function shouldDeferKnowledgeUrlMirrorForRoute(args: {
+  routeDocumentPath: string;
+  activeDocPath?: string | null;
+}): boolean {
+  return Boolean(args.routeDocumentPath && args.activeDocPath !== args.routeDocumentPath);
+}
+
+export function buildKnowledgeQueryString(args: {
+  query?: string;
+  kind?: string;
+  editing?: boolean;
+  activeDocId?: string | null;
+}): string {
+  const params = new URLSearchParams();
+  const kindParam = kindFilterToUrlParam(args.kind ?? 'All');
+
+  if (args.query?.trim()) params.set('q', args.query.trim());
+  if (kindParam) params.set('kind', kindParam);
+  if (args.editing && args.activeDocId === DRAFT_DOCUMENT_ID) params.set('draft', 'page');
+  if (args.editing && args.activeDocId) params.set('mode', 'edit');
+
+  const serialized = params.toString();
+  return serialized ? `?${serialized}` : '';
+}
+
+export function buildKnowledgeDocumentRouteUrl(args: {
+  routeBasePath: string;
+  namespaceSlug: string;
+  documentPath: string;
+  currentSearch?: string;
+}): string {
+  return `${buildKnowledgeRoutePath(args.routeBasePath, args.namespaceSlug, args.documentPath)}${
+    args.currentSearch ?? ''
+  }`;
+}
+
 const validateKnowledgePath = (path: string, { allowEmpty = false } = {}): string | null =>
   validateSharedKnowledgePath(path, { allowEmpty });
 
@@ -476,6 +528,10 @@ export function KnowledgePage({
   const [versions, setVersions] = useState<KnowledgeVersion[]>([]);
   const [activeSpace, setActiveSpace] = useState(() => routeNamespaceSlug ?? 'global');
   const [activeDocId, setActiveDocId] = useState<string | null>(null);
+  // Keep the open document independent from the filtered sidebar result set.
+  // The type switcher intentionally filters the tree only; a direct/open doc
+  // remains stable even when its kind is outside the current filter.
+  const [activeDocSnapshot, setActiveDocSnapshot] = useState<KnowledgeDocument | null>(null);
   // Whole-Space document graph shown as the home view when no doc is open.
   const [graphData, setGraphData] = useState<KnowledgeNamespaceGraph | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
@@ -541,12 +597,13 @@ export function KnowledgePage({
 
   const activeDoc = useMemo(
     () =>
-      activeDocId === DRAFT_DOCUMENT_ID
-        ? draftDocument
-        : activeDocId
-          ? (documents.find((doc) => doc.document_id === activeDocId) ?? null)
-          : null,
-    [documents, draftDocument, activeDocId]
+      resolveActiveKnowledgeDocument({
+        activeDocId,
+        activeDocSnapshot,
+        documents,
+        draftDocument,
+      }),
+    [activeDocId, activeDocSnapshot, documents, draftDocument]
   );
   const isDraftDocument = activeDoc?.document_id === DRAFT_DOCUMENT_ID;
 
@@ -632,20 +689,13 @@ export function KnowledgePage({
   }, [activeDoc, documents, nextDraftTitle]);
 
   const buildKnowledgeSearch = useCallback(
-    (overrides: { query?: string; kind?: string; editing?: boolean } = {}) => {
-      const params = new URLSearchParams();
-      const query = overrides.query ?? searchQuery;
-      const kind = overrides.kind ?? kindFilter;
-      const editing = overrides.editing ?? isEditing;
-      const kindParam = kindFilterToUrlParam(kind);
-
-      if (query.trim()) params.set('q', query.trim());
-      if (kindParam) params.set('kind', kindParam);
-      if (editing && activeDocId) params.set('mode', 'edit');
-
-      const serialized = params.toString();
-      return serialized ? `?${serialized}` : '';
-    },
+    (overrides: { query?: string; kind?: string; editing?: boolean } = {}) =>
+      buildKnowledgeQueryString({
+        query: overrides.query ?? searchQuery,
+        kind: overrides.kind ?? kindFilter,
+        editing: overrides.editing ?? isEditing,
+        activeDocId,
+      }),
     [activeDocId, isEditing, kindFilter, searchQuery]
   );
 
@@ -1006,6 +1056,7 @@ export function KnowledgePage({
     ) {
       activeDocIdRef.current = null;
       setActiveDocId(null);
+      setActiveDocSnapshot(null);
     }
     if (routeNamespaceSlug && nextSpace !== activeSpace) setActiveSpace(nextSpace);
     setSearchQuery((current) => (current === nextQuery ? current : nextQuery));
@@ -1030,16 +1081,75 @@ export function KnowledgePage({
 
   useEffect(() => {
     if (activeDocIdRef.current === DRAFT_DOCUMENT_ID) return;
-    if (!routeNamespaceSlug || !routeDocumentPath) return;
+    if (!client || !routeNamespaceSlug || !routeDocumentPath) return;
+
+    const snapshotMatchesRoute =
+      activeDocSnapshot?.path === routeDocumentPath &&
+      namespaceSlugForDocument(activeDocSnapshot) === routeNamespaceSlug;
+    if (snapshotMatchesRoute) {
+      if (activeDocSnapshot.document_id !== activeDocId) {
+        activeDocIdRef.current = activeDocSnapshot.document_id;
+        setActiveDocId(activeDocSnapshot.document_id);
+      }
+      return;
+    }
+
     const routedDocument = documents.find(
       (doc) =>
         doc.path === routeDocumentPath && namespaceSlugForDocument(doc) === routeNamespaceSlug
     );
-    if (routedDocument && routedDocument.document_id !== activeDocId) {
-      activeDocIdRef.current = routedDocument.document_id;
-      setActiveDocId(routedDocument.document_id);
+    if (routedDocument) {
+      setActiveDocSnapshot(routedDocument);
+      if (routedDocument.document_id !== activeDocId) {
+        activeDocIdRef.current = routedDocument.document_id;
+        setActiveDocId(routedDocument.document_id);
+      }
+      return;
     }
-  }, [activeDocId, documents, namespaceSlugForDocument, routeDocumentPath, routeNamespaceSlug]);
+
+    // The sidebar list is filtered by kind/search. A direct document URL must
+    // still resolve even when that document is not present in the filtered tree.
+    let cancelled = false;
+    void client
+      .service('kb/documents')
+      .find({
+        query: {
+          namespace_slug: routeNamespaceSlug,
+          path: routeDocumentPath,
+          archived: false,
+        },
+      })
+      .then((result) => {
+        if (cancelled || activeDocIdRef.current === DRAFT_DOCUMENT_ID) return;
+        const [resolvedDocument] = normalizeFindResult<KnowledgeDocument>(
+          result as KnowledgeDocument[]
+        );
+        if (!resolvedDocument) {
+          activeDocIdRef.current = null;
+          setActiveDocId(null);
+          setActiveDocSnapshot(null);
+          return;
+        }
+        setActiveDocSnapshot(resolvedDocument);
+        activeDocIdRef.current = resolvedDocument.document_id;
+        setActiveDocId(resolvedDocument.document_id);
+      })
+      .catch((err) => {
+        if (!cancelled) console.error('Failed to resolve Knowledge route document:', err);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeDocId,
+    activeDocSnapshot,
+    client,
+    documents,
+    namespaceSlugForDocument,
+    routeDocumentPath,
+    routeNamespaceSlug,
+  ]);
 
   useEffect(() => {
     if (!client || loading || activeDocIdRef.current === DRAFT_DOCUMENT_ID) return;
@@ -1082,11 +1192,12 @@ export function KnowledgePage({
 
   useEffect(() => {
     if (activeDocIdRef.current === DRAFT_DOCUMENT_ID) return;
-    if (activeDocId && !activeDoc && !loading) {
+    if (activeDocId && !activeDoc && !loading && !routeDocumentPath) {
       activeDocIdRef.current = null;
       setActiveDocId(null);
+      setActiveDocSnapshot(null);
     }
-  }, [activeDoc, activeDocId, loading]);
+  }, [activeDoc, activeDocId, loading, routeDocumentPath]);
 
   useEffect(() => {
     if (activeDoc) {
@@ -1119,6 +1230,14 @@ export function KnowledgePage({
     if (routedDocument && routedDocument.document_id !== activeDocId) return;
     if (!routeDocumentPath && activeDoc) return;
     if (
+      shouldDeferKnowledgeUrlMirrorForRoute({
+        routeDocumentPath,
+        activeDocPath: activeDoc?.path,
+      })
+    ) {
+      return;
+    }
+    if (
       activeDoc &&
       routeNamespaceSlug &&
       routeNamespaceSlug !== namespaceSlugForDocument(activeDoc)
@@ -1126,22 +1245,30 @@ export function KnowledgePage({
       return;
     }
 
-    // Only an OPEN document drives the URL from this effect. When no doc is
-    // open, the namespace portion of the URL is owned solely by the navigation
-    // handlers (changeKnowledgeSpace / goToGraphHome) and read back into state
-    // by the route-reading effect above. Mirroring `activeSpace` into the URL
-    // here as well made the namespace a two-writer value: this effect and the
-    // route-reading effect would leapfrog (each acting on the other's
-    // pre-commit value), ping-ponging the route between namespaces forever.
+    // Only an OPEN document's *path* drives the URL from this effect. Query
+    // params (`q`, `kind`, `mode`, `draft`) are owned by explicit UI navigation
+    // handlers and read back into state by the route-reading effect above.
+    // Rebuilding query params here from local state creates a two-writer value:
+    // after a route change, local state can lag by one render, so this effect
+    // removes the new query param; the route reader then applies the old/new
+    // state in the opposite direction and the URL ping-pongs forever.
+    //
+    // This is the same ownership rule as namespace/path routing: path mirroring
+    // may correct the document route, but it must preserve the URL's current
+    // query string verbatim.
     if (!activeDoc) return;
 
-    const targetUrl = `${buildKnowledgeRoutePath(routeBasePath, namespaceSlugForDocument(activeDoc), activeDoc.path)}${buildKnowledgeSearch()}`;
+    const targetUrl = buildKnowledgeDocumentRouteUrl({
+      routeBasePath,
+      namespaceSlug: namespaceSlugForDocument(activeDoc),
+      documentPath: activeDoc.path,
+      currentSearch: location.search,
+    });
     const currentUrl = `${location.pathname}${location.search}`;
     if (targetUrl !== currentUrl) navigate(targetUrl, { replace: true });
   }, [
     activeDoc,
     activeDocId,
-    buildKnowledgeSearch,
     documents,
     draftDocument,
     location.pathname,
@@ -1228,6 +1355,7 @@ export function KnowledgePage({
     };
     setDraftDocument(draft);
     setDraftNamespaceSlug(namespaceSlug);
+    setActiveDocSnapshot(null);
     activeDocIdRef.current = DRAFT_DOCUMENT_ID;
     setActiveDocId(DRAFT_DOCUMENT_ID);
     setSelectedFolder(ROOT_FOLDER);
@@ -1317,6 +1445,7 @@ export function KnowledgePage({
       } as unknown as Partial<CoreKnowledgeDocument>)) as KnowledgeDocument;
       setDocuments((prev) => [created, ...prev]);
       setActiveSpace(namespaceSlug);
+      setActiveDocSnapshot(created);
       activeDocIdRef.current = created.document_id;
       setActiveDocId(created.document_id);
       setSelectedFolder(parentFolderForPath(created.path));
@@ -1361,6 +1490,7 @@ export function KnowledgePage({
         setDraftDocument(null);
         setDraftNamespaceSlug(null);
         setActiveSpace(namespaceSlug);
+        setActiveDocSnapshot(created);
         activeDocIdRef.current = created.document_id;
         setActiveDocId(created.document_id);
         setSelectedFolder(parentFolderForPath(created.path));
@@ -1399,8 +1529,22 @@ export function KnowledgePage({
       setDocuments((prev) =>
         prev.map((doc) => (doc.document_id === updated.document_id ? updated : doc))
       );
+      setActiveDocSnapshot(updated);
       await loadVersions();
-      setKnowledgeEditMode(false);
+      if (nextPath) {
+        pendingEditModeRef.current = false;
+        setIsEditing(false);
+        navigate(
+          `${buildKnowledgeRoutePath(
+            routeBasePath,
+            namespaceSlugForDocument(updated),
+            updated.path
+          )}${buildKnowledgeSearch({ editing: false })}`,
+          { replace: true }
+        );
+      } else {
+        setKnowledgeEditMode(false);
+      }
     } catch (err) {
       console.error('Failed to save Knowledge document:', err);
       setError(err instanceof Error ? err.message : String(err));
@@ -1409,10 +1553,8 @@ export function KnowledgePage({
     }
   };
 
-  const moveDocumentToFolder = async (documentId: string, folder: string) => {
+  const moveDocumentToFolder = async (doc: KnowledgeDocument, folder: string) => {
     if (!client) return;
-    const doc = documents.find((item) => item.document_id === documentId);
-    if (!doc) return;
 
     const targetFolder = normalizeFolderPath(folder);
     const folderError = validateKnowledgePath(targetFolder, { allowEmpty: true });
@@ -1437,10 +1579,19 @@ export function KnowledgePage({
       setDocuments((prev) =>
         prev.map((item) => (item.document_id === updated.document_id ? updated : item))
       );
+      setActiveDocSnapshot(updated);
       activeDocIdRef.current = updated.document_id;
       setActiveDocId(updated.document_id);
       setSelectedFolder(targetFolder);
       setExpandedTreeKeys((prev) => [...new Set([...prev, `folder:${targetFolder}`])]);
+      navigate(
+        `${buildKnowledgeRoutePath(
+          routeBasePath,
+          namespaceSlugForDocument(updated),
+          updated.path
+        )}${buildKnowledgeSearch({ editing: false })}`,
+        { replace: true }
+      );
     } catch (err) {
       console.error('Failed to move Knowledge document:', err);
       setError(err instanceof Error ? err.message : String(err));
@@ -1456,6 +1607,7 @@ export function KnowledgePage({
       setDraftNamespaceSlug(null);
       activeDocIdRef.current = null;
       setActiveDocId(null);
+      setActiveDocSnapshot(null);
       setTitleDraft('');
       setVisibilityDraft('public');
       setKindDraft('doc');
@@ -1504,6 +1656,7 @@ export function KnowledgePage({
       setDocuments((prev) =>
         prev.map((doc) => (doc.document_id === updated.document_id ? updated : doc))
       );
+      setActiveDocSnapshot(updated);
       setMarkdownDraft(restoredContent);
       setTitleDraft(nextTitle);
       await loadVersions();
@@ -1530,6 +1683,7 @@ export function KnowledgePage({
           setDocuments((prev) => prev.filter((doc) => doc.document_id !== activeDoc.document_id));
           activeDocIdRef.current = null;
           setActiveDocId(null);
+          setActiveDocSnapshot(null);
           setVersions([]);
           setSelectedVersionId(null);
         } catch (err) {
@@ -1563,6 +1717,7 @@ export function KnowledgePage({
   const selectKnowledgeDocument = async (doc: KnowledgeDocument) => {
     if (!(await confirmDiscardUnsavedChanges())) return;
     clearDraftDocument();
+    setActiveDocSnapshot(doc);
     activeDocIdRef.current = doc.document_id;
     setActiveDocId(doc.document_id);
     pendingEditModeRef.current = false;
@@ -1579,6 +1734,7 @@ export function KnowledgePage({
     clearDraftDocument();
     activeDocIdRef.current = null;
     setActiveDocId(null);
+    setActiveDocSnapshot(null);
     pendingEditModeRef.current = false;
     setIsEditing(false);
     const targetPath =
@@ -1599,6 +1755,9 @@ export function KnowledgePage({
     if (!node) return;
     if (!(await confirmDiscardUnsavedChanges())) return;
     clearDraftDocument();
+    activeDocIdRef.current = null;
+    setActiveDocId(null);
+    setActiveDocSnapshot(null);
     const slug = namespaceSlugFromUri(node.uri) ?? activeSpace;
     setKindFilter('All');
     setSearchQuery('');
@@ -1613,6 +1772,7 @@ export function KnowledgePage({
     setActiveSpace(space);
     activeDocIdRef.current = null;
     setActiveDocId(null);
+    setActiveDocSnapshot(null);
     setSelectedFolder(ROOT_FOLDER);
     pendingEditModeRef.current = false;
     setIsEditing(false);
@@ -2593,7 +2753,7 @@ export function KnowledgePage({
         open={relocateModalOpen}
         okText="Move"
         onOk={async () => {
-          if (activeDoc) await moveDocumentToFolder(activeDoc.document_id, relocateFolder);
+          if (activeDoc) await moveDocumentToFolder(activeDoc, relocateFolder);
           setRelocateModalOpen(false);
         }}
         onCancel={() => setRelocateModalOpen(false)}
