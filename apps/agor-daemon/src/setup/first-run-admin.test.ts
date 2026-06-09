@@ -16,6 +16,16 @@ vi.mock('@agor/core/db', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return {
     ...actual,
+    assertUsableBootstrapAdminPassword:
+      actual.assertUsableBootstrapAdminPassword ??
+      ((password: string, label: string = 'Bootstrap admin password') => {
+        if (password === 'admin') {
+          throw new Error(`${label} must not be the legacy fixed default password.`);
+        }
+        if (password.length < 8) {
+          throw new Error(`${label} must be at least 8 characters.`);
+        }
+      }),
     bootstrapFirstRunAdmin: vi.fn(),
     createUser: vi.fn(),
   };
@@ -106,8 +116,10 @@ describe('logFirstRunAdminBootstrap', () => {
       credentialsPath: '/etc/agor/admin-credentials',
     });
     expect(written).toContain('First-run admin user created');
+    expect(written).toContain('generated because AGOR_ADMIN_PASSWORD was not set');
     expect(written).toContain('see /etc/agor/admin-credentials (mode 0600)');
-    expect(written).not.toContain('AGOR_ADMIN_PASSWORD');
+    expect(written).toContain('set AGOR_ADMIN_PASSWORD before first startup');
+    expect(written).toContain('will not reset passwords');
   });
 
   it('points operators at AGOR_ADMIN_PASSWORD when no file was written', () => {
@@ -183,6 +195,19 @@ describe('runFirstRunAdminBootstrap — capability-driven password resolution', 
     expect(result.credentialsPath).toBeUndefined();
     const credentialsPath = path.join(tempDir, 'admin-credentials');
     await expect(fs.access(credentialsPath)).rejects.toThrow();
+  });
+
+  it('rejects the legacy fixed default password from AGOR_ADMIN_PASSWORD', async () => {
+    process.env.AGOR_ADMIN_PASSWORD = 'admin';
+
+    const { bootstrapFirstRunAdmin } = await loadMocks();
+    bootstrapFirstRunAdmin.mockImplementation(
+      async (_db: unknown, factory: () => Promise<unknown>) => factory()
+    );
+
+    await expect(
+      runFirstRunAdminBootstrap({} as unknown as never, { credentialsBaseDir: tempDir })
+    ).rejects.toThrow(/legacy fixed default password/);
   });
 
   it('falls back to file-based generation when AGOR_ADMIN_PASSWORD is absent', async () => {

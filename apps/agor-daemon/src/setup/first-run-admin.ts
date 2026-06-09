@@ -21,6 +21,7 @@ import { promisify } from 'node:util';
 import type { AgorConfig } from '@agor/core/config';
 import {
   type AdminBootstrapResult,
+  assertUsableBootstrapAdminPassword,
   BOOTSTRAP_ADMIN_EMAIL,
   bootstrapFirstRunAdmin,
   createUser,
@@ -155,6 +156,7 @@ export async function runFirstRunAdminBootstrap(
     // 1) Env-var path: use the operator-provided password verbatim. No file
     // touch, no rollback to worry about.
     if (envPassword && envPassword.length > 0) {
+      assertUsableBootstrapAdminPassword(envPassword, 'AGOR_ADMIN_PASSWORD');
       return await createUser(db, {
         email: BOOTSTRAP_ADMIN_EMAIL,
         password: envPassword,
@@ -228,7 +230,18 @@ export function logFirstRunAdminBootstrap(result: DaemonBootstrapResult): void {
     process.stderr.write('----------------------------------------------------------------\n');
     process.stderr.write(`    Email:     ${result.admin.email}\n`);
     if (result.credentialsPath) {
-      process.stderr.write(`    Password:  see ${result.credentialsPath} (mode 0600)\n`);
+      process.stderr.write('    Password:  generated because AGOR_ADMIN_PASSWORD was not set\n');
+      process.stderr.write(`               see ${result.credentialsPath} (mode 0600)\n`);
+      process.stderr.write('\n');
+      process.stderr.write(
+        '    WARNING: Read that file to complete first login, then change the password.\n'
+      );
+      process.stderr.write(
+        '    For future fresh deployments, set AGOR_ADMIN_PASSWORD before first startup.\n'
+      );
+      process.stderr.write(
+        '    Setting AGOR_ADMIN_PASSWORD after users exist will not reset passwords.\n'
+      );
     } else {
       // Env-var path (AGOR_ADMIN_PASSWORD). Don't print the password — the
       // operator set it themselves; logging it would unnecessarily duplicate
