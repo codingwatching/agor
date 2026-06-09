@@ -36,7 +36,10 @@ interface BranchHeaderPillProps {
   connectionDisabled?: boolean;
   /** Show environment status/controls and environment shortcut. Defaults to true. */
   showEnvButtons?: boolean;
-  /** Compact identity section for constrained side panels. Hides the repo slug but keeps it in the tooltip. */
+  /**
+   * Compact rendering for constrained side panels.
+   * Hides the repo slug in the identity section and omits destructive environment actions.
+   */
   compact?: boolean;
 }
 
@@ -346,7 +349,7 @@ export function BranchHeaderPill({
               )}
 
               {/* Nuke button */}
-              {onNukeEnvironment && branch.nuke_command && (
+              {!compact && onNukeEnvironment && branch.nuke_command && (
                 <Tooltip title={controlDisabledTooltip ?? 'Nuke environment (destructive)'}>
                   <Button
                     type="text"
