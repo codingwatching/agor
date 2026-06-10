@@ -54,6 +54,7 @@ function createPatchHarness(opts: {
     findByBranchId: vi.fn(async () => null),
     create: vi.fn(async () => ({ object_id: 'obj-1' })),
     remove: vi.fn(async () => ({})),
+    patch: vi.fn(async () => ({})),
   };
   const boardsService = {
     get: vi.fn(async () => ({ objects: {} })),
@@ -116,6 +117,7 @@ function createServiceHarness() {
     findByBranchId: vi.fn(async () => null),
     create: vi.fn(async () => ({ object_id: 'obj-1' })),
     remove: vi.fn(async () => ({})),
+    patch: vi.fn(async () => ({})),
   };
 
   const sessionsService = {
@@ -235,6 +237,34 @@ describe('BranchesService.patch primary assistant invariants', () => {
 
     expect(boardRepo.clearPrimaryAssistantIfMatches).toHaveBeenCalledWith(boardId, branchId);
     expect(boardRepo.setPrimaryAssistantIfUnset).not.toHaveBeenCalled();
+  });
+
+  it('preserves the board object zone pin when a branch is archived via patch', async () => {
+    const boardId = 'board-a' as BoardID;
+    const branchId = 'branch-archive-zone' as BranchID;
+    const { service, boardObjectsService } = createPatchHarness({
+      current: {
+        branch_id: branchId,
+        board_id: boardId,
+        archived: false,
+        custom_context: {},
+      },
+      updated: {
+        branch_id: branchId,
+        board_id: boardId,
+        archived: true,
+        custom_context: {},
+      },
+    });
+    boardObjectsService.findByBranchId.mockResolvedValue({
+      object_id: 'obj-branch',
+      zone_id: 'zone-review',
+    });
+
+    await service.patch(branchId, { archived: true });
+
+    expect(boardObjectsService.findByBranchId).not.toHaveBeenCalled();
+    expect(boardObjectsService.patch).not.toHaveBeenCalled();
   });
 
   it('rejects converting a normal branch into an assistant', async () => {
@@ -399,6 +429,48 @@ describe('BranchesService.unarchive', () => {
       branch_id: branchId,
       position: { x: 7, y: 8 },
     });
+  });
+});
+
+describe('BranchesService.archiveOrDelete', () => {
+  it('preserves a zoned board object when archiving through the archive operation', async () => {
+    const { service, boardObjectsService, sessionsService } = createServiceHarness();
+    const branchId = 'wt-archive-op' as BranchID;
+    const userId = 'user-1' as UUID;
+
+    vi.spyOn(service, 'get').mockResolvedValue({
+      branch_id: branchId,
+      name: 'WT Archive Op',
+      path: '/tmp/wt-archive-op',
+      archived: false,
+      board_id: 'board-a',
+      filesystem_status: 'ready',
+      environment_instance: { status: 'stopped' },
+    } as never);
+    vi.spyOn(service, 'patch').mockResolvedValue({
+      branch_id: branchId,
+      name: 'WT Archive Op',
+      path: '/tmp/wt-archive-op',
+      archived: true,
+      board_id: 'board-a',
+    } as never);
+    boardObjectsService.findByBranchId.mockResolvedValue({
+      object_id: 'obj-branch',
+      zone_id: 'zone-review',
+    });
+
+    await service.archiveOrDelete(
+      branchId,
+      { metadataAction: 'archive', filesystemAction: 'preserved' },
+      { user: { user_id: userId } } as never
+    );
+
+    expect(sessionsService.find).toHaveBeenCalledWith({
+      query: { branch_id: branchId, $limit: 1000 },
+      paginate: false,
+    });
+    expect(boardObjectsService.findByBranchId).not.toHaveBeenCalled();
+    expect(boardObjectsService.patch).not.toHaveBeenCalled();
   });
 });
 
