@@ -11,7 +11,7 @@
  * up its current board, and switches if needed. This keeps shared
  * links stable across board moves.
  *
- *   /                              — root (redirects to first board)
+ *   /                              — Home (no board selected)
  *   /b/<boardSlugOrShort>/         — board view
  *   /s/<sessionShort>/             — session conversation
  *   /w/<branchShort>/            — branch (board switch + recenter)
@@ -282,10 +282,28 @@ export function useUrlState(options: UseUrlStateOptions) {
       urlParamsResolvedRef.current.artifact;
     if (!urlParamsChanged && fullyResolved) return;
 
-    // No URL params at all → fall back to state→URL
+    // No URL params at all → Home/no-board state. Do not self-heal back
+    // to the last board; `/` is a valid workspace surface. Unknown non-root
+    // paths also have no params, but should canonicalize to Home instead of
+    // clearing board state and rendering a no-board canvas at that path.
     if (!urlBoardParam && !urlSessionShortId && !urlBranchShortId && !urlArtifactShortId) {
-      if (currentBoardIdRef.current && boardById.size > 0 && !isSettingsRoute) {
-        updateUrlFromState();
+      const isHomePath = location.pathname === '/' || location.pathname === '';
+      if (!isSettingsRoute && !isHomePath) {
+        syncingRef.current = true;
+        navigate('/', { replace: true });
+        setTimeout(() => {
+          syncingRef.current = false;
+        }, 0);
+        return;
+      }
+
+      if (!isSettingsRoute && currentBoardIdRef.current) {
+        syncingRef.current = true;
+        onBoardChange('');
+        if (currentSessionIdRef.current) onSessionChange(null);
+        setTimeout(() => {
+          syncingRef.current = false;
+        }, 0);
       }
       // Stale highlight cleanup: when the URL drops the deep-link
       // segment, drop the active target too so the previously-targeted
@@ -427,15 +445,31 @@ export function useUrlState(options: UseUrlStateOptions) {
     onBoardChange,
     onSessionChange,
     onActiveUrlTargetChange,
-    updateUrlFromState,
     isSettingsRoute,
     recenterMap,
+    location.pathname,
+    navigate,
   ]);
 
   // State → URL self-heal
   useEffect(() => {
     if (syncingRef.current) return;
     if (isSettingsRoute) return;
+
+    // Unknown non-root paths have no entity params but are not the Home
+    // route. The URL→state effect canonicalizes them to `/`; do not let
+    // stale board/session state self-heal them back to `/b/<board>/` first.
+    if (
+      !urlBoardParam &&
+      !urlSessionShortId &&
+      !urlBranchShortId &&
+      !urlArtifactShortId &&
+      location.pathname !== '/' &&
+      location.pathname !== ''
+    ) {
+      return;
+    }
+
     if (boardById.size === 0) return;
 
     // Don't overwrite URL while we're still trying to resolve incoming URL params
@@ -451,7 +485,8 @@ export function useUrlState(options: UseUrlStateOptions) {
     urlSessionShortId,
     urlBranchShortId,
     urlArtifactShortId,
-    updateUrlFromState,
     isSettingsRoute,
+    updateUrlFromState,
+    location.pathname,
   ]);
 }
