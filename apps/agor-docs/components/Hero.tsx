@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { DISCORD_INVITE_URL, GITHUB_REPO_URL } from '../lib/links';
+import { BRAND_NAME, LOGO_PATH } from '../lib/siteMetadata';
 import { GifGallery } from './GifGallery';
 import styles from './Hero.module.css';
 import { HubSpotFormModal } from './HubSpotFormModal';
@@ -33,7 +34,7 @@ export function Hero({
       <div className={styles.hero}>
         <div className={styles.heroContent}>
           {/* biome-ignore lint/performance/noImgElement: Using img for static assets in docs */}
-          <img src="/logo.png" alt="agor logo" className={styles.heroLogo} />
+          <img src={LOGO_PATH} alt={`${BRAND_NAME} logo`} className={styles.heroLogo} />
           <h1 className={styles.heroTitle}>{title}</h1>
           <p className={styles.heroSubtitle}>{subtitle}</p>
           {description && <p className={styles.heroDescription}>{description}</p>}

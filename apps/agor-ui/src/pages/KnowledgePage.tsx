@@ -811,10 +811,6 @@ export function KnowledgePage({
   const globalSearchContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    document.title = 'Knowledge · Agor';
-  }, []);
-
-  useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const handleResize = () => setViewportWidth(window.innerWidth);
