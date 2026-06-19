@@ -723,13 +723,6 @@ function createExecuteHandler(
     const configExecutorUser = config.execution?.executor_unix_user;
     const sessionUnixUser = session.unix_username;
 
-    console.log('[Daemon] Determining executor Unix user:', {
-      sessionId: shortId(session.session_id),
-      unixUserMode,
-      sessionUnixUser,
-      configExecutorUser,
-    });
-
     const impersonationResult = resolveUnixUserForImpersonation({
       mode: unixUserMode,
       userUnixUsername: sessionUnixUser,
@@ -737,8 +730,6 @@ function createExecuteHandler(
     });
 
     const executorUnixUser = impersonationResult.unixUser;
-    console.log(`[Daemon] Executor impersonation: ${impersonationResult.reason}`);
-
     const effectivePermissionMode =
       data.permissionMode || session.permission_config?.mode || undefined;
     const permissionModeForPayload =
