@@ -8,14 +8,22 @@
  * Highlights @ mentions with a background overlay.
  */
 
-import type { KnowledgeDocumentID } from '@agor/core/types';
+import type { KnowledgeDocumentID, KnowledgeSearchResult } from '@agor/core/types';
 import type { AgorClient, SessionID, User } from '@agor-live/client';
 import { Input, Popover, Spin, Typography, theme } from 'antd';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useEmojiAutocomplete } from '@/hooks/useEmojiAutocomplete';
 import { mapToArray } from '@/utils/mapHelpers';
 import './AutocompleteTextarea.css';
-import { buildKbDocLink, filterKbDocs, type KbDocMention } from './kbMentions';
+import {
+  buildKbDocLink,
+  buildKbMarkdownLink,
+  filterKbDocs,
+  type KbDocMention,
+  kbMentionFromDocument,
+  MAX_KB_DOC_RESULTS,
+  uniqueKbMentions,
+} from './kbMentions';
 
 export type { KbDocMention } from './kbMentions';
 
@@ -23,7 +31,7 @@ const { TextArea } = Input;
 const { Text } = Typography;
 
 // Constants
-const _MAX_FILE_RESULTS = 10;
+const MAX_FILE_RESULTS = 10;
 const MAX_USER_RESULTS = 5;
 const MAX_EMOJI_RESULTS = 15;
 const DEBOUNCE_MS = 300;
@@ -32,7 +40,7 @@ const AUTOCOMPLETE_POPOVER_WIDTH = 320;
 const AUTOCOMPLETE_POPOVER_MAX_HEIGHT = 300;
 const EMPTY_SLASH_COMMANDS: string[] = [];
 const EMPTY_SKILLS: string[] = [];
-const EMPTY_KB_DOCS: KbDocMention[] = [];
+const MIN_KB_SEARCH_QUERY_LENGTH = 2;
 
 interface FileResult {
   path: string;
@@ -60,7 +68,6 @@ interface SlashCommandResult {
 interface KbDocResult {
   kbTitle: string;
   kbDocumentId: KnowledgeDocumentID;
-  kbPath: string;
   kbUri: string;
   kbRoutePath: string;
   type: 'kb_doc';
@@ -73,6 +80,8 @@ type AutocompleteResult =
   | SlashCommandResult
   | KbDocResult
   | { heading: string };
+
+type KbLinkTarget = 'stable-uri' | 'absolute-route';
 
 interface AutocompleteTextareaProps {
   value: string;
@@ -91,12 +100,19 @@ interface AutocompleteTextareaProps {
   slashCommands?: string[];
   /** Available skills from the SDK (stored on session.custom_context) */
   skills?: string[];
+  /** Enable live Knowledge Base lookup for `@` references. Disabled by default so shared comment inputs do not search KB. */
+  enableKnowledgeMentions?: boolean;
   /**
-   * Knowledge Base documents available for `@` references. When provided, the
-   * `@` autocomplete includes a "Knowledge Base" section and inserts a markdown
-   * link to the selected doc. Empty/omitted in non-KB contexts.
+   * Knowledge Base documents available for local `@` references. Supplying this
+   * also enables the Knowledge section without live network search (used by the
+   * Knowledge editor).
    */
   kbDocs?: KbDocMention[];
+  /**
+   * Link form inserted for KB selections. `stable-uri` is rename-proof for persisted
+   * Knowledge markdown; prompt composers use `absolute-route` so conversation markdown is clickable.
+   */
+  kbLinkTarget?: KbLinkTarget;
   /** Draw attention to the textarea while it is empty. */
   highlightWhenEmpty?: boolean;
 }
@@ -215,6 +231,9 @@ const getTriggerQuery = (
 const quoteIfNeeded = (text: string): string => {
   return text.includes(' ') ? `"${text}"` : text;
 };
+
+const normalizeFindResult = <T,>(result: T[] | { data?: T[] }): T[] =>
+  Array.isArray(result) ? result : (result.data ?? []);
 
 /**
  * Highlight @ mentions in text
@@ -348,7 +367,9 @@ export const AutocompleteTextarea = React.forwardRef<
       onFilesDrop,
       slashCommands = EMPTY_SLASH_COMMANDS,
       skills = EMPTY_SKILLS,
-      kbDocs = EMPTY_KB_DOCS,
+      enableKnowledgeMentions = false,
+      kbDocs,
+      kbLinkTarget = 'stable-uri',
       highlightWhenEmpty = false,
     },
     ref
@@ -359,6 +380,8 @@ export const AutocompleteTextarea = React.forwardRef<
     const popoverRef = useRef<React.ElementRef<typeof Popover> | null>(null);
     const popoverContentRef = useRef<HTMLDivElement>(null);
     const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+    const fileSearchSeqRef = useRef(0);
+    const kbSearchSeqRef = useRef(0);
     const [isDragOver, setIsDragOver] = useState(false);
     const { searchEmojis } = useEmojiAutocomplete();
 
@@ -367,11 +390,19 @@ export const AutocompleteTextarea = React.forwardRef<
     const [triggerType, setTriggerType] = useState<'@' | ':' | '/' | null>(null);
     const [triggerIndex, setTriggerIndex] = useState(-1);
     const [query, setQuery] = useState('');
-    const [isLoading, setIsLoading] = useState(false);
+    const [isFileLoading, setIsFileLoading] = useState(false);
+    const [isKbLoading, setIsKbLoading] = useState(false);
+    const [kbError, setKbError] = useState<string | null>(null);
     const [fileResults, setFileResults] = useState<FileResult[]>([]);
     const [emojiResults, setEmojiResults] = useState<EmojiResult[]>([]);
     const [slashCommandResults, setSlashCommandResults] = useState<SlashCommandResult[]>([]);
+    const [fetchedKbDocs, setFetchedKbDocs] = useState<KbDocMention[]>([]);
     const [highlightedIndex, setHighlightedIndex] = useState(-1);
+
+    const hasProvidedKbDocs = kbDocs !== undefined;
+    const shouldSearchKnowledge = enableKnowledgeMentions || hasProvidedKbDocs;
+    const effectiveKbDocs = shouldSearchKnowledge ? (kbDocs ?? fetchedKbDocs) : [];
+    const isLoading = isFileLoading || isKbLoading;
 
     // Scroll synchronization state
     const [scrollTop, setScrollTop] = useState(0);
@@ -399,6 +430,14 @@ export const AutocompleteTextarea = React.forwardRef<
       textarea.addEventListener('scroll', handleScroll);
       return () => {
         textarea.removeEventListener('scroll', handleScroll);
+      };
+    }, []);
+
+    React.useEffect(() => {
+      return () => {
+        if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+        fileSearchSeqRef.current += 1;
+        kbSearchSeqRef.current += 1;
       };
     }, []);
 
@@ -456,27 +495,91 @@ export const AutocompleteTextarea = React.forwardRef<
      */
     const searchFiles = useCallback(
       async (searchQuery: string) => {
+        const requestId = fileSearchSeqRef.current + 1;
+        fileSearchSeqRef.current = requestId;
+
         if (!client || !sessionId || !searchQuery.trim()) {
           setFileResults([]);
+          setIsFileLoading(false);
           return;
         }
 
-        setIsLoading(true);
+        setIsFileLoading(true);
 
         try {
           const result = await client.service('files').findAll({
             query: { sessionId, search: searchQuery },
           });
 
-          setFileResults(result as FileResult[]);
+          if (fileSearchSeqRef.current !== requestId) return;
+          setFileResults((result as FileResult[]).slice(0, MAX_FILE_RESULTS));
         } catch (error) {
+          if (fileSearchSeqRef.current !== requestId) return;
           console.error('File search error:', error);
           setFileResults([]);
         } finally {
-          setIsLoading(false);
+          if (fileSearchSeqRef.current === requestId) setIsFileLoading(false);
         }
       },
       [client, sessionId]
+    );
+
+    /**
+     * Search readable Knowledge documents for @ references. Uses kb/search only
+     * for meaningful queries; empty/one-character queries stay local so `@` does
+     * not fan out into broad Knowledge listing. The search service enforces
+     * Knowledge RBAC server-side.
+     */
+    const searchKnowledgeDocs = useCallback(
+      async (searchQuery: string) => {
+        const requestId = kbSearchSeqRef.current + 1;
+        kbSearchSeqRef.current = requestId;
+
+        if (!shouldSearchKnowledge || hasProvidedKbDocs || !client) {
+          setFetchedKbDocs([]);
+          setKbError(null);
+          setIsKbLoading(false);
+          return;
+        }
+
+        const trimmed = searchQuery.trim();
+        if (trimmed.length < MIN_KB_SEARCH_QUERY_LENGTH) {
+          setFetchedKbDocs([]);
+          setKbError(null);
+          setIsKbLoading(false);
+          return;
+        }
+
+        setIsKbLoading(true);
+        setKbError(null);
+
+        try {
+          const result = await client.service('kb/search').find({
+            query: {
+              q: trimmed,
+              mode: 'text',
+              limit: MAX_KB_DOC_RESULTS,
+              include_chunks: false,
+            },
+          });
+          const mentions = normalizeFindResult<KnowledgeSearchResult>(
+            result as KnowledgeSearchResult[] | { data?: KnowledgeSearchResult[] }
+          )
+            .map((row) => kbMentionFromDocument(row.document))
+            .filter((doc): doc is KbDocMention => Boolean(doc));
+
+          if (kbSearchSeqRef.current !== requestId) return;
+          setFetchedKbDocs(uniqueKbMentions(mentions).slice(0, MAX_KB_DOC_RESULTS));
+        } catch (error) {
+          if (kbSearchSeqRef.current !== requestId) return;
+          console.error('Knowledge mention search error:', error);
+          setFetchedKbDocs([]);
+          setKbError(error instanceof Error ? error.message : 'Unable to search Knowledge');
+        } finally {
+          if (kbSearchSeqRef.current === requestId) setIsKbLoading(false);
+        }
+      },
+      [client, hasProvidedKbDocs, shouldSearchKnowledge]
     );
 
     /**
@@ -520,12 +623,20 @@ export const AutocompleteTextarea = React.forwardRef<
       const options: AutocompleteResult[] = [];
 
       if (triggerType === '@') {
-        // @ trigger: show KB docs, files, and users
-        if (kbDocs.length > 0) {
-          const kbResults: KbDocResult[] = filterKbDocs(kbDocs, query).map((doc) => ({
+        // @ trigger: keep files first to preserve the existing prompt-composer
+        // muscle memory, then append clearly labeled Knowledge and user groups.
+        if (fileResults.length > 0) {
+          options.push({ heading: 'FILES & FOLDERS' });
+          options.push(...fileResults);
+        }
+
+        if (effectiveKbDocs.length > 0) {
+          const docsForOptions = hasProvidedKbDocs
+            ? filterKbDocs(effectiveKbDocs, query)
+            : effectiveKbDocs;
+          const kbResults: KbDocResult[] = docsForOptions.map((doc) => ({
             kbTitle: doc.title,
             kbDocumentId: doc.documentId,
-            kbPath: doc.path,
             kbUri: doc.uri,
             kbRoutePath: doc.routePath,
             type: 'kb_doc' as const,
@@ -534,11 +645,6 @@ export const AutocompleteTextarea = React.forwardRef<
             options.push({ heading: 'KNOWLEDGE BASE' });
             options.push(...kbResults);
           }
-        }
-
-        if (fileResults.length > 0) {
-          options.push({ heading: 'FILES & FOLDERS' });
-          options.push(...fileResults);
         }
 
         const userResults = filterUsers(query);
@@ -561,7 +667,16 @@ export const AutocompleteTextarea = React.forwardRef<
       }
 
       return options;
-    }, [triggerType, fileResults, emojiResults, slashCommandResults, kbDocs, query, filterUsers]);
+    }, [
+      triggerType,
+      fileResults,
+      emojiResults,
+      slashCommandResults,
+      effectiveKbDocs,
+      query,
+      filterUsers,
+      hasProvidedKbDocs,
+    ]);
 
     const popoverAnchorKey = `${popoverPlacement}:${popoverAnchor[0]}:${popoverAnchor[1]}`;
 
@@ -635,9 +750,15 @@ export const AutocompleteTextarea = React.forwardRef<
           setTriggerType('/');
           setQuery(slashTrigger.query);
           setTriggerIndex(slashTrigger.triggerIndex);
+          if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+          fileSearchSeqRef.current += 1;
+          kbSearchSeqRef.current += 1;
           setFileResults([]);
           setEmojiResults([]);
-          setIsLoading(false);
+          setFetchedKbDocs([]);
+          setKbError(null);
+          setIsFileLoading(false);
+          setIsKbLoading(false);
 
           // Filter available commands by query, deduplicating between slashCommands and skills
           const q = slashTrigger.query.toLowerCase();
@@ -675,12 +796,13 @@ export const AutocompleteTextarea = React.forwardRef<
           setEmojiResults([]);
           setSlashCommandResults([]);
 
-          // Debounced search for files
+          // Debounced search for files + optional Knowledge. Request sequence refs ignore stale in-flight results.
           if (debounceTimerRef.current) {
             clearTimeout(debounceTimerRef.current);
           }
           debounceTimerRef.current = setTimeout(() => {
             searchFiles(atTrigger.query);
+            if (shouldSearchKnowledge) searchKnowledgeDocs(atTrigger.query);
           }, DEBOUNCE_MS);
 
           setShowPopover(true);
@@ -693,9 +815,15 @@ export const AutocompleteTextarea = React.forwardRef<
           setTriggerType(':');
           setQuery(colonTrigger.query);
           setTriggerIndex(colonTrigger.triggerIndex);
+          if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+          fileSearchSeqRef.current += 1;
+          kbSearchSeqRef.current += 1;
           setFileResults([]);
+          setFetchedKbDocs([]);
+          setKbError(null);
           setSlashCommandResults([]);
-          setIsLoading(false); // Reset loading state when switching to emoji trigger
+          setIsFileLoading(false);
+          setIsKbLoading(false); // Reset loading state when switching to emoji trigger
 
           // Instant emoji search (no debounce needed)
           const emojis = searchEmojis(colonTrigger.query);
@@ -712,14 +840,29 @@ export const AutocompleteTextarea = React.forwardRef<
         }
 
         // No trigger detected
+        if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
         setShowPopover(false);
         setTriggerType(null);
         setFileResults([]);
         setEmojiResults([]);
         setSlashCommandResults([]);
+        setFetchedKbDocs([]);
+        setKbError(null);
+        setIsFileLoading(false);
+        setIsKbLoading(false);
+        fileSearchSeqRef.current += 1;
+        kbSearchSeqRef.current += 1;
         setHighlightedIndex(-1);
       },
-      [onChange, searchFiles, searchEmojis, slashCommands, skills]
+      [
+        onChange,
+        searchFiles,
+        searchKnowledgeDocs,
+        searchEmojis,
+        slashCommands,
+        skills,
+        shouldSearchKnowledge,
+      ]
     );
 
     /**
@@ -737,8 +880,13 @@ export const AutocompleteTextarea = React.forwardRef<
         let addTrailingSpace = true;
 
         if ('kbDocumentId' in item) {
-          // KB doc reference - replace @query with a rename-proof markdown link
-          insertText = buildKbDocLink(item.kbTitle, item.kbDocumentId);
+          // KB doc reference. Persisted Knowledge markdown should use the stable
+          // document URI; prompt composers opt into absolute in-app URLs so
+          // conversation markdown renders a user-clickable link.
+          insertText =
+            kbLinkTarget === 'absolute-route'
+              ? buildKbMarkdownLink(item.kbTitle, `${window.location.origin}${item.kbRoutePath}`)
+              : buildKbDocLink(item.kbTitle, item.kbDocumentId);
         } else if ('command' in item) {
           // Slash command selection - replace with /command
           insertText = `/${item.command}`;
@@ -766,6 +914,12 @@ export const AutocompleteTextarea = React.forwardRef<
         setFileResults([]);
         setEmojiResults([]);
         setSlashCommandResults([]);
+        setFetchedKbDocs([]);
+        setKbError(null);
+        setIsFileLoading(false);
+        setIsKbLoading(false);
+        fileSearchSeqRef.current += 1;
+        kbSearchSeqRef.current += 1;
         setHighlightedIndex(-1);
 
         // Move cursor after inserted value
@@ -775,7 +929,7 @@ export const AutocompleteTextarea = React.forwardRef<
           textareaRef.current.current?.focus();
         }, 0);
       },
-      [triggerIndex, value, onChange]
+      [triggerIndex, value, onChange, kbLinkTarget]
     );
 
     /**
@@ -830,7 +984,9 @@ export const AutocompleteTextarea = React.forwardRef<
               if (highlightedIndex >= 0) {
                 const item = autocompleteOptions[highlightedIndex];
                 if (!('heading' in item)) {
-                  handleSelect(item as FileResult | UserResult | SlashCommandResult | KbDocResult);
+                  handleSelect(
+                    item as FileResult | UserResult | EmojiResult | SlashCommandResult | KbDocResult
+                  );
                 }
               } else if (autocompleteOptions.length > 0) {
                 // If nothing highlighted, highlight first non-heading item
@@ -860,7 +1016,14 @@ export const AutocompleteTextarea = React.forwardRef<
                 // Nothing highlighted - select first non-heading item (like Slack)
                 const firstItem = autocompleteOptions.find((item) => !('heading' in item));
                 if (firstItem) {
-                  handleSelect(firstItem as FileResult | UserResult | EmojiResult | KbDocResult);
+                  handleSelect(
+                    firstItem as
+                      | FileResult
+                      | UserResult
+                      | EmojiResult
+                      | SlashCommandResult
+                      | KbDocResult
+                  );
                 }
               }
             } else if (!isPopoverOpen && onKeyPress) {
@@ -982,6 +1145,18 @@ export const AutocompleteTextarea = React.forwardRef<
             }}
           >
             <Spin size="small" />
+          </div>
+        )}
+
+        {!isLoading && kbError && (
+          <div
+            style={{
+              padding: `${token.paddingXS}px ${token.paddingSM}px`,
+              color: token.colorError,
+              fontSize: token.fontSizeSM,
+            }}
+          >
+            Unable to search Knowledge
           </div>
         )}
 
@@ -1110,20 +1285,6 @@ export const AutocompleteTextarea = React.forwardRef<
                         : ''
                       : label}
                 </Text>
-                {/* Show namespace/path for KB docs */}
-                {isKbDoc && 'kbPath' in item && (
-                  <Text
-                    style={{
-                      fontSize: token.fontSizeSM - 1,
-                      color: token.colorTextDescription,
-                      flexShrink: 0,
-                      maxWidth: 140,
-                    }}
-                    ellipsis
-                  >
-                    {item.kbPath}
-                  </Text>
-                )}
                 {/* Show source badge for slash commands */}
                 {isCommand && 'source' in item && (
                   <Text
