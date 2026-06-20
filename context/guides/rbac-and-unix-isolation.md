@@ -299,6 +299,11 @@ execution:
   - `all` permission → added to group (full access)
   - `prompt` permission → NOT in group (API access only)
   - `view` permission → added to group with read-only access (via ACLs if supported)
+  - Board-level user/group grants are expanded only for branches aligned to the
+    board's permission source. Branches marked as overrides/not aligned do not
+    inherit board grants and must be granted directly. Board permission changes
+    enqueue one `unix.sync-board` operation, which syncs the board's aligned
+    branches in a single executor process.
 - Agents still run as daemon user (or `executor_unix_user`)
 - **Great for**: Teams wanting filesystem isolation without complex process impersonation
 

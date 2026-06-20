@@ -82,8 +82,10 @@ import { registerGitHubAppSetupRoutes } from './services/github-app-setup.js';
 import {
   createGroupMembershipsService,
   createGroupsService,
+  setupBoardAlignedBranchesService,
   setupBoardGroupGrantsService,
   setupBranchEffectiveAccessService,
+  setupBranchFsAccessUsersService,
   setupBranchGroupGrantsService,
 } from './services/groups.js';
 import { createKnowledgeDocumentEditsService } from './services/knowledge-document-edits.js';
@@ -374,6 +376,8 @@ export async function registerServices(ctx: RegisterServicesContext): Promise<Re
     methods: ['find', 'create', 'remove'],
   });
   setupBranchEffectiveAccessService(app, new BranchRepository(db));
+  setupBoardAlignedBranchesService(app, new BranchRepository(db));
+  setupBranchFsAccessUsersService(app, new BranchRepository(db));
   if (branchRbacEnabled) {
     setupBoardOwnersService(app, new BoardRepository(db));
     setupBoardGroupGrantsService(app, db);
