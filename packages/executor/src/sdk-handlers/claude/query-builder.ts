@@ -12,6 +12,7 @@ import { Claude } from '@agor/core/sdk';
 import { renderAgorSystemPrompt } from '@agor/core/templates/session-context';
 import { mergeMCPRemoteHeaders } from '@agor/core/tools/mcp/http-headers';
 import { resolveMCPAuthHeaders } from '@agor/core/tools/mcp/jwt-auth';
+import { isGatewaySession } from '@agor/core/types';
 
 const { query } = Claude;
 type PermissionMode = Claude.PermissionMode;
@@ -175,6 +176,7 @@ export async function setupQuery(
   if (!session) {
     throw new Error(`Session not found: ${sessionId}`);
   }
+  const shouldBlockOnMcpStartup = isGatewaySession(session);
 
   // Determine which user's context to use for environment variables and API
   // keys: the task creator (prompter) when known, else the session owner.
@@ -542,6 +544,7 @@ export async function setupQuery(
           headers: {
             Authorization: `Bearer ${mcpToken}`,
           },
+          ...(shouldBlockOnMcpStartup ? { alwaysLoad: true } : {}),
         },
       };
       queryOptions.mcpServers = mcpConfig;
@@ -570,7 +573,7 @@ export async function setupQuery(
         let remoteServerCount = 0;
         let stdioServerCount = 0;
         let serversWithHeaders = 0;
-        const missingOAuthServers: string[] = [];
+        const missingAuthServers: string[] = [];
         const unresolvedAuthServers: string[] = [];
 
         for (const { server } of serversWithSource) {
@@ -587,6 +590,7 @@ export async function setupQuery(
             type: transport,
             env: server.env,
           };
+          let canAlwaysLoad = shouldBlockOnMcpStartup;
 
           // Add transport-specific fields
           if (transport === 'stdio') {
@@ -600,17 +604,29 @@ export async function setupQuery(
           try {
             // Pass mcpUrl for OAuth token cache lookup
             const authHeaders = await resolveMCPAuthHeaders(server.auth, server.url);
+            const missingRequiredAuth =
+              !!server.auth &&
+              server.auth.type !== 'none' &&
+              transport !== 'stdio' &&
+              !authHeaders?.Authorization;
             const headers = mergeMCPRemoteHeaders({ custom: server.headers, auth: authHeaders });
             if (headers && transport !== 'stdio') {
               serverConfig.headers = headers;
               serversWithHeaders += 1;
-            } else if (server.auth?.type === 'oauth' && transport !== 'stdio') {
-              // OAuth server but no token. Track for one concise per-query summary below.
-              missingOAuthServers.push(server.name);
+            }
+            if (missingRequiredAuth) {
+              // Auth-backed remote server but no usable token. Track one concise summary below.
+              missingAuthServers.push(server.name);
+              canAlwaysLoad = false;
             }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             unresolvedAuthServers.push(`${server.name}: ${message}`);
+            canAlwaysLoad = false;
+          }
+
+          if (canAlwaysLoad) {
+            serverConfig.alwaysLoad = true;
           }
 
           mcpConfig[server.name] = serverConfig;
@@ -631,13 +647,13 @@ export async function setupQuery(
         // Log one safe summary line. Env/header values may contain secrets after template resolution.
         console.log(
           `   🔧 MCP servers configured: total=${serversWithSource.length} remote=${remoteServerCount} ` +
-            `stdio=${stdioServerCount} headers=${serversWithHeaders} missing_oauth=${missingOAuthServers.length} ` +
+            `stdio=${stdioServerCount} headers=${serversWithHeaders} missing_auth=${missingAuthServers.length} ` +
             `auth_errors=${unresolvedAuthServers.length}`
         );
-        if (missingOAuthServers.length > 0) {
+        if (missingAuthServers.length > 0) {
           console.warn(
-            `   ⚠️  ${missingOAuthServers.length} OAuth MCP server(s) have no valid token: ` +
-              `${formatListForLog(missingOAuthServers)}. Authenticate in Settings → MCP Servers.`
+            `   ⚠️  ${missingAuthServers.length} MCP server(s) have configured auth but no valid token: ` +
+              `${formatListForLog(missingAuthServers)}. Check Settings → MCP Servers.`
           );
         }
         if (unresolvedAuthServers.length > 0) {

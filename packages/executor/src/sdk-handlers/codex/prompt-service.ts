@@ -33,6 +33,7 @@ import { renderAgorSystemPrompt } from '@agor/core/templates/session-context';
 import { mergeMCPRemoteHeaders } from '@agor/core/tools/mcp/http-headers';
 import { resolveMCPAuthHeaders } from '@agor/core/tools/mcp/jwt-auth';
 import type { CodexSandboxMode, ContextUsageSnapshot, EffortLevel } from '@agor/core/types';
+import { isGatewaySession } from '@agor/core/types';
 import { getDefaultCodexPermissionConfig } from '@agor/core/utils/permission-mode-mapper';
 import { getDaemonUrl } from '../../config.js';
 import type {
@@ -89,6 +90,7 @@ type CodexConfigValue = CodexConfigObject[string];
  * clears the prompt.
  */
 const MCP_AUTO_APPROVE: CodexConfigObject = { default_tools_approval_mode: 'approve' };
+const GATEWAY_MCP_STARTUP_TIMEOUT_MS = 30_000;
 
 const DEBUG_CODEX = process.env.AGOR_DEBUG_CODEX === '1' || process.env.DEBUG?.includes('codex');
 
@@ -96,6 +98,12 @@ function codexDebug(...args: unknown[]): void {
   if (DEBUG_CODEX) {
     console.debug(...args);
   }
+}
+
+function applyGatewayMcpStartupGuard(config: CodexConfigObject, requireMcpServers: boolean): void {
+  if (!requireMcpServers) return;
+  config.required = true;
+  config.startup_timeout_ms = GATEWAY_MCP_STARTUP_TIMEOUT_MS;
 }
 
 export interface CodexPromptResult {
@@ -563,7 +571,8 @@ export class CodexPromptService {
   private async buildMcpServersConfig(
     sessionId: SessionID,
     mcpToken: string | undefined,
-    forUserId: UserID | undefined
+    forUserId: UserID | undefined,
+    requireMcpServers = false
   ): Promise<{ servers: CodexConfigObject; total: number }> {
     codexDebug(`🔍 [Codex MCP] Fetching MCP servers for session ${shortId(sessionId)}...`);
     codexDebug(`   [Codex MCP] forUserId: ${forUserId || 'NOT SET'}`);
@@ -602,9 +611,9 @@ export class CodexPromptService {
       result.agor = {
         url: `${daemonUrl}/mcp`,
         bearer_token_env_var: agorBearerEnvVar,
-        required: false,
         ...MCP_AUTO_APPROVE,
       };
+      applyGatewayMcpStartupGuard(result.agor as CodexConfigObject, requireMcpServers);
       codexDebug(
         `   📝 [Codex MCP] Configuring built-in Agor MCP server (HTTP) at ${daemonUrl}/mcp`
       );
@@ -618,6 +627,7 @@ export class CodexPromptService {
       );
 
       const serverConfig: CodexConfigObject = { ...MCP_AUTO_APPROVE };
+      applyGatewayMcpStartupGuard(serverConfig, requireMcpServers);
       codexDebug(`   📝 [Codex MCP] Configuring STDIO server: ${server.name} -> ${serverName}`);
       if (server.command) {
         serverConfig.command = server.command;
@@ -643,6 +653,7 @@ export class CodexPromptService {
       );
 
       const serverConfig: CodexConfigObject = { ...MCP_AUTO_APPROVE };
+      let canRequireServer = requireMcpServers;
       codexDebug(`   📝 [Codex MCP] Configuring HTTP server: ${server.name} -> ${serverName}`);
       if (server.url) {
         serverConfig.url = server.url;
@@ -659,6 +670,7 @@ export class CodexPromptService {
         const authHeaders = await resolveMCPAuthHeaders(server.auth, server.url);
         const headers = mergeMCPRemoteHeaders({ custom: server.headers, auth: authHeaders });
         const authHeader = headers?.Authorization;
+        const missingRequiredAuth = !!server.auth && server.auth.type !== 'none' && !authHeader;
         const customHeaders = headers ? { ...headers } : undefined;
         if (customHeaders) delete customHeaders.Authorization;
         if (customHeaders && Object.keys(customHeaders).length > 0) {
@@ -673,25 +685,31 @@ export class CodexPromptService {
             serverConfig.bearer_token_env_var = envVarName;
             codexDebug(`      auth: ${server.auth?.type ?? 'bearer'} token via ${envVarName}`);
           } else {
+            canRequireServer = false;
             console.warn(
               `      ⚠️  auth: resolved Authorization header for "${server.name}" is not a Bearer scheme (Codex CLI only supports bearer); skipping injection`
             );
           }
-        } else if (server.auth?.type === 'oauth') {
+        } else if (missingRequiredAuth) {
+          canRequireServer = false;
           console.warn(
-            `   ⚠️  [Codex MCP] Server "${server.name}" requires OAuth but no valid token found.`
+            `   ⚠️  [Codex MCP] Server "${server.name}" has configured auth but no valid token found.`
           );
-          console.warn(
-            `      💡 Go to Settings → MCP Servers → ${server.name} → Start OAuth Flow to authenticate.`
-          );
+          const action =
+            server.auth?.type === 'oauth'
+              ? `Start OAuth Flow for ${server.name}`
+              : `check credentials for ${server.name}`;
+          console.warn(`      💡 Go to Settings → MCP Servers → ${action}.`);
         }
       } catch (error) {
         console.warn(
           `   ⚠️  [Codex MCP] Failed to resolve auth headers for "${server.name}":`,
           error instanceof Error ? error.message : String(error)
         );
+        canRequireServer = false;
       }
 
+      applyGatewayMcpStartupGuard(serverConfig, canRequireServer);
       result[serverName] = serverConfig;
     }
 
@@ -961,10 +979,12 @@ export class CodexPromptService {
       taskId,
       tasksService: this.tasksService,
     });
+    const requireMcpServers = isGatewaySession(session);
     const { servers: mcpServersConfig, total: mcpServerCount } = await this.buildMcpServersConfig(
       sessionId,
       mcpToken,
-      forUserId
+      forUserId,
+      requireMcpServers
     );
 
     const codexConfigPayload: CodexConfigObject = {
