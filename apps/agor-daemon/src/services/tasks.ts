@@ -69,6 +69,17 @@ export type TaskParams = QueryParams<{
    * owning session. Heartbeat-loss handling must not auto-start queued prompts.
    */
   suppressTerminalQueueProcessing?: boolean;
+  /**
+   * Internal-only: skip parent callback dispatch for terminal transitions that
+   * are administrative cancellation, not agent output. Does not disable BTW
+   * fork archival; those ephemeral sessions should still be cleaned up.
+   */
+  suppressCompletionCallbacks?: boolean;
+  /**
+   * Internal-only escape hatch for preserving an ephemeral BTW fork after
+   * terminal transition. Most callers should leave this unset.
+   */
+  suppressBtwCleanup?: boolean;
 };
 
 interface CompletionCallbackDispatchResult {
@@ -472,6 +483,9 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
 
           const latestTaskId = session.tasks?.[session.tasks.length - 1];
 
+          const suppressCompletionCallbacks = params?.suppressCompletionCallbacks === true;
+          const suppressBtwCleanup = params?.suppressBtwCleanup === true;
+
           if (latestTaskId && latestTaskId !== task.task_id) {
             console.log(
               `⏭️ [TasksService] Skipping session terminal-state update - task ${shortId(task.task_id)} is not the latest (latest: ${shortId(latestTaskId)})`
@@ -479,7 +493,9 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
             // Still process completion callbacks (task completed, callback target needs to know).
             // Route through the same centralized/idempotent dispatcher used by the normal
             // completion path so races cannot enqueue duplicate parent callbacks.
-            await this.dispatchCompletionCallbacks(task, session, params);
+            if (!suppressCompletionCallbacks) {
+              await this.dispatchCompletionCallbacks(task, session, params);
+            }
             return result;
           }
 
@@ -515,27 +531,35 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
             );
           }
 
-          await this.dispatchCompletionCallbacks(task, session, params);
+          if (!suppressCompletionCallbacks) {
+            await this.dispatchCompletionCallbacks(task, session, params);
+          }
 
           // "btw" fork origin: auto-archive the ephemeral fork after task completion.
           // Runs regardless of callback success — btw forks should always be cleaned up.
+          // Administrative terminal patches may suppress parent callbacks/result injection,
+          // but still archive the ephemeral session unless explicitly told not to.
           if (session.fork_origin === 'btw') {
-            try {
-              await this.app.service('sessions').patch(session.session_id, {
-                archived: true,
-                archived_reason: 'btw_completed',
-              });
-              console.log(
-                `📦 [TasksService] Auto-archived btw fork session ${shortId(session.session_id)}`
-              );
-            } catch (error) {
-              console.warn(`⚠️  [TasksService] Failed to auto-archive btw fork:`, error);
+            if (!suppressBtwCleanup) {
+              try {
+                await this.app.service('sessions').patch(session.session_id, {
+                  archived: true,
+                  archived_reason: 'btw_completed',
+                });
+                console.log(
+                  `📦 [TasksService] Auto-archived btw fork session ${shortId(session.session_id)}`
+                );
+              } catch (error) {
+                console.warn(`⚠️  [TasksService] Failed to auto-archive btw fork:`, error);
+              }
             }
 
-            // Inject a result message into the parent session's conversation.
-            // This is a non-prompt system message — it shows up in the UI but doesn't
-            // trigger a new prompt cycle. The parent's agent never sees it.
-            await this.injectBtwResultMessage(task, session, params);
+            if (!suppressCompletionCallbacks) {
+              // Inject a result message into the parent session's conversation.
+              // This is a non-prompt system message — it shows up in the UI but doesn't
+              // trigger a new prompt cycle. The parent's agent never sees it.
+              await this.injectBtwResultMessage(task, session, params);
+            }
           }
 
           // IMPORTANT: Now that the terminal task made the session promptable, process any queued tasks
