@@ -20,15 +20,29 @@ import type {
   Session,
   User,
 } from '@agor-live/client';
-import { findByShortIdPrefix, PAGINATION } from '@agor-live/client';
+import { ENTITY_PATH_SEGMENTS, findByShortIdPrefix, PAGINATION } from '@agor-live/client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createInitialLoadDebugTimer, isInitialLoadDebugEnabled } from '../utils/initialLoadDebug';
 import { shallowEqualEntity } from '../utils/shallowEqual';
 import { TOKENS_REFRESHED_EVENT } from '../utils/singleFlightRefresh';
+import {
+  resolveBoardFromUrlPure,
+  resolveBranchFromShortIdPure,
+  resolveSessionFromShortIdPure,
+} from '../utils/urlResolution';
 
-// Canonical list of initial-load items tracked by the loading checklist.
-// Internal only — consumers receive the derived `initialLoadItems` array
-// (each entry carries label/done/count) rather than the raw key list.
+// Canonical list of initial-load items tracked by the loading checklist —
+// the ESSENTIAL set the first-paint gate blocks on. Internal only; consumers
+// receive the derived `initialLoadItems` array (each entry carries
+// label/done/count) rather than the raw key list.
+//
+// The first paint only needs what's required to render the canvas (branch
+// cards, their sessions, cards, comments, zones). Collections that aren't
+// needed to paint — mcp-servers, session-mcp-servers, gateway-channels,
+// artifacts, and the oauth-status probe — are fetched in the BACKGROUND
+// (see `fetchData`) and intentionally absent here so the gate never waits on
+// them. Their realtime subscriptions are still attached immediately in the
+// subscribe effect, so live updates land even before their fetch resolves.
 const INITIAL_LOAD_ITEMS = [
   { key: 'sessions', label: 'Sessions' },
   { key: 'boards', label: 'Boards' },
@@ -39,13 +53,14 @@ const INITIAL_LOAD_ITEMS = [
   { key: 'users', label: 'Users' },
   { key: 'cards', label: 'Cards' },
   { key: 'card-types', label: 'Card types' },
-  { key: 'mcp-servers', label: 'MCP servers' },
-  { key: 'session-mcp-servers', label: 'Session MCP links' },
-  { key: 'gateway-channels', label: 'Gateway channels' },
-  { key: 'artifacts', label: 'Artifacts' },
 ] as const;
 
 export type InitialLoadItemKey = (typeof INITIAL_LOAD_ITEMS)[number]['key'];
+
+// Max times a background fetch refetches when a realtime write races its
+// in-flight request before falling back to a live-wins merge apply. Small: the
+// race window is one fetch RTT and a startup write storm is rare.
+const MAX_BACKGROUND_REFETCH = 3;
 
 // One row in the loading checklist. `count` is captured atomically with
 // `done` when each tracked fetch resolves — readers never see a green row
@@ -138,6 +153,120 @@ function replaceIfChanged<T extends object>(
   const next = new Map(prev);
   next.set(id, entity);
   return next;
+}
+
+// Build a plain `byId` Map from a fetched list. Used by the background
+// (non-gated) fetches whose results land via their own setter rather than the
+// single atomic setMaps the essential gate performs.
+function buildById<T>(list: readonly T[], key: keyof T): Map<string, T> {
+  const map = new Map<string, T>();
+  for (const item of list) {
+    map.set(item[key] as unknown as string, item);
+  }
+  return map;
+}
+
+// Group session-MCP relationship rows by session_id.
+function buildSessionMcpMap(
+  list: readonly { session_id: string; mcp_server_id: string }[]
+): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  for (const relationship of list) {
+    const ids = map.get(relationship.session_id);
+    if (ids) ids.push(relationship.mcp_server_id);
+    else map.set(relationship.session_id, [relationship.mcp_server_id]);
+  }
+  return map;
+}
+
+// Derived board-object index set, built once from a fetched list. Shared by
+// the essential (board-scoped, first-paint) index build and the background
+// full-hydration pass — single source of truth so the two can't diverge.
+function buildBoardObjectMaps(list: readonly BoardEntityObject[]): {
+  boardObjectById: Map<string, BoardEntityObject>;
+  boardObjectsByBoardId: Map<string, BoardEntityObject[]>;
+  boardObjectByBranchId: Map<string, BoardEntityObject>;
+  boardObjectByCardId: Map<string, BoardEntityObject>;
+} {
+  const boardObjectById = new Map<string, BoardEntityObject>();
+  const boardObjectsByBoardId = new Map<string, BoardEntityObject[]>();
+  const boardObjectByBranchId = new Map<string, BoardEntityObject>();
+  const boardObjectByCardId = new Map<string, BoardEntityObject>();
+  for (const boardObject of list) {
+    boardObjectById.set(boardObject.object_id, boardObject);
+
+    const bucket = boardObjectsByBoardId.get(boardObject.board_id);
+    if (bucket) bucket.push(boardObject);
+    else boardObjectsByBoardId.set(boardObject.board_id, [boardObject]);
+
+    if (boardObject.branch_id) {
+      boardObjectByBranchId.set(boardObject.branch_id, boardObject);
+    }
+    if (boardObject.card_id) {
+      boardObjectByCardId.set(boardObject.card_id, boardObject);
+    }
+  }
+  return { boardObjectById, boardObjectsByBoardId, boardObjectByBranchId, boardObjectByCardId };
+}
+
+// Parse the leading entity segment out of the current pathname, e.g.
+// `/ui/b/my-board/` → { kind: 'board', token: 'my-board' }. The regex is
+// built from ENTITY_PATH_SEGMENTS so it stays in lockstep with the route
+// table and tolerates the optional `/ui` basename. Returns null for Home (`/`)
+// or any non-entity path.
+const ENTITY_PATH_RE = new RegExp(
+  `/(${ENTITY_PATH_SEGMENTS.board}|${ENTITY_PATH_SEGMENTS.session}|${ENTITY_PATH_SEGMENTS.branch}|${ENTITY_PATH_SEGMENTS.artifact})/([^/]+)`
+);
+type ParsedEntityPath = { kind: 'board' | 'session' | 'branch' | 'artifact'; token: string } | null;
+function parseEntityPath(pathname: string): ParsedEntityPath {
+  const match = pathname.match(ENTITY_PATH_RE);
+  if (!match) return null;
+  const [, segment, token] = match;
+  const kind =
+    segment === ENTITY_PATH_SEGMENTS.board
+      ? 'board'
+      : segment === ENTITY_PATH_SEGMENTS.session
+        ? 'session'
+        : segment === ENTITY_PATH_SEGMENTS.branch
+          ? 'branch'
+          : 'artifact';
+  return { kind, token };
+}
+
+// Resolve the board the app will ACTUALLY display on first paint from the
+// current URL, reusing the same slug/short-id resolvers `useUrlState` uses.
+// First-paint scoping MUST target this board (never the stored one) so the
+// displayed board renders fully. Returns null → caller falls back to a GLOBAL
+// (unscoped) first paint, which is always correct:
+//   - Home (`/`) or any non-entity path: no board shown.
+//   - `/a/<artifact>/`: artifacts aren't in the gated light batch (they load
+//     in the background), so the board can't be resolved synchronously here.
+//   - Unresolvable / ambiguous short id or a board_id we can't chain to.
+function resolveDisplayedBoardId(
+  pathname: string,
+  boardById: Map<string, { board_id: string; slug?: string }>,
+  branchById: Map<string, { branch_id: string; board_id?: string | null }>,
+  sessionById: Map<string, { session_id: string; branch_id?: string }>
+): string | null {
+  const parsed = parseEntityPath(pathname);
+  if (!parsed) return null;
+
+  switch (parsed.kind) {
+    case 'board':
+      return resolveBoardFromUrlPure(parsed.token, boardById);
+    case 'session': {
+      const sessionId = resolveSessionFromShortIdPure(parsed.token, sessionById);
+      if (!sessionId) return null;
+      const branchId = sessionById.get(sessionId)?.branch_id;
+      return branchId ? (branchById.get(branchId)?.board_id ?? null) : null;
+    }
+    case 'branch': {
+      const branchId = resolveBranchFromShortIdPure(parsed.token, branchById);
+      return branchId ? (branchById.get(branchId)?.board_id ?? null) : null;
+    }
+    default:
+      return null;
+  }
 }
 
 function removeBoardObjectFromBoardBucket(
@@ -417,6 +546,19 @@ export function useAgorData(
   // we only consume it in event handlers, never in render.
   const lastSilentFetchFailedRef = useRef(false);
 
+  // Monotonic counter bumped by every realtime handler that mutates a slice a
+  // BACKGROUND fetch later replaces wholesale (board-objects / cards / comments
+  // for full hydration, plus the optional mcp / gateway / artifact / session-mcp
+  // / oauth slices). A background apply snapshots this before its fetch; if it
+  // changed by the time the fetch resolves, a live create/patch/remove landed
+  // mid-flight and the snapshot is potentially stale — so we refetch for a
+  // consistent snapshot rather than clobbering the live write. As a final
+  // backstop the apply merges live entries on top of the snapshot (live wins),
+  // so an in-flight create/patch is never lost even at the retry cap. We use a
+  // ref (not state) since it's only read/written from async fetch code and
+  // event handlers, never in render.
+  const liveWriteRevisionRef = useRef(0);
+
   // Fetch all data
   //
   // `silent: true` is used by background refetches (e.g. socket reconnect) that
@@ -463,89 +605,105 @@ export function useAgorData(
           });
         };
 
-        // Fetch sessions, boards, board-objects, comments, repos, branches, users, mcp servers, session-mcp relationships in parallel.
-        // Task/message detail now comes from per-session reactive state in conversation components.
-        debugTimer?.startFetchPhase();
-        const [
-          sessionsList,
-          boardsList,
-          boardObjectsList,
-          commentsList,
-          cardsList,
-          cardTypesList,
-          reposList,
-          branchesList,
-          usersList,
-          mcpServersList,
-          sessionMcpList,
-          gatewayChannelsList,
-          artifactsList,
-          oauthStatusResult,
-        ] = await Promise.all([
-          track(
-            'sessions',
-            client.service('sessions').findAll({
-              query: {
-                archived: false,
-                $limit: PAGINATION.DEFAULT_LIMIT,
-                $sort: { updated_at: -1 },
-              },
-            })
-          ),
-          track(
-            'boards',
-            client.service('boards').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } })
-          ),
-          track(
-            'board-objects',
-            client.service('board-objects').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } })
-          ),
-          track(
-            'board-comments',
-            client
-              .service('board-comments')
-              .findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } })
-          ),
-          track(
-            'cards',
-            client.service('cards').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } })
-          ),
-          track(
-            'card-types',
-            client.service('card-types').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } })
-          ),
-          track(
-            'repos',
-            client.service('repos').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } })
-          ),
-          track(
-            'branches',
-            client
-              .service('branches')
-              .findAll({ query: { archived: false, $limit: PAGINATION.DEFAULT_LIMIT } })
-          ),
-          track(
-            'users',
-            client.service('users').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } })
-          ),
-          track(
-            'mcp-servers',
-            client.service('mcp-servers').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } })
-          ),
-          track(
-            'session-mcp-servers',
+        // Merge fetched snapshot entries with live ones, LIVE WINS: prevMap
+        // entries (delivered by realtime while the fetch was in flight)
+        // overwrite the snapshot. Mutates and returns `incoming`.
+        const mergeLiveWins = <V>(
+          incoming: Map<string, V>,
+          prevMap: Map<string, V>
+        ): Map<string, V> => {
+          for (const [key, value] of prevMap) incoming.set(key, value);
+          return incoming;
+        };
+
+        // Run a BACKGROUND (non-gated) fetch and apply it clobber-safely.
+        // - Silent reconnect refetches are authoritative resyncs → apply once.
+        // - Otherwise, if a realtime write to one of these slices landed during
+        //   the fetch (liveWriteRevisionRef changed), refetch — bounded — for a
+        //   fresh snapshot before applying. The appliers additionally merge live
+        //   entries on top of the snapshot, so an in-flight create/patch is never
+        //   lost even when the retry cap is hit under a continuous write stream.
+        const runBackgroundFetch = async <T>(
+          label: string,
+          fetchFn: () => Promise<T>,
+          apply: (result: T) => void
+        ): Promise<void> => {
+          try {
+            if (silent) {
+              apply(await fetchFn());
+              return;
+            }
+            for (let attempt = 0; attempt < MAX_BACKGROUND_REFETCH; attempt++) {
+              const revBefore = liveWriteRevisionRef.current;
+              const result = await fetchFn();
+              if (
+                liveWriteRevisionRef.current === revBefore ||
+                attempt === MAX_BACKGROUND_REFETCH - 1
+              ) {
+                apply(result);
+                return;
+              }
+              // A realtime write landed mid-fetch; loop to refetch a fresh snapshot.
+            }
+          } catch (err) {
+            console.warn(`[useAgorData] background ${label} fetch failed:`, err);
+          }
+        };
+
+        // ── Background (non-gated) fetches ──────────────────────────────
+        // These collections are NOT needed to paint the canvas, so they must
+        // never block the first-paint gate. Fire-and-forget: each populates its
+        // own map slice on resolve. Their realtime subscriptions are attached in
+        // the subscribe effect BEFORE this fetch runs, so live events land even
+        // while these fetches are in flight — and `runBackgroundFetch` keeps the
+        // apply from clobbering them. We deliberately do NOT `track()` them —
+        // they're absent from INITIAL_LOAD_ITEMS, so the loading checklist /
+        // `initialLoadComplete` gate ignores them. We merge through the stable
+        // `setMaps` (not the per-render setMapSlice setters, which would
+        // destabilize this useCallback's deps and re-fire the subscribe effect).
+        void runBackgroundFetch(
+          'mcp-servers',
+          () =>
+            client.service('mcp-servers').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+          (list) =>
+            setMaps((prev) => ({
+              ...prev,
+              mcpServerById: silent
+                ? buildById(list, 'mcp_server_id')
+                : mergeLiveWins(buildById(list, 'mcp_server_id'), prev.mcpServerById),
+            }))
+        );
+        void runBackgroundFetch(
+          'session-mcp-servers',
+          () =>
             client
               .service('session-mcp-servers')
-              .findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } })
-          ),
-          track(
-            'gateway-channels',
+              .findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+          (list) =>
+            setMaps((prev) => ({
+              ...prev,
+              sessionMcpServerIds: silent
+                ? buildSessionMcpMap(list)
+                : mergeLiveWins(buildSessionMcpMap(list), prev.sessionMcpServerIds),
+            }))
+        );
+        void runBackgroundFetch(
+          'gateway-channels',
+          () =>
             client
               .service('gateway-channels')
-              .findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } })
-          ),
-          track(
-            'artifacts',
+              .findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+          (list) =>
+            setMaps((prev) => ({
+              ...prev,
+              gatewayChannelById: silent
+                ? buildById(list, 'id')
+                : mergeLiveWins(buildById(list, 'id'), prev.gatewayChannelById),
+            }))
+        );
+        void runBackgroundFetch(
+          'artifacts',
+          () =>
             client.service('artifacts').findAll({
               query: {
                 $limit: PAGINATION.DEFAULT_LIMIT,
@@ -571,14 +729,72 @@ export function useAgorData(
                   'url',
                 ],
               },
-            })
-          ),
-          client
-            .service('mcp-servers/oauth-status')
-            .find()
-            .catch(() => ({ authenticated_server_ids: [] })),
-        ]);
-        debugTimer?.endFetchPhase();
+            }),
+          (list) =>
+            setMaps((prev) => ({
+              ...prev,
+              artifactById: silent
+                ? buildById(list, 'artifact_id')
+                : mergeLiveWins(buildById(list, 'artifact_id'), prev.artifactById),
+            }))
+        );
+        void runBackgroundFetch(
+          'oauth-status',
+          () => client.service('mcp-servers/oauth-status').find(),
+          (res) => {
+            const ids =
+              (res as { authenticated_server_ids?: string[] })?.authenticated_server_ids ?? [];
+            setMaps((prev) => ({
+              ...prev,
+              // Non-silent: union snapshot with live additions so an OAuth
+              // completion that landed mid-fetch isn't dropped. Silent: replace.
+              userAuthenticatedMcpServerIds: silent
+                ? new Set(ids)
+                : new Set([...ids, ...prev.userAuthenticatedMcpServerIds]),
+            }));
+          }
+        );
+
+        // ── Essential gated fetches — LIGHT batch ───────────────────────
+        // Lightweight global collections needed to (a) paint branch cards and
+        // (b) resolve which board the URL targets. Awaited first so we can pick
+        // the first-paint board scope BEFORE issuing the heavy fetches below.
+        debugTimer?.startFetchPhase();
+        const [sessionsList, boardsList, cardTypesList, reposList, branchesList, usersList] =
+          await Promise.all([
+            track(
+              'sessions',
+              client.service('sessions').findAll({
+                query: {
+                  archived: false,
+                  $limit: PAGINATION.DEFAULT_LIMIT,
+                  $sort: { updated_at: -1 },
+                },
+              })
+            ),
+            track(
+              'boards',
+              client.service('boards').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } })
+            ),
+            track(
+              'card-types',
+              client.service('card-types').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } })
+            ),
+            track(
+              'repos',
+              client.service('repos').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } })
+            ),
+            track(
+              'branches',
+              client
+                .service('branches')
+                .findAll({ query: { archived: false, $limit: PAGINATION.DEFAULT_LIMIT } })
+            ),
+            track(
+              'users',
+              client.service('users').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } })
+            ),
+          ]);
 
         // Direct /s/<id>/ opens should work for archived sessions without broadening
         // the default active-session list. If the active query missed the URL target,
@@ -616,25 +832,6 @@ export function useAgorData(
           } catch {
             // Leave normal URL resolution to report/not-heal unresolved session links.
           }
-        }
-
-        if (!silent) {
-          setLoadingStage('indexing');
-          debugTimer?.markStage('indexing');
-          debugTimer?.startIndexing();
-          // Give the browser one paint opportunity so large instances can
-          // visibly advance from "loading lists" to "indexing workspace data"
-          // before the synchronous Map construction below.
-          await new Promise<void>((resolve) => {
-            if (
-              typeof window === 'undefined' ||
-              typeof window.requestAnimationFrame !== 'function'
-            ) {
-              resolve();
-              return;
-            }
-            window.requestAnimationFrame(() => resolve());
-          });
         }
 
         // Build session Maps for efficient lookups
@@ -696,33 +893,107 @@ export function useAgorData(
           }
         }
 
-        // Build board Map for efficient lookups
+        // Build board / branch / repo / user / card-type Maps (the light global
+        // collections). Built before the heavy batch so we can resolve the URL
+        // target board.
         const boardsMap = new Map<string, Board>();
         for (const board of boardsList) {
           boardsMap.set(board.board_id, board);
         }
-        // Build board object Maps for efficient lookups
-        const boardObjectsMap = new Map<string, BoardEntityObject>();
-        const boardObjectsByBoardMap = new Map<string, BoardEntityObject[]>();
-        const boardObjectByBranchMap = new Map<string, BoardEntityObject>();
-        const boardObjectByCardMap = new Map<string, BoardEntityObject>();
-        for (const boardObject of boardObjectsList) {
-          boardObjectsMap.set(boardObject.object_id, boardObject);
-
-          const boardObjectsForBoard = boardObjectsByBoardMap.get(boardObject.board_id);
-          if (boardObjectsForBoard) {
-            boardObjectsForBoard.push(boardObject);
-          } else {
-            boardObjectsByBoardMap.set(boardObject.board_id, [boardObject]);
-          }
-
-          if (boardObject.branch_id) {
-            boardObjectByBranchMap.set(boardObject.branch_id, boardObject);
-          }
-          if (boardObject.card_id) {
-            boardObjectByCardMap.set(boardObject.card_id, boardObject);
-          }
+        const branchesMap = new Map<string, Branch>();
+        for (const branch of branchesList) {
+          branchesMap.set(branch.branch_id, branch);
         }
+        const cardTypesMap = new Map<string, CardType>();
+        for (const cardType of cardTypesList) {
+          cardTypesMap.set(cardType.card_type_id, cardType);
+        }
+        const reposMap = new Map<string, Repo>();
+        for (const repo of reposList) {
+          reposMap.set(repo.repo_id, repo);
+        }
+        const usersMap = new Map<string, User>();
+        for (const user of usersList) {
+          usersMap.set(user.user_id, user);
+        }
+
+        // ── First-paint board scope (URL-resolved) ──────────────────────
+        // Scope the heavy collections to the board the app will ACTUALLY
+        // display, resolved from the current URL with the same slug/short-id
+        // resolvers `useUrlState` uses (NOT localStorage — the displayed board
+        // can differ from the stored one, e.g. a `/b/<other>/` deep link).
+        // Returns undefined → GLOBAL (unscoped) first paint, always correct:
+        // Home, `/a/` artifact links, or any unresolvable target. Silent
+        // reconnect refetches always go GLOBAL so they fully resync every board.
+        const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
+        const boardScope = silent
+          ? undefined
+          : (resolveDisplayedBoardId(pathname, boardsMap, branchesMap, sessionsById) ?? undefined);
+
+        // ── Essential gated fetches — HEAVY batch ───────────────────────
+        // The heavy collections, scoped to the first-paint board when resolved
+        // (board-objects / board-comments push board_id to SQL; cards filter it
+        // server-side). On a real workspace this trims thousands of rows to one
+        // board's. Awaited as part of the gate so the displayed board paints
+        // fully; the background hydration below then fills every other board.
+        const [boardObjectsList, commentsList, cardsList] = await Promise.all([
+          track(
+            'board-objects',
+            client.service('board-objects').findAll({
+              query: {
+                $limit: PAGINATION.DEFAULT_LIMIT,
+                ...(boardScope ? { board_id: boardScope } : {}),
+              },
+            })
+          ),
+          track(
+            'board-comments',
+            client.service('board-comments').findAll({
+              query: {
+                $limit: PAGINATION.DEFAULT_LIMIT,
+                ...(boardScope ? { board_id: boardScope } : {}),
+              },
+            })
+          ),
+          track(
+            'cards',
+            client.service('cards').findAll({
+              query: {
+                $limit: PAGINATION.DEFAULT_LIMIT,
+                ...(boardScope ? { board_id: boardScope } : {}),
+              },
+            })
+          ),
+        ]);
+        debugTimer?.endFetchPhase();
+
+        if (!silent) {
+          setLoadingStage('indexing');
+          debugTimer?.markStage('indexing');
+          debugTimer?.startIndexing();
+          // Give the browser one paint opportunity so large instances can
+          // visibly advance from "loading lists" to "indexing workspace data"
+          // before the synchronous Map construction below.
+          await new Promise<void>((resolve) => {
+            if (
+              typeof window === 'undefined' ||
+              typeof window.requestAnimationFrame !== 'function'
+            ) {
+              resolve();
+              return;
+            }
+            window.requestAnimationFrame(() => resolve());
+          });
+        }
+
+        // Build board object Maps for efficient lookups (shared with the
+        // background full-hydration pass so the two index builds stay identical)
+        const {
+          boardObjectById: boardObjectsMap,
+          boardObjectsByBoardId: boardObjectsByBoardMap,
+          boardObjectByBranchId: boardObjectByBranchMap,
+          boardObjectByCardId: boardObjectByCardMap,
+        } = buildBoardObjectMaps(boardObjectsList);
         // Build comment Map for efficient lookups
         const commentsMap = new Map<string, BoardComment>();
         for (const comment of commentsList) {
@@ -733,54 +1004,15 @@ export function useAgorData(
         for (const card of cardsList) {
           cardsMap.set(card.card_id, card);
         }
-        // Build card type Map for efficient lookups
-        const cardTypesMap = new Map<string, CardType>();
-        for (const cardType of cardTypesList) {
-          cardTypesMap.set(cardType.card_type_id, cardType);
-        }
-        // Build repo Map for efficient lookups
-        const reposMap = new Map<string, Repo>();
-        for (const repo of reposList) {
-          reposMap.set(repo.repo_id, repo);
-        }
-        // Build branch Map for efficient lookups
-        const branchesMap = new Map<string, Branch>();
-        for (const branch of branchesList) {
-          branchesMap.set(branch.branch_id, branch);
-        }
-        // Build user Map for efficient lookups
-        const usersMap = new Map<string, User>();
-        for (const user of usersList) {
-          usersMap.set(user.user_id, user);
-        }
-        // Build MCP server Map for efficient lookups
-        const mcpServersMap = new Map<string, MCPServer>();
-        for (const mcpServer of mcpServersList) {
-          mcpServersMap.set(mcpServer.mcp_server_id, mcpServer);
-        }
-        // Build gateway channel Map for efficient lookups
-        const gatewayChannelsMap = new Map<string, GatewayChannel>();
-        for (const channel of gatewayChannelsList) {
-          gatewayChannelsMap.set(channel.id, channel);
-        }
-        // Build artifact Map for efficient lookups
-        const artifactsMap = new Map<string, Artifact>();
-        for (const artifact of artifactsList) {
-          artifactsMap.set(artifact.artifact_id, artifact);
-        }
-        // Group session-MCP relationships by session_id
-        const sessionMcpMap = new Map<string, string[]>();
-        for (const relationship of sessionMcpList) {
-          if (!sessionMcpMap.has(relationship.session_id)) {
-            sessionMcpMap.set(relationship.session_id, []);
-          }
-          sessionMcpMap.get(relationship.session_id)!.push(relationship.mcp_server_id);
-        }
-        // Set per-user OAuth auth status
-        const oauthStatus = oauthStatusResult as { authenticated_server_ids?: string[] };
-        const userAuthenticatedMcpServerIds = new Set(oauthStatus?.authenticated_server_ids ?? []);
 
-        setMaps({
+        // Merge the essential slices in one atomic update. We spread `prev`
+        // (rather than replacing the whole object) so the BACKGROUND-managed
+        // slices — mcpServerById / gatewayChannelById / artifactById /
+        // sessionMcpServerIds / userAuthenticatedMcpServerIds — survive even if
+        // their fire-and-forget fetches resolved before this gate did. Those
+        // slices are owned by their background setters + realtime handlers.
+        setMaps((prev) => ({
+          ...prev,
           sessionById: sessionsById,
           sessionsByBranch: sessionsByBranchId,
           boardById: boardsMap,
@@ -794,14 +1026,65 @@ export function useAgorData(
           repoById: reposMap,
           branchById: branchesMap,
           userById: usersMap,
-          mcpServerById: mcpServersMap,
-          gatewayChannelById: gatewayChannelsMap,
-          artifactById: artifactsMap,
-          sessionMcpServerIds: sessionMcpMap,
-          userAuthenticatedMcpServerIds,
-        });
+        }));
         debugTimer?.endIndexing();
         debugFinishStatus = 'success';
+
+        // ── Background full hydration ───────────────────────────────────
+        // First paint is now open with ONLY the current board's heavy
+        // collections. Pull the global set so cross-board nav, GlobalSearch,
+        // BoardSwitcher, branch-list drawer, facepiles and session genealogy
+        // see every board's objects/cards/comments.
+        //
+        // Clobber-safety: this runs WHILE the app is interactive, so a realtime
+        // create/patch/remove can land during the global fetch. `runBackgroundFetch`
+        // refetches if `liveWriteRevisionRef` changed mid-flight, and the apply
+        // below MERGES the live slices on top of the global snapshot (live wins)
+        // so an in-flight edit (e.g. a card the user just moved) is never reverted
+        // by the snapshot. Removes are covered by the refetch (the fresh snapshot
+        // omits them). Sessions/branches/repos/users/boards/card-types are already
+        // global above, so only the board-scoped collections need topping up.
+        // Only runs when first paint was actually scoped (`boardScope` set), which
+        // is non-silent only — silent reconnect already refetches everything global.
+        if (boardScope) {
+          void runBackgroundFetch(
+            'full hydration',
+            () =>
+              Promise.all([
+                client
+                  .service('board-objects')
+                  .findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+                client.service('cards').findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+                client
+                  .service('board-comments')
+                  .findAll({ query: { $limit: PAGINATION.DEFAULT_LIMIT } }),
+              ]),
+            ([allBoardObjects, allCards, allComments]) =>
+              setMaps((prev) => {
+                // Start from the global snapshot…
+                const base = buildBoardObjectMaps(allBoardObjects);
+                let next: DataMaps = {
+                  ...prev,
+                  boardObjectById: base.boardObjectById,
+                  boardObjectsByBoardId: base.boardObjectsByBoardId,
+                  boardObjectByBranchId: base.boardObjectByBranchId,
+                  boardObjectByCardId: base.boardObjectByCardId,
+                  cardById: mergeLiveWins(buildById(allCards, 'card_id'), prev.cardById),
+                  commentById: mergeLiveWins(
+                    buildById(allComments, 'comment_id'),
+                    prev.commentById
+                  ),
+                };
+                // …then overlay every live board-object (current-board first-paint
+                // rows + any realtime edits) so live state wins over the snapshot
+                // across all four derived board-object maps.
+                for (const boardObject of prev.boardObjectById.values()) {
+                  next = upsertBoardObjectInMaps(next, boardObject, 'patch');
+                }
+                return next;
+              })
+          );
+        }
 
         // Silent refetch succeeded — clear the retry flag so future token
         // refreshes don't trigger another wasted re-fetch.
@@ -935,11 +1218,6 @@ export function useAgorData(
       setLoading(false);
       setLoadingStage('idle');
       return;
-    }
-
-    // Initial fetch (only once - WebSocket events keep us synced after that)
-    if (!hasInitiallyFetched) {
-      fetchData().then(() => setHasInitiallyFetched(true));
     }
 
     // Subscribe to session events
@@ -1184,12 +1462,15 @@ export function useAgorData(
     // Subscribe to board object events
     const boardObjectsService = client.service('board-objects');
     const handleBoardObjectCreated = (boardObject: BoardEntityObject) => {
+      liveWriteRevisionRef.current += 1;
       setMaps((prev) => upsertBoardObjectInMaps(prev, boardObject, 'create'));
     };
     const handleBoardObjectPatched = (boardObject: BoardEntityObject) => {
+      liveWriteRevisionRef.current += 1;
       setMaps((prev) => upsertBoardObjectInMaps(prev, boardObject, 'patch'));
     };
     const handleBoardObjectRemoved = (boardObject: BoardEntityObject) => {
+      liveWriteRevisionRef.current += 1;
       setMaps((prev) => removeBoardObjectFromMaps(prev, boardObject));
     };
 
@@ -1316,6 +1597,7 @@ export function useAgorData(
     // Subscribe to MCP server events
     const mcpServersService = client.service('mcp-servers');
     const handleMCPServerCreated = (server: MCPServer) => {
+      liveWriteRevisionRef.current += 1;
       setMcpServerById((prev) => {
         if (prev.has(server.mcp_server_id)) return prev; // Already exists, shouldn't happen
         const next = new Map(prev);
@@ -1324,9 +1606,11 @@ export function useAgorData(
       });
     };
     const handleMCPServerPatched = (server: MCPServer) => {
+      liveWriteRevisionRef.current += 1;
       setMcpServerById((prev) => replaceIfChanged(prev, server.mcp_server_id, server));
     };
     const handleMCPServerRemoved = (server: MCPServer) => {
+      liveWriteRevisionRef.current += 1;
       setMcpServerById((prev) => {
         if (!prev.has(server.mcp_server_id)) return prev; // Doesn't exist, nothing to remove
         const next = new Map(prev);
@@ -1343,6 +1627,7 @@ export function useAgorData(
     // Subscribe to gateway channel events
     const gatewayChannelsService = client.service('gateway-channels');
     const handleGatewayChannelCreated = (channel: GatewayChannel) => {
+      liveWriteRevisionRef.current += 1;
       setGatewayChannelById((prev) => {
         if (prev.has(channel.id)) return prev;
         const next = new Map(prev);
@@ -1351,9 +1636,11 @@ export function useAgorData(
       });
     };
     const handleGatewayChannelPatched = (channel: GatewayChannel) => {
+      liveWriteRevisionRef.current += 1;
       setGatewayChannelById((prev) => replaceIfChanged(prev, channel.id, channel));
     };
     const handleGatewayChannelRemoved = (channel: GatewayChannel) => {
+      liveWriteRevisionRef.current += 1;
       setGatewayChannelById((prev) => {
         if (!prev.has(channel.id)) return prev;
         const next = new Map(prev);
@@ -1370,6 +1657,7 @@ export function useAgorData(
     // Subscribe to card events
     const cardsService = client.service('cards');
     const handleCardCreated = (card: CardWithType) => {
+      liveWriteRevisionRef.current += 1;
       setCardById((prev) => {
         if (prev.has(card.card_id)) return prev; // Duplicate event — bail.
         const next = new Map(prev);
@@ -1378,9 +1666,11 @@ export function useAgorData(
       });
     };
     const handleCardPatched = (card: CardWithType) => {
+      liveWriteRevisionRef.current += 1;
       setCardById((prev) => replaceIfChanged(prev, card.card_id, card));
     };
     const handleCardRemoved = (card: CardWithType) => {
+      liveWriteRevisionRef.current += 1;
       setCardById((prev) => {
         if (!prev.has(card.card_id)) return prev;
         const next = new Map(prev);
@@ -1424,6 +1714,7 @@ export function useAgorData(
     // Subscribe to artifact events
     const artifactsService = client.service('artifacts');
     const handleArtifactCreated = (artifact: Artifact) => {
+      liveWriteRevisionRef.current += 1;
       setArtifactById((prev) => {
         if (prev.has(artifact.artifact_id)) return prev;
         const next = new Map(prev);
@@ -1432,6 +1723,7 @@ export function useAgorData(
       });
     };
     const handleArtifactPatched = (artifact: Artifact) => {
+      liveWriteRevisionRef.current += 1;
       setArtifactById((prev) => replaceIfChanged(prev, artifact.artifact_id, artifact));
       // Notify ArtifactNode components that payload may have changed. The
       // consumer (apps/agor-ui/src/components/SessionCanvas/canvas/ArtifactNode.tsx)
@@ -1446,6 +1738,7 @@ export function useAgorData(
       );
     };
     const handleArtifactRemoved = (artifact: Artifact) => {
+      liveWriteRevisionRef.current += 1;
       setArtifactById((prev) => {
         if (!prev.has(artifact.artifact_id)) return prev;
         const next = new Map(prev);
@@ -1480,6 +1773,7 @@ export function useAgorData(
       session_id: string;
       mcp_server_id: string;
     }) => {
+      liveWriteRevisionRef.current += 1;
       setSessionMcpServerIds((prev) => {
         const sessionMcpIds = prev.get(relationship.session_id) || [];
         // Check if relationship already exists (duplicate event)
@@ -1494,6 +1788,7 @@ export function useAgorData(
       session_id: string;
       mcp_server_id: string;
     }) => {
+      liveWriteRevisionRef.current += 1;
       setSessionMcpServerIds((prev) => {
         const sessionMcpIds = prev.get(relationship.session_id) || [];
         const filtered = sessionMcpIds.filter((id) => id !== relationship.mcp_server_id);
@@ -1518,6 +1813,7 @@ export function useAgorData(
     // Subscribe to board comment events
     const commentsService = client.service('board-comments');
     const handleCommentCreated = (comment: BoardComment) => {
+      liveWriteRevisionRef.current += 1;
       setCommentById((prev) => {
         if (prev.has(comment.comment_id)) return prev; // Already exists, shouldn't happen
         const next = new Map(prev);
@@ -1526,9 +1822,11 @@ export function useAgorData(
       });
     };
     const handleCommentPatched = (comment: BoardComment) => {
+      liveWriteRevisionRef.current += 1;
       setCommentById((prev) => replaceIfChanged(prev, comment.comment_id, comment));
     };
     const handleCommentRemoved = (comment: BoardComment) => {
+      liveWriteRevisionRef.current += 1;
       setCommentById((prev) => {
         if (!prev.has(comment.comment_id)) return prev; // Doesn't exist, nothing to remove
         const next = new Map(prev);
@@ -1556,6 +1854,7 @@ export function useAgorData(
       oauth_mode?: string;
     }) => {
       if (!event.success || !event.mcp_server_id) return;
+      liveWriteRevisionRef.current += 1;
       const mode = event.oauth_mode || 'per_user';
       if (mode === 'per_user') {
         setUserAuthenticatedMcpServerIds((prev) => {
@@ -1588,6 +1887,7 @@ export function useAgorData(
     // reload.
     const handleOAuthDisconnected = async (event: { mcp_server_id: string }) => {
       if (!event.mcp_server_id) return;
+      liveWriteRevisionRef.current += 1;
       setUserAuthenticatedMcpServerIds((prev) => {
         if (!prev.has(event.mcp_server_id)) return prev;
         const next = new Set(prev);
@@ -1664,6 +1964,15 @@ export function useAgorData(
       void refetchSilently();
     };
     window.addEventListener(TOKENS_REFRESHED_EVENT, handleTokensRefreshed);
+
+    // Initial fetch (only once — WebSocket events keep us synced after that).
+    // Kicked off AFTER every `.on()` above is attached so realtime
+    // created/patched/removed events that fire while fetchData's requests are
+    // in flight are captured (and bump liveWriteRevisionRef) instead of being
+    // dropped in the gap between fetch-start and listener-attach.
+    if (!hasInitiallyFetched) {
+      fetchData().then(() => setHasInitiallyFetched(true));
+    }
 
     // Cleanup listeners on unmount
     return () => {
