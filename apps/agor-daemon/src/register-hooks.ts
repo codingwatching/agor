@@ -2396,14 +2396,16 @@ export function registerHooks(ctx: RegisterHooksContext): void {
             !canReceiveMcpTokenForSession({
               callerUserId: callerUser?.user_id,
               callerRole: callerUser?.role,
-              sessionCreatedBy: session.created_by,
             })
           ) {
             return context;
           }
 
           const { generateSessionToken } = await import('./mcp/tokens.js');
-          const userId = session.created_by || 'unknown';
+          const userId = callerUser?.user_id;
+          if (!userId) {
+            return context;
+          }
 
           const jwtSecret = app.settings.authentication?.secret;
           if (!jwtSecret) {
@@ -2467,16 +2469,25 @@ export function registerHooks(ctx: RegisterHooksContext): void {
             return context;
           }
 
-          // Gate MCP token issuance on member+ role (see `after: get` note).
-          const callerRole = (context.params as AuthenticatedParams).user?.role;
-          if (!hasMinimumRole(callerRole, ROLES.MEMBER)) {
+          // Gate MCP token issuance through the same caller-scoped policy as `after:get`.
+          const callerUser = (context.params as AuthenticatedParams).user;
+          if (
+            !canReceiveMcpTokenForSession({
+              callerUserId: callerUser?.user_id,
+              callerRole: callerUser?.role,
+            })
+          ) {
             return context;
           }
 
           // Resolve MCP token for this session (cached/reused when still valid).
+          // Mint it for the active caller, not for an inherited/parent creator.
           const { generateSessionToken } = await import('./mcp/tokens.js');
           const session = context.result as Session;
-          const userId = session.created_by || 'unknown';
+          const userId = callerUser?.user_id;
+          if (!userId) {
+            return context;
+          }
 
           // Get JWT secret from app settings
           const jwtSecret = app.settings.authentication?.secret;

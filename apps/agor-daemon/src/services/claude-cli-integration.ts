@@ -75,7 +75,7 @@ import {
 } from '@agor/core/unix';
 import { DrizzleService } from '../adapters/drizzle';
 import { buildInitialUserMessage } from '../utils/build-initial-user-message.js';
-import { canReceiveMcpTokenForSession } from '../utils/mcp-token-authorization.js';
+import { canControlCliSession } from '../utils/mcp-token-authorization.js';
 import { getDaemonUrl } from '../utils/spawn-executor.js';
 import {
   ClaudeCliWatcherRegistry,
@@ -1245,14 +1245,14 @@ export async function writeClaudeCliMcpConfigForSession(
 
   if (
     opts.actor &&
-    !canReceiveMcpTokenForSession({
+    !canControlCliSession({
       callerUserId: opts.actor.user_id,
       callerRole: opts.actor.role,
       sessionCreatedBy: session.created_by,
     })
   ) {
     console.warn(
-      `[claude-cli-integration] not writing owner-scoped MCP config for session ${shortId(session.session_id)}: caller ${opts.actor.user_id ?? 'anonymous'} cannot receive session creator token`
+      `[claude-cli-integration] not writing owner-scoped MCP config for session ${shortId(session.session_id)}: caller ${opts.actor.user_id ?? 'anonymous'} is not allowed to control the owner-scoped CLI MCP config`
     );
     return undefined;
   }
