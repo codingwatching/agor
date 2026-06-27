@@ -14,9 +14,16 @@
  */
 
 import 'dotenv/config';
+import { platform } from 'node:os';
 
 // Patch console methods to respect LOG_LEVEL env var
 import { configureAnalyticsLogger } from '@agor/core/analytics';
+import {
+  configureOpenSourceTelemetryLogger,
+  loadOpenSourceTelemetryAgorVersion,
+  openSourceTelemetryLogger,
+  pruneDefaultOpenSourceTelemetryDestination,
+} from '@agor/core/telemetry';
 import { patchConsole } from '@agor/core/utils/logger';
 import { UI_MOUNT_PATH } from '@agor/core/utils/url';
 
@@ -29,6 +36,7 @@ import {
   renderGitConfigParametersForLog,
   resolveGitConfigParameters,
   resolveSecurity,
+  saveConfig,
 } from '@agor/core/config';
 import { getDatabaseUrl } from '@agor/core/db';
 import {
@@ -67,11 +75,18 @@ import { setBundledUiFallbackHeaders, setBundledUiStaticHeaders } from './setup/
 import { configureSwagger } from './setup/swagger.js';
 import { loadDaemonVersion } from './setup/version.js';
 import { runPostStartJob, startup } from './startup.js';
+import { ensureOpenSourceTelemetryEnvEnabledConfig } from './utils/open-source-telemetry-config.js';
+import { shouldEmitOpenSourceTelemetryDaemonActive } from './utils/open-source-telemetry-heartbeat.js';
+import { startOpenSourceTelemetryUsageSummaryInterval } from './utils/open-source-telemetry-usage.js';
 import { configureDaemonUrl, configureExecutor } from './utils/spawn-executor.js';
 import { registerAllWidgets } from './widgets/index.js';
 
 // Load daemon version at startup
 const DAEMON_VERSION = await loadDaemonVersion(import.meta.url);
+const TELEMETRY_AGOR_VERSION = await loadOpenSourceTelemetryAgorVersion(
+  DAEMON_VERSION,
+  import.meta.url
+);
 
 // Resolve build SHA (env > .build-info file > git > 'dev'). UI tabs capture
 // this on first connect and prompt a refresh if a later handshake disagrees.
@@ -145,7 +160,7 @@ export async function startDaemon(options?: DaemonStartOptions): Promise<void> {
   process.env.GIT_ASKPASS = 'echo';
 
   // Load config: CLI-provided > configPath > default loadConfig()
-  const config: AgorConfig = options?.config
+  let config: AgorConfig = options?.config
     ? options.config
     : options?.configPath
       ? await loadConfigFromFile(options.configPath)
@@ -171,6 +186,18 @@ export async function startDaemon(options?: DaemonStartOptions): Promise<void> {
   // Configure analytics after process-wide git hardening is installed. Module
   // plugins are optional dynamic imports and must never prevent daemon startup.
   await configureAnalyticsLogger(config);
+  const envTelemetryConfig = ensureOpenSourceTelemetryEnvEnabledConfig(config);
+  if (envTelemetryConfig.changed) {
+    config = envTelemetryConfig.config;
+    await saveConfig(pruneDefaultOpenSourceTelemetryDestination(config));
+  }
+  configureOpenSourceTelemetryLogger(config);
+  if (config.telemetry?.enabled === undefined) {
+    console.warn(
+      'ℹ  Open-source telemetry is not configured; no telemetry will be sent. ' +
+        'Run `agor telemetry on` to enable or `agor telemetry off` to dismiss.'
+    );
+  }
 
   // Surface a clear migration note if the config still carries leftover
   // anonymous-mode keys. Operators upgrading from a release that had
@@ -587,6 +614,63 @@ export async function startDaemon(options?: DaemonStartOptions): Promise<void> {
   // already receive `db` via constructor injection are unaffected.
   app.set('database', db);
   app.set('config', config);
+
+  if (openSourceTelemetryLogger.isEnabled()) {
+    const startupTelemetryProperties = {
+      agor_version: TELEMETRY_AGOR_VERSION,
+      deployment_kind: process.env.KUBERNETES_SERVICE_HOST
+        ? 'k8s'
+        : process.env.container || process.env.AGOR_DOCKER
+          ? 'docker'
+          : 'local',
+      db_backend: process.env.AGOR_DB_DIALECT === 'postgresql' ? 'postgresql' : 'sqlite',
+      os_family: platform(),
+      node_major: Number.parseInt(process.versions.node.split('.')[0] ?? '0', 10),
+      branch_rbac: branchRbacEnabled,
+      unix_user_mode: config.execution?.unix_user_mode ?? 'simple',
+    };
+
+    openSourceTelemetryLogger.track({
+      event: 'daemon.start',
+      properties: startupTelemetryProperties,
+    });
+
+    const daemonActive = shouldEmitOpenSourceTelemetryDaemonActive(config);
+    if (daemonActive.shouldEmit) {
+      openSourceTelemetryLogger.track({
+        event: 'daemon.active',
+        properties: {
+          ...startupTelemetryProperties,
+          day: daemonActive.day,
+        },
+      });
+    }
+
+    if (
+      config.telemetry?.last_reported_version &&
+      config.telemetry.last_reported_version !== TELEMETRY_AGOR_VERSION
+    ) {
+      openSourceTelemetryLogger.track({
+        event: 'daemon.upgraded',
+        properties: {
+          from_version: config.telemetry.last_reported_version,
+          to_version: TELEMETRY_AGOR_VERSION,
+        },
+      });
+    }
+    startOpenSourceTelemetryUsageSummaryInterval(db);
+    config.telemetry = {
+      ...config.telemetry,
+      last_reported_version: TELEMETRY_AGOR_VERSION,
+      ...(daemonActive.shouldEmit ? { last_daemon_active_day: daemonActive.day } : {}),
+    };
+    saveConfig(pruneDefaultOpenSourceTelemetryDestination(config)).catch((error) => {
+      console.warn(
+        '[telemetry] failed to persist daemon telemetry state:',
+        error instanceof Error ? error.message : String(error)
+      );
+    });
+  }
 
   // --------------------------------------------------------------------------
   // Phase 1: Register services

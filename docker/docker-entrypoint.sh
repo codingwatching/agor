@@ -42,10 +42,21 @@ if sudo -n true 2>/dev/null; then
   # Chown dist directories recursively (in case they have nested files)
   sudo -n chown -R agor:agor $DIST_DIRS
 
+  # The initial builds below run after dist cleanup. If TypeScript's
+  # incremental cache survives from an earlier container, `tsc` can incorrectly
+  # decide there is nothing to emit, leaving dist empty and making the startup
+  # wait loop time out. Remove stale build info alongside dist.
+  BUILD_INFO_DIRS="/app/packages/core/node_modules/.tmp /app/packages/executor/node_modules/.tmp /app/packages/client/node_modules/.tmp"
+  sudo -n rm -rf $BUILD_INFO_DIRS 2>/dev/null || true
+  sudo -n mkdir -p $BUILD_INFO_DIRS
+  sudo -n chown -R agor:agor $BUILD_INFO_DIRS
+
   echo "✅ Build directories ready"
 else
   # Fallback: try without sudo (might work depending on host permissions)
   rm -rf $DIST_DIRS 2>/dev/null || true
+  rm -rf /app/packages/core/node_modules/.tmp /app/packages/executor/node_modules/.tmp /app/packages/client/node_modules/.tmp 2>/dev/null || true
+  mkdir -p /app/packages/core/node_modules/.tmp /app/packages/executor/node_modules/.tmp /app/packages/client/node_modules/.tmp 2>/dev/null || true
   mkdir -p $DIST_DIRS 2>/dev/null || true
   echo "⚠️  Build directories created (sudo not available, may have permission issues)"
 fi

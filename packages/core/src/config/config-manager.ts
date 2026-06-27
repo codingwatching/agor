@@ -363,6 +363,7 @@ export function getDefaultConfig(): AgorConfig {
       executor_heartbeat: resolveExecutorHeartbeatConfig(),
     },
     analytics: getDefaultAnalyticsConfig(),
+    telemetry: {},
   };
 }
 
@@ -417,6 +418,7 @@ export async function getConfigValue(key: string): Promise<string | boolean | nu
     execution: { ...defaults.execution, ...config.execution },
     paths: { ...defaults.paths, ...config.paths },
     analytics: { ...defaults.analytics, ...config.analytics },
+    telemetry: { ...defaults.telemetry, ...config.telemetry },
   };
 
   const parts = key.split('.');

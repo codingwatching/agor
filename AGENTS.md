@@ -92,7 +92,7 @@ Terms you'll see across the codebase, UI, and docs:
 | **Unix user mode** | `simple` / `insulated` / `strict` — progressive OS-level isolation tiers. See "Feature Flags" below.                                                                                            |
 | **Genealogy**      | Parent/child + fork ancestry of a session. Surfaced as a tree inside a branch card.                                                                                                             |
 | **Short ID**       | First 8 chars of a UUIDv7, used in UI and CLI. Resolved at API boundary via a `resolveShortId` hook. See [`context/concepts/id-management.md`](context/concepts/id-management.md).              |
-| **Effort**         | Reasoning depth knob (`low`/`medium`/`high`/`xhigh`/`max`) on `model_config`. Maps to Claude API `output_config.effort`.                                                                       |
+| **Effort**         | Reasoning depth knob (`low`/`medium`/`high`/`xhigh`/`max`) on `model_config`. Maps to Claude API `output_config.effort`.                                                                        |
 
 ## Where to look first
 
