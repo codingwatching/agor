@@ -202,6 +202,25 @@ async function cleanupOrphanStatuses(ctx: StartupContext): Promise<OrphanCleanup
     }
   }
 
+  // Fix sessions that are IDLE but not promptable — this happens when the
+  // daemon is killed while a session is mid-execution and the stop path set
+  // status=idle without setting ready_for_prompt=true, or when the executor
+  // exit raced with the stop endpoint and left ready_for_prompt=false. IDLE +
+  // ready_for_prompt=false is never a legitimate persistent state.
+  const stuckIdleResult = (await sessionsService.find({
+    query: { status: SessionStatus.IDLE, ready_for_prompt: false, $limit: 1000 },
+  })) as unknown as Paginated<Session>;
+  const stuckIdleSessions = stuckIdleResult.data;
+
+  if (stuckIdleSessions.length > 0) {
+    for (const session of stuckIdleSessions) {
+      await app.service('sessions').patch(session.session_id, { ready_for_prompt: true }, {});
+      startupDebug(
+        `   ✓ Unblocked stuck-idle session ${shortId(session.session_id)} (ready_for_prompt was false)`
+      );
+    }
+  }
+
   // Wipe the queue. Running tasks are marked STOPPED above, which invalidates
   // the ordering premise of anything that was waiting behind them — a queued
   // prompt typically depends on whatever was running first. Rather than carry
@@ -228,6 +247,9 @@ async function cleanupOrphanStatuses(ctx: StartupContext): Promise<OrphanCleanup
   ];
   if (sessionsResetFromOrphanedTasks > 0) {
     cleanupParts.push(`${sessionsResetFromOrphanedTasks} task-owned session(s) reset`);
+  }
+  if (stuckIdleSessions.length > 0) {
+    cleanupParts.push(`${stuckIdleSessions.length} stuck-idle session(s) unblocked`);
   }
   console.log(`[startup] orphan cleanup: ${cleanupParts.join(', ')}`);
 
