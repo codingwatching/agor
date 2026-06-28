@@ -233,9 +233,9 @@ function createPostgresDatabase(config: DbConfig): PostgresJsDatabase<typeof pos
         // Kill this backend after 45 s idle inside a transaction. Surfaced as
         // a real error to the caller so we can log and retry rather than
         // blocking silently. 45 s is generous for any single service call.
-        idle_in_transaction_session_timeout: '45000',
+        idle_in_transaction_session_timeout: 45000,
         // Hard cap on individual statement execution time.
-        statement_timeout: '60000',
+        statement_timeout: 60000,
       },
     };
     if (config.ssl !== undefined) {
