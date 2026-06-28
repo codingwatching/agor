@@ -11,7 +11,12 @@ import {
   renderChildCompletionCallback,
 } from '@agor/core/callbacks/child-completion-template';
 import { PAGINATION, resolveExecutorHeartbeatConfig } from '@agor/core/config';
-import { type Database, shortId, TaskRepository, tenantDatabaseScope } from '@agor/core/db';
+import {
+  type Database,
+  enqueueTenantDatabasePostCommitCallback,
+  shortId,
+  TaskRepository,
+} from '@agor/core/db';
 import type { Application } from '@agor/core/feathers';
 import type {
   ContentBlock,
@@ -360,7 +365,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
     // Dispatch completion callbacks outside the task-patch transaction.
     // Both patches have committed at this point, so callbacks run in fresh transactions.
     if (updatedSession) {
-      void this.dispatchCompletionCallbacks(failedTask, updatedSession, params).catch(
+      void this.dispatchCompletionCallbacksAfterCommit(failedTask, updatedSession, params).catch(
         (error: unknown) => {
           console.warn(
             `[executor-heartbeat] Failed to dispatch completion callbacks for task ${shortId(failedTask.task_id)}:`,
@@ -393,6 +398,38 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
     }
 
     this.heartbeatCallbackRunner.run(payload);
+  }
+
+  private async runAfterTenantDatabaseCommit(
+    label: string,
+    work: () => Promise<void>
+  ): Promise<void> {
+    const run = async () => {
+      try {
+        await work();
+      } catch (error) {
+        console.warn(
+          `⚠️  [TasksService] ${label} failed:`,
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    };
+
+    if (enqueueTenantDatabasePostCommitCallback(run)) {
+      return;
+    }
+
+    await run();
+  }
+
+  private async dispatchCompletionCallbacksAfterCommit(
+    task: Task,
+    session: Session,
+    params?: TaskParams
+  ): Promise<void> {
+    await this.runAfterTenantDatabaseCommit('dispatchCompletionCallbacks', () =>
+      this.dispatchCompletionCallbacks(task, session, params)
+    );
   }
 
   /**
@@ -543,7 +580,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
             // Process completion callbacks only for naturally-terminal tasks (COMPLETED/FAILED).
             // STOPPED means the work was abandoned — don't notify the parent.
             if (!suppressCompletionCallbacks && !isStop) {
-              this.fireCallbacksPostCommit(task, session, params);
+              await this.dispatchCompletionCallbacksAfterCommit(task, session, params);
             }
             return result;
           }
@@ -579,7 +616,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
           }
 
           if (!suppressCompletionCallbacks && !isStop) {
-            this.fireCallbacksPostCommit(task, session, params);
+            await this.dispatchCompletionCallbacksAfterCommit(task, session, params);
           }
 
           // "btw" fork origin: auto-archive the ephemeral fork after task completion.
@@ -614,7 +651,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
           // extend this transaction and cause proxy CONNECTION_CLOSED kills.
           const sessionsService = this.app.service('sessions') as unknown as SessionsService;
           if (!params?.suppressTerminalQueueProcessing && sessionsService.triggerQueueProcessing) {
-            this.firePostCommit('triggerQueueProcessing', () =>
+            await this.runAfterTenantDatabaseCommit('triggerQueueProcessing', () =>
               sessionsService.triggerQueueProcessing!(task.session_id)
             );
           } else if (params?.suppressTerminalQueueProcessing) {
@@ -769,26 +806,6 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
    * from notifying its parent once via the rich/template path and again via a
    * second generic/raw path.
    */
-  /**
-   * Fire an async callback after the current transaction commits.
-   *
-   * Breaks out of the AsyncLocalStorage transaction scope via exit() so the
-   * callback opens its own fresh connection rather than reusing the caller's
-   * transaction. The outer transaction therefore commits immediately — eliminating
-   * idle-in-transaction time and the resulting "write CONNECTION_CLOSED" proxy kills.
-   */
-  private firePostCommit(label: string, fn: () => Promise<void>): void {
-    void tenantDatabaseScope.exit(() =>
-      fn().catch((err) => console.error(`[TasksService] ${label}:`, err))
-    );
-  }
-
-  private fireCallbacksPostCommit(task: Task, session: Session, params?: TaskParams): void {
-    this.firePostCommit('dispatchCompletionCallbacks', () =>
-      this.dispatchCompletionCallbacks(task, session, params)
-    );
-  }
-
   private async dispatchCompletionCallbacks(
     task: Task,
     childSession: Session,
