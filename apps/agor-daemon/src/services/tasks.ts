@@ -542,17 +542,8 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
             );
             // Process completion callbacks only for naturally-terminal tasks (COMPLETED/FAILED).
             // STOPPED means the work was abandoned — don't notify the parent.
-            // Fire outside the current ALS transaction scope so callbacks open their own
-            // connection and don't extend this transaction's idle window.
             if (!suppressCompletionCallbacks && !isStop) {
-              void tenantDatabaseScope.exit(() =>
-                this.dispatchCompletionCallbacks(task, session, params).catch((err) =>
-                  console.error(
-                    '[TasksService] dispatchCompletionCallbacks (early-return path):',
-                    err
-                  )
-                )
-              );
+              this.fireCallbacksPostCommit(task, session, params);
             }
             return result;
           }
@@ -589,16 +580,8 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
             );
           }
 
-          // Fire callbacks in a fresh scope after this transaction commits. Breaking out
-          // of the current ALS context via exit() makes dispatchCompletionCallbacks open
-          // its own connection/transaction instead of reusing this one, so the outer
-          // transaction is free to commit immediately without waiting on callback I/O.
           if (!suppressCompletionCallbacks && !isStop) {
-            void tenantDatabaseScope.exit(() =>
-              this.dispatchCompletionCallbacks(task, session, params).catch((err) =>
-                console.error('[TasksService] dispatchCompletionCallbacks:', err)
-              )
-            );
+            this.fireCallbacksPostCommit(task, session, params);
           }
 
           // "btw" fork origin: auto-archive the ephemeral fork after task completion.
@@ -781,6 +764,23 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
    * from notifying its parent once via the rich/template path and again via a
    * second generic/raw path.
    */
+  /**
+   * Fire completion callbacks after the current transaction commits.
+   *
+   * Breaks out of the AsyncLocalStorage transaction scope via exit() so the
+   * callbacks open their own fresh connection rather than reusing the caller's
+   * transaction. The outer transaction therefore commits immediately without
+   * waiting on callback I/O — eliminating idle-in-transaction time and the
+   * resulting "write CONNECTION_CLOSED" proxy kills.
+   */
+  private fireCallbacksPostCommit(task: Task, session: Session, params?: TaskParams): void {
+    void tenantDatabaseScope.exit(() =>
+      this.dispatchCompletionCallbacks(task, session, params).catch((err) =>
+        console.error('[TasksService] dispatchCompletionCallbacks:', err)
+      )
+    );
+  }
+
   private async dispatchCompletionCallbacks(
     task: Task,
     childSession: Session,
