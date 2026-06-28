@@ -2,6 +2,7 @@ import type { TenantContext, TenantID } from '../types/tenant';
 import type { AgorConfig, AgorMultiTenancySettings } from './types';
 
 export const DEFAULT_STATIC_TENANT_ID = 'default' as TenantID;
+const RESERVED_AUTH_CLAIMS = new Set(['aud', 'exp', 'iat', 'iss', 'jti', 'nbf', 'sub', 'type']);
 
 export interface ResolvedMultiTenancyConfig {
   mode: 'static' | 'required_from_auth';
@@ -111,6 +112,11 @@ export function assertValidMultiTenancyConfig(
   }
   if (!resolved.static_tenant_id) {
     throw new Error('Config error: multi_tenancy.static_tenant_id must not be empty');
+  }
+  if (resolved.auth_claim && RESERVED_AUTH_CLAIMS.has(resolved.auth_claim)) {
+    throw new Error(
+      `Config error: multi_tenancy.auth_claim cannot be reserved JWT claim '${resolved.auth_claim}'`
+    );
   }
   if (resolved.mode === 'required_from_auth') {
     if (resolveMultiTenancyDatabaseDialect(config) !== 'postgresql') {
