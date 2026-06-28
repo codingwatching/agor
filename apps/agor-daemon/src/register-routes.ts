@@ -101,7 +101,7 @@ import { appendSystemMessage } from './utils/append-system-message.js';
 import { buildAuthRateLimitKey } from './utils/auth-rate-limit-key.js';
 import {
   ensureMinimumRole,
-  registerAuthenticatedRoute,
+  registerAuthenticatedRoute as registerAuthenticatedRouteBase,
   requireMinimumRole,
 } from './utils/authorization.js';
 import {
@@ -127,6 +127,7 @@ import {
 } from './utils/session-task-state.js';
 import { type SessionTurnLocks, withSessionTurnLock } from './utils/session-turn-lock.js';
 import { normalizeMessageSource, runExistingTask } from './utils/task-runner.js';
+import { createTenantDatabaseScopeAroundHook } from './utils/tenant-db-scope.js';
 import {
   createUploadMiddleware,
   enforceParsedTotalUploadSize,
@@ -272,6 +273,19 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
   const usersService = app.service('users');
   const tasksService = app.service('tasks') as unknown as TasksServiceImpl;
   const reposService = app.service('repos') as unknown as ReposServiceImpl;
+  const tenantDatabaseScopeAround = createTenantDatabaseScopeAroundHook({ db, config, jwtSecret });
+  const registerAuthenticatedRoute: typeof registerAuthenticatedRouteBase = (
+    routeApp,
+    path,
+    service,
+    authConfig,
+    routeRequireAuth,
+    options = {}
+  ) =>
+    registerAuthenticatedRouteBase(routeApp, path, service, authConfig, routeRequireAuth, {
+      ...options,
+      around: [tenantDatabaseScopeAround, ...(options.around ?? [])],
+    });
 
   // Helper: safely get a service (returns undefined if not registered due to tier=off)
   const safeService = (path: string) => {
@@ -421,7 +435,12 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
               jwtSecret,
               ACCESS_TOKEN_TTL,
               REFRESH_TOKEN_TTL,
-              authTokenIssuedAtClaim(Date.now(), context.result.user)
+              {
+                ...authTokenIssuedAtClaim(Date.now(), context.result.user),
+                ...(context.result.user.tenant_id
+                  ? { tenant_id: context.result.user.tenant_id }
+                  : {}),
+              }
             );
             context.result.accessToken = tokens.accessToken;
             context.result.refreshToken = tokens.refreshToken;

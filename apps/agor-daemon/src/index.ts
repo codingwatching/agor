@@ -35,8 +35,11 @@ import {
   loadConfigFromFile,
   renderGitConfigParametersForLog,
   resolveGitConfigParameters,
+  resolveMultiTenancyConfig,
   resolveSecurity,
+  resolveTenantContext,
   saveConfig,
+  TenantResolutionError,
 } from '@agor/core/config';
 import { getDatabaseUrl } from '@agor/core/db';
 import {
@@ -44,6 +47,7 @@ import {
   Forbidden,
   feathers,
   feathersExpress,
+  NotAuthenticated,
   rest,
   socketio,
 } from '@agor/core/feathers';
@@ -166,6 +170,11 @@ export async function startDaemon(options?: DaemonStartOptions): Promise<void> {
       ? await loadConfigFromFile(options.configPath)
       : await loadConfig();
 
+  const multiTenancy = resolveMultiTenancyConfig(config);
+  console.log(
+    `🏢 Multi-tenancy: mode=${multiTenancy.mode} tenant=${multiTenancy.mode === 'static' ? multiTenancy.static_tenant_id : 'auth-resolved'}`
+  );
+
   // Set GIT_CONFIG_PARAMETERS before any child-process spawn so every git
   // invocation under Agor's control inherits it. See @agor/core/config
   // (security-resolver) for the defaults + resolver semantics.
@@ -217,7 +226,21 @@ export async function startDaemon(options?: DaemonStartOptions): Promise<void> {
   // --------------------------------------------------------------------------
   // Auth configuration
   // --------------------------------------------------------------------------
-  const requireAuth = scopeExecutorRuntimeAuth(authenticate({ strategies: ['api-key', 'jwt'] }));
+  const authenticatedHook = scopeExecutorRuntimeAuth(
+    authenticate({ strategies: ['api-key', 'jwt'] })
+  );
+  const requireAuth = async (context: HookContext): Promise<HookContext> => {
+    const authed = await authenticatedHook(context);
+    try {
+      authed.params.tenant = resolveTenantContext(multiTenancy, { params: authed.params });
+      return authed;
+    } catch (error) {
+      if (error instanceof TenantResolutionError) {
+        throw new NotAuthenticated(error.message);
+      }
+      throw error;
+    }
+  };
 
   const enforcePasswordChange = async (context: HookContext) => {
     const user = context.params?.user as User | undefined;
@@ -593,12 +616,15 @@ export async function startDaemon(options?: DaemonStartOptions): Promise<void> {
     // welcome event on every connect (and reconnect), so UI tabs can detect
     // FE/BE drift after a deploy without waiting for the next /health poll.
     buildInfo: DAEMON_BUILD_INFO,
+    multiTenancy,
   });
   app.configure(socketio(socketIOConfig.serverOptions, socketIOConfig.callback));
-  configureChannels(app);
+  configureChannels(app, { multiTenancy });
   configureSwagger(app, { version: DAEMON_VERSION, port: DAEMON_PORT });
 
-  const { db } = await initializeDatabase(DB_PATH);
+  const { db } = await initializeDatabase(DB_PATH, {
+    tenantId: multiTenancy.mode === 'static' ? multiTenancy.static_tenant_id : undefined,
+  });
 
   // --------------------------------------------------------------------------
   // RBAC flags

@@ -46,7 +46,12 @@ export function createRefreshTokenService(options: RefreshTokenServiceOptions) {
           options.jwtSecret,
           options.accessTokenTtl,
           options.refreshTokenTtl,
-          authTokenIssuedAtClaim(Date.now(), user)
+          {
+            ...authTokenIssuedAtClaim(Date.now(), user),
+            ...((user as { tenant_id?: string }).tenant_id
+              ? { tenant_id: (user as { tenant_id?: string }).tenant_id }
+              : {}),
+          }
         );
 
         // Return the full safe user object, matching POST /authentication.
