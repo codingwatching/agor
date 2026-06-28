@@ -554,9 +554,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
           //
           // For other terminal tasks: Normal completion - set ready_for_prompt=true
           // to allow auto-queue-processing of any pending messages.
-          const isUserInitiatedStop = isStop;
-
-          if (isUserInitiatedStop) {
+          if (isStop) {
             console.log(
               `⏭️ [TasksService] Skipping session terminal-state update for STOPPED task ${shortId(task.task_id)} — stop endpoint handles session state`
             );
@@ -603,7 +601,7 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
               }
             }
 
-            if (!suppressCompletionCallbacks) {
+            if (!suppressCompletionCallbacks && !isStop) {
               // Inject a result message into the parent session's conversation.
               // This is a non-prompt system message — it shows up in the UI but doesn't
               // trigger a new prompt cycle. The parent's agent never sees it.
@@ -611,11 +609,14 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
             }
           }
 
-          // IMPORTANT: Now that the terminal task made the session promptable, process any queued tasks
-          // (including callbacks). This handles the case where callbacks were queued while this session was running
+          // Fire queue processing after the outer transaction commits. spawnTaskExecutor
+          // (called inside the queue processor) does significant I/O that would otherwise
+          // extend this transaction and cause proxy CONNECTION_CLOSED kills.
           const sessionsService = this.app.service('sessions') as unknown as SessionsService;
           if (!params?.suppressTerminalQueueProcessing && sessionsService.triggerQueueProcessing) {
-            await sessionsService.triggerQueueProcessing(task.session_id);
+            this.firePostCommit('triggerQueueProcessing', () =>
+              sessionsService.triggerQueueProcessing!(task.session_id)
+            );
           }
         } catch (error) {
           console.error('❌ [TasksService] Failed to process task completion:', error);
@@ -765,19 +766,22 @@ export class TasksService extends DrizzleService<Task, Partial<Task>, TaskParams
    * second generic/raw path.
    */
   /**
-   * Fire completion callbacks after the current transaction commits.
+   * Fire an async callback after the current transaction commits.
    *
    * Breaks out of the AsyncLocalStorage transaction scope via exit() so the
-   * callbacks open their own fresh connection rather than reusing the caller's
-   * transaction. The outer transaction therefore commits immediately without
-   * waiting on callback I/O — eliminating idle-in-transaction time and the
-   * resulting "write CONNECTION_CLOSED" proxy kills.
+   * callback opens its own fresh connection rather than reusing the caller's
+   * transaction. The outer transaction therefore commits immediately — eliminating
+   * idle-in-transaction time and the resulting "write CONNECTION_CLOSED" proxy kills.
    */
-  private fireCallbacksPostCommit(task: Task, session: Session, params?: TaskParams): void {
+  private firePostCommit(label: string, fn: () => Promise<void>): void {
     void tenantDatabaseScope.exit(() =>
-      this.dispatchCompletionCallbacks(task, session, params).catch((err) =>
-        console.error('[TasksService] dispatchCompletionCallbacks:', err)
-      )
+      fn().catch((err) => console.error(`[TasksService] ${label}:`, err))
+    );
+  }
+
+  private fireCallbacksPostCommit(task: Task, session: Session, params?: TaskParams): void {
+    this.firePostCommit('dispatchCompletionCallbacks', () =>
+      this.dispatchCompletionCallbacks(task, session, params)
     );
   }
 
