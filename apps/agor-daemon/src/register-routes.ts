@@ -24,6 +24,7 @@ import {
   SessionRepository,
   shortId,
   TaskRepository,
+  tenantDatabaseScope,
   UsersRepository,
 } from '@agor/core/db';
 import { MANAGED_ENV_EXECUTION_MODE_DEFAULT } from '@agor/core/environment/webhook';
@@ -280,6 +281,18 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
   const tasksService = app.service('tasks') as unknown as TasksServiceImpl;
   const reposService = app.service('repos') as unknown as ReposServiceImpl;
   const tenantDatabaseScopeAround = createTenantDatabaseScopeAroundHook({ db, config, jwtSecret });
+
+  /**
+   * Schedule fn in a new event-loop tick, outside any ALS tenant scope.
+   * Always use this instead of bare setImmediate inside route/service code —
+   * a bare setImmediate inherits the active tenantDatabaseScope (which may
+   * hold a committed Postgres transaction) and causes silent DB hangs when
+   * that stale connection is reused.
+   */
+  function deferOutsideScope(fn: () => Promise<void>): void {
+    tenantDatabaseScope.exit(() => setImmediate(fn));
+  }
+
   const registerAuthenticatedRoute: typeof registerAuthenticatedRouteBase = (
     routeApp,
     path,
@@ -1160,7 +1173,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
       const { setPendingCliTask } = await import('./services/claude-cli-integration.js');
       setPendingCliTask(sessionId as SessionID, taskId as TaskID, messageStartIndex);
 
-      setImmediate(async () => {
+      deferOutsideScope(async () => {
         try {
           const targetUserId = session.created_by;
           if (!targetUserId) {
@@ -1232,7 +1245,9 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     // Background spawn + failure handling. Returning the patched Task to the
     // caller before this resolves matches the previous behavior — the HTTP
     // response should not block on the executor process being live.
-    setImmediate(async () => {
+    // deferOutsideScope escapes any inherited ALS tenant scope so the executor
+    // spawn uses a fresh DB connection and not a stale committed transaction.
+    deferOutsideScope(async () => {
       try {
         console.log(
           `🚀 [Daemon] Routing ${session.agentic_tool} to Feathers/WebSocket executor (task ${shortId(taskId)})`
@@ -1451,7 +1466,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
               app.service('tasks').emit('queued', queuedTask);
 
               if (sessionCanStartTask(lockedSession.status, lockedSession.ready_for_prompt)) {
-                setImmediate(async () => {
+                deferOutsideScope(async () => {
                   try {
                     await sessionsService.triggerQueueProcessing(id as SessionID, params);
                   } catch (error) {
@@ -2113,7 +2128,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
         );
 
         if (result.success) {
-          setImmediate(async () => {
+          deferOutsideScope(async () => {
             try {
               await sessionsServiceWithHooks.triggerQueueProcessing(id as SessionID, params);
             } catch (error) {
@@ -2206,7 +2221,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
 
       if (!queueRetryScheduled.has(sessionId)) {
         queueRetryScheduled.add(sessionId);
-        setImmediate(async () => {
+        deferOutsideScope(async () => {
           queueRetryScheduled.delete(sessionId);
           try {
             await processNextQueuedTask(sessionId, params);

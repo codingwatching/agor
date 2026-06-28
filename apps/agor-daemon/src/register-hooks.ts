@@ -2338,11 +2338,12 @@ export function registerHooks(ctx: RegisterHooksContext): void {
             }
           }
 
-          // Validate user has prompt permission on callback target session's branch
+          // Validate user has prompt permission on callback target session's branch.
+          // Skip for internal calls (no provider) — those are trusted system calls.
           const cbConfig = (context.data as Record<string, unknown> | undefined)?.callback_config as
             | { callback_session_id?: string }
             | undefined;
-          if (cbConfig?.callback_session_id) {
+          if (cbConfig?.callback_session_id && context.params.provider) {
             // Use authenticated user, NOT context.data.created_by (which could be client-supplied)
             const authenticatedUserId =
               (context.params as { user?: { user_id: string } }).user?.user_id || 'unknown';
@@ -2385,11 +2386,14 @@ export function registerHooks(ctx: RegisterHooksContext): void {
               },
             ]
           : []),
-        // Validate user has prompt permission on callback target session's branch
+        // Validate user has prompt permission on callback target session's branch.
+        // Skip for internal calls (no provider) — patches from dispatchCompletionCallbacks
+        // spread the existing callback_config (which includes callback_session_id) and must
+        // not be blocked by this check.
         async (context) => {
           const patchCbConfig = (context.data as Record<string, unknown> | undefined)
             ?.callback_config as { callback_session_id?: string } | undefined;
-          if (patchCbConfig?.callback_session_id) {
+          if (patchCbConfig?.callback_session_id && context.params.provider) {
             const userId =
               (context.params as { user?: { user_id: string } }).user?.user_id || 'unknown';
             await ensureCanPromptTargetSession(
