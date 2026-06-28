@@ -138,6 +138,23 @@ async function cleanupOrphanStatuses(ctx: StartupContext): Promise<OrphanCleanup
     }
   }
 
+  // Wipe the queue BEFORE making any session promptable. Running tasks are marked STOPPED above,
+  // which invalidates the ordering premise of anything waiting behind them — a queued prompt
+  // typically depends on whatever was running first. Wiping here prevents the session after-patch
+  // hook (triggered below) from draining queued tasks that should be discarded.
+  const queuedResult = (await tasksService.find({
+    query: { status: TaskStatus.QUEUED, $limit: 1000 },
+  })) as unknown as Paginated<Task>;
+  const queuedTasks = queuedResult.data;
+
+  if (queuedTasks.length > 0) {
+    for (const task of queuedTasks) {
+      await tasksService.patch(task.task_id, {
+        status: TaskStatus.STOPPED,
+      });
+    }
+  }
+
   // Find all orphaned sessions (RUNNING, STOPPING, AWAITING_PERMISSION, AWAITING_INPUT, TIMED_OUT)
   const orphanedSessions: Session[] = [];
   for (const status of [
@@ -218,25 +235,6 @@ async function cleanupOrphanStatuses(ctx: StartupContext): Promise<OrphanCleanup
       startupDebug(
         `   ✓ Unblocked stuck-idle session ${shortId(session.session_id)} (ready_for_prompt was false)`
       );
-    }
-  }
-
-  // Wipe the queue. Running tasks are marked STOPPED above, which invalidates
-  // the ordering premise of anything that was waiting behind them — a queued
-  // prompt typically depends on whatever was running first. Rather than carry
-  // an ambiguous queue across the restart, mark all QUEUED tasks as STOPPED
-  // (mirroring how we treat the running task — no work was lost, the user
-  // can re-issue from `full_prompt` if they still want it).
-  const queuedResult = (await tasksService.find({
-    query: { status: TaskStatus.QUEUED, $limit: 1000 },
-  })) as unknown as Paginated<Task>;
-  const queuedTasks = queuedResult.data;
-
-  if (queuedTasks.length > 0) {
-    for (const task of queuedTasks) {
-      await tasksService.patch(task.task_id, {
-        status: TaskStatus.STOPPED,
-      });
     }
   }
 
