@@ -183,7 +183,6 @@ describe('TasksService completion callbacks', () => {
         ...data,
       };
     });
-
     await runWithTenantDatabaseScope(db as never, 'tenant-1', async () => {
       await service.patch(taskId, {
         status: TaskStatus.COMPLETED,
@@ -200,6 +199,8 @@ describe('TasksService completion callbacks', () => {
       'tx:committed',
       'tx:start',
       'callback:queued',
+      'tx:committed',
+      'tx:start',
       'tx:committed',
       'tx:start',
       'tx:committed',

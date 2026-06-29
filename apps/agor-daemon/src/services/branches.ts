@@ -40,6 +40,7 @@ import type {
   Board,
   BoardID,
   Branch,
+  BranchEnvironmentUpdate,
   BranchID,
   KnowledgeNamespace,
   QueryParams,
@@ -47,7 +48,11 @@ import type {
   UserID,
   UUID,
 } from '@agor/core/types';
-import { getAssistantConfig, isAssistant } from '@agor/core/types';
+import {
+  BRANCH_ENVIRONMENT_CLEARABLE_FIELDS,
+  getAssistantConfig,
+  isAssistant,
+} from '@agor/core/types';
 import {
   getGidFromGroupName,
   resolveUnixUserForImpersonation,
@@ -109,6 +114,8 @@ interface EnvironmentLifecycleExecutorPayload extends Record<string, unknown> {
     appUrl?: string;
   };
 }
+
+type EnvironmentInstance = NonNullable<Branch['environment_instance']>;
 
 /**
  * Process tracking for environment management
@@ -1715,17 +1722,17 @@ export class BranchesService extends DrizzleService<Branch, Partial<Branch>, Bra
       | {
           branch_id?: BranchID;
           branchId?: BranchID;
-          environment_update?: Partial<Branch['environment_instance']>;
-          environmentUpdate?: Partial<Branch['environment_instance']>;
+          environment_update?: BranchEnvironmentUpdate;
+          environmentUpdate?: BranchEnvironmentUpdate;
         },
-    environmentUpdateOrParams?: Partial<Branch['environment_instance']> | BranchParams,
+    environmentUpdateOrParams?: BranchEnvironmentUpdate | BranchParams,
     params?: BranchParams
   ): Promise<BranchWithZoneAndSessions> {
     const isRpcEnvelope = typeof idOrData === 'object';
     const id = isRpcEnvelope ? (idOrData.branch_id ?? idOrData.branchId) : idOrData;
     const environmentUpdate = isRpcEnvelope
       ? (idOrData.environment_update ?? idOrData.environmentUpdate)
-      : (environmentUpdateOrParams as Partial<Branch['environment_instance']> | undefined);
+      : (environmentUpdateOrParams as BranchEnvironmentUpdate | undefined);
     const resolvedParams = isRpcEnvelope
       ? (environmentUpdateOrParams as BranchParams | undefined)
       : params;
@@ -1742,7 +1749,16 @@ export class BranchesService extends DrizzleService<Branch, Partial<Branch>, Bra
     const updatedEnvironment = {
       ...existing.environment_instance,
       ...environmentUpdate,
-    } as Branch['environment_instance'];
+    } as EnvironmentInstance;
+
+    for (const key of BRANCH_ENVIRONMENT_CLEARABLE_FIELDS) {
+      if (
+        Object.hasOwn(environmentUpdate, key) &&
+        (environmentUpdate[key] === undefined || environmentUpdate[key] === null)
+      ) {
+        delete updatedEnvironment[key];
+      }
+    }
 
     // Check if environment state actually changed (ignoring timestamp-only updates)
     // For health checks, we only care about status and message changes, not timestamp
