@@ -101,7 +101,7 @@ import {
 } from './canvas/utils/coordinateTransforms';
 import { getValidZoneParentId, sanitizeOrphanedNodeParents } from './canvas/utils/nodeParentUtils';
 import { ZoneTriggerModal } from './canvas/ZoneTriggerModal';
-import { ZONE_BASE_Z_INDEX, ZONE_SELECTED_Z_INDEX } from './canvas/zIndex';
+import { DEFAULT_BOARD_OBJECT_Z_INDEX, selectedZIndex } from './canvas/zOrder';
 
 interface SessionCanvasProps {
   board: Board | null;
@@ -1263,12 +1263,16 @@ const SessionCanvasInner = forwardRef<SessionCanvasRef, SessionCanvasProps>(
           .filter((n) => n.type === 'zone' && !deletedObjectsRef.current.has(n.id))
           .map((newZone) => {
             const existingZone = currentNodes.find((n) => n.id === newZone.id);
+            // Honor the persisted/default base order from board data (`newZone`),
+            // and re-apply the +1 selection bump if the zone is currently
+            // selected. Reading the base from `newZone` (not the stale runtime
+            // value) means layer-control changes that arrive over WebSocket take
+            // effect immediately instead of being clobbered.
+            const base = (newZone.zIndex as number) ?? DEFAULT_BOARD_OBJECT_Z_INDEX.zone;
             return {
               ...newZone,
               selected: existingZone?.selected,
-              // Preserve runtime zIndex (e.g. 101 when selected) so board data
-              // updates don't reset it to the base value of 100.
-              zIndex: existingZone?.zIndex ?? newZone.zIndex,
+              zIndex: selectedZIndex(base, !!existingZone?.selected),
             };
           });
 
@@ -1417,7 +1421,10 @@ const SessionCanvasInner = forwardRef<SessionCanvasRef, SessionCanvasProps>(
               const change = zoneSelectById.get(n.id) as any;
               if (!change) return n;
 
-              const nextZIndex = change.selected ? ZONE_SELECTED_Z_INDEX : ZONE_BASE_Z_INDEX;
+              // Bump above the zone's own base order while selected; restore the
+              // persisted/default base on deselect so custom layering survives.
+              const base = (n.data?.zIndex as number) ?? DEFAULT_BOARD_OBJECT_Z_INDEX.zone;
+              const nextZIndex = selectedZIndex(base, !!change.selected);
               if (n.zIndex === nextZIndex) return n;
 
               changed = true;
@@ -2022,7 +2029,7 @@ const SessionCanvasInner = forwardRef<SessionCanvasRef, SessionCanvasProps>(
               type: 'zone',
               position,
               // draggable inherits from canvas-level nodesDraggable (mutationGate.canMutate)
-              zIndex: ZONE_BASE_Z_INDEX, // Zones behind branches and comments
+              zIndex: DEFAULT_BOARD_OBJECT_Z_INDEX.zone, // Zones behind branches and comments
               style: { width, height },
               data: {
                 objectId,

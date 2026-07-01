@@ -12,7 +12,13 @@ import type {
 } from '@agor-live/client';
 import { useCallback, useMemo, useRef } from 'react';
 import type { Node } from 'reactflow';
-import { ZONE_BASE_Z_INDEX } from './zIndex';
+import { useThemedMessage } from '../../../utils/message';
+import {
+  computeLayerChanges,
+  DEFAULT_BOARD_OBJECT_Z_INDEX,
+  type LayerOp,
+  sanitizeZIndex,
+} from './zOrder';
 
 interface UseBoardObjectsProps {
   board: Board | null;
@@ -47,6 +53,8 @@ export const useBoardObjects = ({
   // Use ref to avoid recreating callbacks when board changes
   const boardRef = useRef(board);
   boardRef.current = board;
+
+  const { showError } = useThemedMessage();
 
   // Stabilize board.objects reference using deep equality comparison
   // This prevents unnecessary re-renders when board object changes but content is identical
@@ -86,6 +94,67 @@ export const useBoardObjects = ({
       }
     },
     [client] // Only depend on client, not board
+  );
+
+  /**
+   * Reorder a board object relative to its peers (To Front / Bring Forward /
+   * Send Backward / To Back). Computes the new zIndex via the pure helper and
+   * persists it.
+   *
+   * Peers are scoped to board objects of the SAME type as the target (zones
+   * reorder only against zones). This is intentional: only zones expose reorder
+   * controls, so ranking a zone against markdown/app objects — which have no
+   * reorder UI — would strand them and let a zone intercept their clicks.
+   * Same-type scoping does NOT strictly isolate the per-type default bands:
+   * a zone can be pushed above a lower-default markdown (300) / app (400) under
+   * deliberate or MCP/import input. The only hard guarantee is the clamp to
+   * [1, 499], so a zone can never reach the card (500) / comment (1000) layers.
+   *
+   * Persistence sends ONLY the changed `zIndex` per object via a narrow field
+   * merge (`mergeObjectFields`), not a full stale copy. The server shallow-
+   * merges into the freshest stored object and skips any object that was
+   * deleted concurrently, so a swap can't resurrect a just-deleted neighbor and
+   * unrelated fields edited elsewhere aren't reverted. The merge persists all
+   * touched objects in one read-modify-write (last-write-wins vs concurrent
+   * writers, like every other board writer — not atomic).
+   */
+  const reorderObject = useCallback(
+    async (objectId: string, op: LayerOp) => {
+      const currentBoard = boardRef.current;
+      if (!currentBoard || !client) return;
+
+      const objects = currentBoard.objects ?? {};
+      const target = objects[objectId];
+      if (!target) return;
+
+      const peers = Object.entries(objects)
+        .filter(([, obj]) => obj.type === target.type)
+        .map(([id, obj]) => ({
+          id,
+          zIndex: sanitizeZIndex(obj.zIndex, DEFAULT_BOARD_OBJECT_Z_INDEX[obj.type]),
+        }));
+
+      const changes = computeLayerChanges(op, objectId, peers);
+      if (changes.length === 0) return;
+
+      const patches: Record<string, Partial<BoardObject>> = {};
+      for (const { id, zIndex } of changes) {
+        if (!objects[id]) continue;
+        patches[id] = { zIndex };
+      }
+      if (Object.keys(patches).length === 0) return;
+
+      try {
+        await client.service('boards').patch(currentBoard.board_id, {
+          _action: 'mergeObjectFields',
+          objects: patches,
+        } as unknown as Partial<Board>);
+      } catch (error) {
+        console.error('Failed to reorder object:', error);
+        showError('Failed to reorder zone');
+      }
+    },
+    [client, showError]
   );
 
   /**
@@ -216,7 +285,8 @@ export const useBoardObjects = ({
             position: { x: objectData.x, y: objectData.y },
             // draggable inherits from canvas-level nodesDraggable (mutationGate.canMutate)
             selectable: true,
-            zIndex: 400, // Above markdown (300), below branches (500)
+            // Above markdown (300), below branches (500) by default.
+            zIndex: sanitizeZIndex(objectData.zIndex, DEFAULT_BOARD_OBJECT_Z_INDEX.app),
             className: eraserMode ? 'eraser-mode' : undefined,
             data: {
               objectId,
@@ -247,7 +317,7 @@ export const useBoardObjects = ({
             // from canvas-level nodesDraggable (mutationGate.canMutate).
             ...(isLocked ? { draggable: false } : {}),
             selectable: true,
-            zIndex: 400,
+            zIndex: sanitizeZIndex(objectData.zIndex, DEFAULT_BOARD_OBJECT_Z_INDEX.artifact),
             className: eraserMode ? 'eraser-mode' : undefined,
             data: {
               objectId,
@@ -272,7 +342,8 @@ export const useBoardObjects = ({
             position: { x: objectData.x, y: objectData.y },
             // draggable inherits from canvas-level nodesDraggable (mutationGate.canMutate)
             selectable: true,
-            zIndex: 300, // Above zones (100), below branches (500)
+            // Above zones (100), below branches (500) by default.
+            zIndex: sanitizeZIndex(objectData.zIndex, DEFAULT_BOARD_OBJECT_Z_INDEX.markdown),
             className: eraserMode ? 'eraser-mode' : undefined,
             data: {
               objectId,
@@ -309,7 +380,8 @@ export const useBoardObjects = ({
           // Locked zones are never draggable. Unlocked zones inherit from
           // canvas-level nodesDraggable (mutationGate.canMutate).
           ...(isLocked ? { draggable: false } : {}),
-          zIndex: ZONE_BASE_Z_INDEX, // Zones behind branches and comments
+          // Zones behind branches and comments by default; honor explicit order.
+          zIndex: sanitizeZIndex(objectData.zIndex, DEFAULT_BOARD_OBJECT_Z_INDEX.zone),
           className: eraserMode ? 'eraser-mode' : undefined,
           // Set dimensions both as direct props (for collision detection) and style (for rendering)
           width: objectData.width,
@@ -328,12 +400,18 @@ export const useBoardObjects = ({
             color: objectData.color, // Backwards compatibility
             status: objectData.type === 'zone' ? objectData.status : undefined,
             locked: isLocked,
+            fontSize: objectData.type === 'zone' ? objectData.fontSize : undefined,
+            // Effective base zIndex (persisted or per-type default). Consumed by
+            // the selection-bump logic in SessionCanvas so a selected zone
+            // restores to its own order on deselect.
+            zIndex: sanitizeZIndex(objectData.zIndex, DEFAULT_BOARD_OBJECT_Z_INDEX.zone),
             x: objectData.x, // Include position in data for updates
             y: objectData.y,
             trigger: objectData.type === 'zone' ? objectData.trigger : undefined,
             sessionCount,
             onUpdate: handleUpdateObject,
             onDelete: deleteZone,
+            onReorder: reorderObject,
           },
         };
       });
@@ -345,6 +423,7 @@ export const useBoardObjects = ({
     deleteZone,
     deleteObject,
     deleteArtifact,
+    reorderObject,
     eraserMode,
     activeUrlTargetArtifactId,
     onEditMarkdown,
@@ -370,7 +449,7 @@ export const useBoardObjects = ({
           type: 'zone',
           position: { x, y },
           // draggable inherits from canvas-level nodesDraggable (mutationGate.canMutate)
-          zIndex: ZONE_BASE_Z_INDEX, // Zones behind branches and comments
+          zIndex: DEFAULT_BOARD_OBJECT_Z_INDEX.zone, // Zones behind branches and comments
           style: {
             width,
             height,
@@ -458,6 +537,7 @@ export const useBoardObjects = ({
     addZoneNode,
     deleteObject,
     deleteZone,
+    reorderObject,
     batchUpdateObjectPositions,
   };
 };
