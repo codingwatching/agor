@@ -208,6 +208,7 @@ const SessionNode = React.memo(({ data }: { data: SessionNodeData }) => {
 interface BranchNodeData {
   branch: Branch;
   repo: Repo;
+  boardId?: string | null;
   userById: Map<string, User>;
   currentUserId?: string;
   onTaskClick?: (taskId: string) => void;
@@ -282,6 +283,7 @@ const BranchNode = React.memo(
           branch={data.branch}
           repo={data.repo}
           sessions={sessions}
+          progressiveMountKey={data.boardId ?? 'no-board'}
           userById={data.userById}
           currentUserId={data.currentUserId}
           selectedSessionId={data.selectedSessionId}
@@ -320,6 +322,7 @@ const BranchNode = React.memo(
     return (
       p.branch === n.branch &&
       p.repo === n.repo &&
+      p.boardId === n.boardId &&
       p.userById === n.userById &&
       p.currentUserId === n.currentUserId &&
       p.selectedSessionId === n.selectedSessionId &&
@@ -812,6 +815,7 @@ const SessionCanvasInner = forwardRef<SessionCanvasRef, SessionCanvasProps>(
           data: {
             branch,
             repo,
+            boardId: board?.board_id ?? null,
             userById,
             currentUserId,
             selectedSessionId,
