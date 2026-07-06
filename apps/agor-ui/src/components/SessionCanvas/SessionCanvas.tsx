@@ -200,7 +200,7 @@ const SessionNode = React.memo(({ data }: { data: SessionNodeData }) => {
         isPinned={data.isPinned}
         zoneName={data.zoneName}
         zoneColor={data.zoneColor}
-        defaultExpanded={Boolean(data.isActiveUrlTarget && !data.compact)}
+        defaultExpanded={!data.compact}
       />
     </div>
   );
@@ -313,7 +313,7 @@ const BranchNode = React.memo(
           zoneName={data.zoneName}
           client={data.client}
           zoneColor={data.zoneColor}
-          defaultExpanded={Boolean(data.isActiveUrlTarget && !data.compact)}
+          defaultExpanded={!data.compact}
         />
       </div>
     );
