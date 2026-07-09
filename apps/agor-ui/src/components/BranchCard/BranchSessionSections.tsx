@@ -442,8 +442,8 @@ export const BranchSessionSections: React.FC<BranchSessionSectionsProps> = ({
       e.stopPropagation();
 
       modal.confirm({
-        title: 'Archive session?',
-        content: 'Are you sure you want to archive this session?',
+        title: 'Archive session and child sessions?',
+        content: 'Are you sure you want to archive this session and its child sessions?',
         okText: 'Archive',
         cancelText: 'Cancel',
         onOk: async () => {
@@ -451,7 +451,7 @@ export const BranchSessionSections: React.FC<BranchSessionSectionsProps> = ({
           try {
             const result = await archiveSession(sessionId as SessionID);
             if (result) {
-              showSuccess('Session archived');
+              showSuccess('Session and child sessions archived');
             } else {
               showError('Failed to archive session');
             }
