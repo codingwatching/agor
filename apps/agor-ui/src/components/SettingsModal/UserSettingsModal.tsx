@@ -1,4 +1,5 @@
 import type {
+  AgenticToolConfigField,
   AgenticToolName,
   AgorClient,
   EnvVarMetadata,
@@ -41,6 +42,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAgorStore } from '../../store/agorStore';
 import { selectMcpServerById } from '../../store/selectors';
+import { buildAgenticToolCredentialPatch } from '../../utils/agenticToolCredentials';
 import { DEFAULT_AUDIO_PREFERENCES } from '../../utils/audio';
 import { searchableSelectProps, toGroupSelectOption } from '../../utils/selectSearch';
 import {
@@ -433,7 +435,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
   // service merges only the touched fields and encrypts at rest.
   const handleToolFieldSave = async (
     tool: AgenticToolName,
-    field: string,
+    field: AgenticToolConfigField,
     value: string
   ): Promise<void> => {
     if (!user) return;
@@ -441,11 +443,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
 
     try {
       setSavingToolField((prev) => ({ ...prev, [spinnerKey]: true }));
-      await onUpdate?.(user.user_id, {
-        agentic_tools: {
-          [tool]: { [field]: value },
-        } as UpdateUserInput['agentic_tools'],
-      });
+      await onUpdate?.(user.user_id, buildAgenticToolCredentialPatch(tool, field, value));
       setAgenticToolStatus((prev) => ({
         ...prev,
         [tool]: { ...(prev[tool] ?? {}), [field]: true },
@@ -459,17 +457,16 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
   };
 
   // Clear a per-tool credential field by sending `null` in the patch.
-  const handleToolFieldClear = async (tool: AgenticToolName, field: string): Promise<void> => {
+  const handleToolFieldClear = async (
+    tool: AgenticToolName,
+    field: AgenticToolConfigField
+  ): Promise<void> => {
     if (!user) return;
     const spinnerKey = `${tool}.${field}`;
 
     try {
       setSavingToolField((prev) => ({ ...prev, [spinnerKey]: true }));
-      await onUpdate?.(user.user_id, {
-        agentic_tools: {
-          [tool]: { [field]: null },
-        } as UpdateUserInput['agentic_tools'],
-      });
+      await onUpdate?.(user.user_id, buildAgenticToolCredentialPatch(tool, field, null));
       setAgenticToolStatus((prev) => {
         const nextToolFields = { ...(prev[tool] ?? {}) };
         delete nextToolFields[field];
@@ -957,7 +954,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
         // saving spinners are tracked in `savingToolField` keyed by `${tool}.${field}`.
         const toolFields = TOOL_FIELD_CONFIGS[toolName] ?? [];
         const fieldStatus: FieldStatus = agenticToolStatus[toolName] ?? {};
-        const savingForTool: Record<string, boolean> = Object.fromEntries(
+        const savingForTool: Partial<Record<AgenticToolConfigField, boolean>> = Object.fromEntries(
           toolFields.map((c) => [c.field, !!savingToolField[`${toolName}.${c.field}`]])
         );
         const defaultsPane = (
@@ -1006,7 +1003,9 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
               onClear={(field) => handleToolFieldClear(toolName, field)}
               saving={savingForTool}
               publicValues={
-                user?.agentic_tools_public_values?.[toolName] as Record<string, string> | undefined
+                user?.agentic_tools_public_values?.[toolName] as
+                  | Partial<Record<AgenticToolConfigField, string>>
+                  | undefined
               }
             />
           </>
