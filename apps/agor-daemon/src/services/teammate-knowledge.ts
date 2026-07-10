@@ -5,23 +5,23 @@ import {
   type TenantScopeAwareDatabase,
 } from '@agor/core/db';
 import type {
-  AssistantKnowledgeConfig,
   Branch,
   BranchID,
   KnowledgeNamespace,
+  TeammateKnowledgeConfig,
   UserID,
 } from '@agor/core/types';
-import { getAssistantConfig, isAssistant } from '@agor/core/types';
+import { getTeammateConfig, isTeammate } from '@agor/core/types';
 
-export const ASSISTANT_MEMORY_PATH_TEMPLATE = 'memory/{{YYYY-MM-DD}}.md' as const;
-export const ASSISTANT_NAMESPACE_MISSING_MESSAGE = 'namespace for this agent is not set up';
+export const TEAMMATE_MEMORY_PATH_TEMPLATE = 'memory/{{YYYY-MM-DD}}.md' as const;
+export const TEAMMATE_NAMESPACE_MISSING_MESSAGE = 'namespace for this agent is not set up';
 
-function assistantNamespaceMetadata(branchId: BranchID) {
+function teammateNamespaceMetadata(branchId: BranchID) {
   return {
-    assistant: {
+    teammate: {
       primary: true,
       branch_id: branchId,
-      memory_path_template: ASSISTANT_MEMORY_PATH_TEMPLATE,
+      memory_path_template: TEAMMATE_MEMORY_PATH_TEMPLATE,
       docs_root: 'docs/',
       scratchpad_root: 'scratchpad/',
       skills_root: 'skills/',
@@ -29,31 +29,31 @@ function assistantNamespaceMetadata(branchId: BranchID) {
   };
 }
 
-function isPrimaryAssistantNamespace(namespace: KnowledgeNamespace, branchId: BranchID): boolean {
-  const assistant = namespace.metadata?.assistant;
+function isPrimaryTeammateNamespace(namespace: KnowledgeNamespace, branchId: BranchID): boolean {
+  const teammate = namespace.metadata?.teammate ?? namespace.metadata?.assistant;
   return (
     namespace.branch_id === branchId &&
-    assistant !== null &&
-    typeof assistant === 'object' &&
-    (assistant as Record<string, unknown>).primary === true
+    teammate !== null &&
+    typeof teammate === 'object' &&
+    (teammate as Record<string, unknown>).primary === true
   );
 }
 
-function assistantKbPatch(namespace: KnowledgeNamespace, previous?: AssistantKnowledgeConfig) {
+function teammateKbPatch(namespace: KnowledgeNamespace, previous?: TeammateKnowledgeConfig) {
   return {
     primary_namespace_id: namespace.namespace_id,
     primary_namespace_slug: namespace.slug,
-    memory_path_template: ASSISTANT_MEMORY_PATH_TEMPLATE,
+    memory_path_template: TEAMMATE_MEMORY_PATH_TEMPLATE,
     default_visibility: namespace.visibility_default,
     global_access: previous?.global_access ?? ('write' as const),
   };
 }
 
-async function uniqueAssistantNamespaceSlug(
+async function uniqueTeammateNamespaceSlug(
   namespaces: KnowledgeNamespaceRepository,
   branchId: BranchID
 ): Promise<string> {
-  const base = `assistant-${shortId(branchId)}`;
+  const base = `teammate-${shortId(branchId)}`;
   let slug = base;
   for (let suffix = 2; await namespaces.findBySlug(slug); suffix += 1) {
     slug = `${base}-${suffix}`;
@@ -61,7 +61,7 @@ async function uniqueAssistantNamespaceSlug(
   return slug;
 }
 
-export async function ensureAssistantKnowledgeNamespace(
+export async function ensureTeammateKnowledgeNamespace(
   db: TenantScopeAwareDatabase,
   branchId: BranchID,
   userId?: UserID | null
@@ -70,10 +70,10 @@ export async function ensureAssistantKnowledgeNamespace(
   const namespaces = new KnowledgeNamespaceRepository(db);
   const branch = await branches.findById(branchId);
   if (!branch) throw new Error(`Branch not found: ${branchId}`);
-  if (!isAssistant(branch)) throw new Error('Branch is not an assistant');
+  if (!isTeammate(branch)) throw new Error('Branch is not a teammate');
 
-  const assistant = getAssistantConfig(branch);
-  const configuredNamespaceId = assistant?.kb?.primary_namespace_id;
+  const teammate = getTeammateConfig(branch);
+  const configuredNamespaceId = teammate?.kb?.primary_namespace_id;
   const configuredNamespace = configuredNamespaceId
     ? await namespaces.findById(configuredNamespaceId)
     : null;
@@ -83,7 +83,7 @@ export async function ensureAssistantKnowledgeNamespace(
   }
 
   const existing = (await namespaces.findAll({ branch_id: branch.branch_id, kind: 'branch' })).find(
-    (namespace) => !namespace.archived && isPrimaryAssistantNamespace(namespace, branch.branch_id)
+    (namespace) => !namespace.archived && isPrimaryTeammateNamespace(namespace, branch.branch_id)
   );
 
   const createdBy = (userId ?? branch.created_by ?? null) as UserID | null;
@@ -92,8 +92,8 @@ export async function ensureAssistantKnowledgeNamespace(
     (
       await namespaces.createWithAcl(
         {
-          slug: await uniqueAssistantNamespaceSlug(namespaces, branch.branch_id),
-          display_name: `${assistant?.displayName?.trim() || branch.name} Memory`,
+          slug: await uniqueTeammateNamespaceSlug(namespaces, branch.branch_id),
+          display_name: `${teammate?.displayName?.trim() || branch.name} Memory`,
           kind: 'branch',
           branch_id: branch.branch_id,
           repo_id: branch.repo_id,
@@ -101,7 +101,7 @@ export async function ensureAssistantKnowledgeNamespace(
           created_by: createdBy,
           visibility_default: 'public',
           others_can: 'write',
-          metadata: assistantNamespaceMetadata(branch.branch_id),
+          metadata: teammateNamespaceMetadata(branch.branch_id),
         },
         createdBy
           ? [
@@ -118,11 +118,11 @@ export async function ensureAssistantKnowledgeNamespace(
 
   const updatedBranch = await branches.update(branch.branch_id, {
     custom_context: {
-      assistant: {
-        ...assistant,
+      teammate: {
+        ...teammate,
         kb: {
-          ...(assistant?.kb?.grants ? { grants: assistant.kb.grants } : {}),
-          ...assistantKbPatch(namespace, assistant?.kb),
+          ...(teammate?.kb?.grants ? { grants: teammate.kb.grants } : {}),
+          ...teammateKbPatch(namespace, teammate?.kb),
         },
       },
     },

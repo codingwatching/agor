@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { getPrimaryAssistantSessionToRestore } from './primaryAssistantRestore';
+import { getPrimaryTeammateSessionToRestore } from './primaryTeammateRestore';
 
 const base = {
   currentBoardId: 'board-1',
-  primaryAssistantBranchId: 'branch-1',
+  primaryTeammateBranchId: 'branch-1',
   effectiveSelectedSessionId: null,
-  autoOpenedAssistantBoardId: null,
+  autoOpenedTeammateBoardId: null,
   restoreAllowed: true,
   sessions: [
     { session_id: 'older', archived: false, last_updated: '2026-01-01T00:00:00.000Z' },
@@ -13,14 +13,14 @@ const base = {
   ],
 };
 
-describe('getPrimaryAssistantSessionToRestore', () => {
-  it('restores the latest active primary-assistant session for generic board/app URLs', () => {
-    expect(getPrimaryAssistantSessionToRestore(base)).toBe('newer');
+describe('getPrimaryTeammateSessionToRestore', () => {
+  it('restores the latest active primary-teammate session for generic board/app URLs', () => {
+    expect(getPrimaryTeammateSessionToRestore(base)).toBe('newer');
   });
 
   it('does not restore when route policy disallows generic restore', () => {
     expect(
-      getPrimaryAssistantSessionToRestore({
+      getPrimaryTeammateSessionToRestore({
         ...base,
         restoreAllowed: false,
       })
@@ -29,7 +29,7 @@ describe('getPrimaryAssistantSessionToRestore', () => {
 
   it('does not restore when a session is already selected', () => {
     expect(
-      getPrimaryAssistantSessionToRestore({
+      getPrimaryTeammateSessionToRestore({
         ...base,
         effectiveSelectedSessionId: 'requested-session',
       })
@@ -38,16 +38,16 @@ describe('getPrimaryAssistantSessionToRestore', () => {
 
   it('does not restore the same board more than once', () => {
     expect(
-      getPrimaryAssistantSessionToRestore({
+      getPrimaryTeammateSessionToRestore({
         ...base,
-        autoOpenedAssistantBoardId: 'board-1',
+        autoOpenedTeammateBoardId: 'board-1',
       })
     ).toBeNull();
   });
 
   it('ignores archived sessions', () => {
     expect(
-      getPrimaryAssistantSessionToRestore({
+      getPrimaryTeammateSessionToRestore({
         ...base,
         sessions: [
           {

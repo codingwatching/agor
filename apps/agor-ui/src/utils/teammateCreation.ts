@@ -1,8 +1,8 @@
-import type { AgorClient, AssistantConfig, Board, BoardID, Branch, Repo } from '@agor-live/client';
-import { ensureAssistantWelcomeNote } from '@/utils/assistantWelcomeNote';
+import type { AgorClient, Board, BoardID, Branch, Repo, TeammateConfig } from '@agor-live/client';
 import { slugify } from '@/utils/repoSlug';
+import { ensureTeammateWelcomeNote } from '@/utils/teammateWelcomeNote';
 
-export interface AssistantCreationInput {
+export interface TeammateCreationInput {
   displayName: string;
   description?: string;
   emoji?: string;
@@ -11,7 +11,7 @@ export interface AssistantCreationInput {
   sourceBranch?: string;
 }
 
-export interface AssistantCreationDeps {
+export interface TeammateCreationDeps {
   client: AgorClient | null;
   repoById: Map<string, Repo>;
   onCreateBranch: (
@@ -34,14 +34,14 @@ export interface AssistantCreationDeps {
 }
 
 /**
- * Shared assistant creation logic used by CreateDialog (via App.tsx).
+ * Shared teammate creation logic used by CreateDialog (via App.tsx).
  *
  * Flow: resolve repo → create board → create branch → tag branch with
- * assistant metadata → designate the branch as the board primary.
+ * teammate metadata → designate the branch as the board primary.
  */
-export async function createAssistantBranch(
-  input: AssistantCreationInput,
-  deps: AssistantCreationDeps
+export async function createTeammateBranch(
+  input: TeammateCreationInput,
+  deps: TeammateCreationDeps
 ): Promise<Branch | null> {
   const repo = deps.repoById.get(input.repoId);
   const branchName = input.branchName || `private-${slugify(input.displayName)}`;
@@ -51,29 +51,29 @@ export async function createAssistantBranch(
     throw new Error('Not connected');
   }
 
-  const displayName = input.displayName.trim() || 'My Assistant';
+  const displayName = input.displayName.trim() || 'My Teammate';
   const newBoard = (await deps.client.service('boards').create({
     name: `${displayName}'s Board`,
     icon: input.emoji || '\u{1F916}',
   })) as Board;
   const boardId = newBoard.board_id;
 
-  await ensureAssistantWelcomeNote({
+  await ensureTeammateWelcomeNote({
     client: deps.client,
     boardId,
-    assistantName: displayName,
-    assistantEmoji: input.emoji,
+    teammateName: displayName,
+    teammateEmoji: input.emoji,
   });
 
-  const assistantConfig: AssistantConfig = {
-    kind: 'assistant',
+  const teammateConfig: TeammateConfig = {
+    kind: 'teammate',
     displayName: input.displayName.trim(),
     emoji: input.emoji || undefined,
     frameworkRepo: repo?.slug,
     createdViaOnboarding: false,
   };
 
-  // Create the branch with assistant metadata on the initial row. That keeps
+  // Create the branch with teammate metadata on the initial row. That keeps
   // the board card consistent immediately and avoids a race where a later
   // executor readiness patch can arrive before the UI sees the metadata patch.
   const branch = await deps.onCreateBranch(input.repoId, {
@@ -83,7 +83,7 @@ export async function createAssistantBranch(
     sourceBranch,
     pullLatest: true,
     boardId,
-    custom_context: { assistant: assistantConfig },
+    custom_context: { teammate: teammateConfig },
     ...(input.description?.trim() ? { notes: input.description.trim() } : {}),
   });
 
@@ -97,7 +97,7 @@ export async function createAssistantBranch(
     if (boardId) {
       await deps.client
         ?.service('boards')
-        .setPrimaryAssistant({ boardId, branchId: branch.branch_id });
+        .setPrimaryTeammate({ boardId, branchId: branch.branch_id });
     }
   }
 

@@ -4,11 +4,11 @@ import { App as AntApp } from 'antd';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { EMPTY_MAPS } from '../../store/agorMaps';
 import { agorStore } from '../../store/agorStore';
-import { BoardAssistantPanel } from './BoardAssistantPanel';
+import { BoardTeammatePanel } from './BoardTeammatePanel';
 
 vi.mock('../BranchCard', () => ({
   BranchSessionSections: ({ defaultExpanded }: { defaultExpanded?: boolean }) => (
-    <div data-testid="assistant-session-sections">defaultExpanded:{String(defaultExpanded)}</div>
+    <div data-testid="teammate-session-sections">defaultExpanded:{String(defaultExpanded)}</div>
   ),
 }));
 
@@ -17,36 +17,36 @@ vi.mock('../BranchHeaderPill', () => ({
 }));
 
 const board = { board_id: 'board-1', name: 'Board', slug: 'board' } as Board;
-const primaryAssistantBranch = {
+const primaryTeammateBranch = {
   branch_id: 'branch-1',
   repo_id: 'repo-1',
-  name: 'assistant',
+  name: 'teammate',
   filesystem_status: 'ready',
 } as Branch;
-const primaryAssistantRepo = { repo_id: 'repo-1', slug: 'preset-io/agor' } as Repo;
+const primaryTeammateRepo = { repo_id: 'repo-1', slug: 'preset-io/agor' } as Repo;
 
-describe('BoardAssistantPanel assistant tab', () => {
+describe('BoardTeammatePanel teammate tab', () => {
   beforeEach(() => {
     agorStore.setState({ ...EMPTY_MAPS });
   });
 
-  it('expands the assistant Sessions section by default', () => {
+  it('expands the teammate Sessions section by default', () => {
     render(
       <AntApp>
-        <BoardAssistantPanel
+        <BoardTeammatePanel
           board={board}
-          activeTab="assistant"
+          activeTab="teammate"
           onTabChange={vi.fn()}
-          primaryAssistantBranch={primaryAssistantBranch}
-          primaryAssistantRepo={primaryAssistantRepo}
-          primaryAssistantInaccessible={false}
+          primaryTeammateBranch={primaryTeammateBranch}
+          primaryTeammateRepo={primaryTeammateRepo}
+          primaryTeammateInaccessible={false}
           onSessionClick={vi.fn()}
           client={null}
         />
       </AntApp>
     );
 
-    expect(screen.getByTestId('assistant-session-sections')).toHaveTextContent(
+    expect(screen.getByTestId('teammate-session-sections')).toHaveTextContent(
       'defaultExpanded:true'
     );
   });
