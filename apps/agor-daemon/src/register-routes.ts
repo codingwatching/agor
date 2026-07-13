@@ -11,13 +11,17 @@ import {
   loadConfig,
   resolveBranchStorageConfig,
   resolveMultiTenancyConfig,
+  resolveTenantContext,
 } from '@agor/core/config';
 import {
   BranchRepository,
+  bindRepositoryToTenantUnitOfWork,
   generateId,
+  getCurrentTenantId,
   MCPServerRepository,
   MessagesRepository,
   RepoRepository,
+  runWithTenantDatabaseScope,
   ScheduleRepository,
   SessionMCPServerRepository,
   SessionRepository,
@@ -127,6 +131,7 @@ import {
 } from './utils/branch-authorization.js';
 import { buildInitialUserMessage } from './utils/build-initial-user-message.js';
 import { buildPrompterPrefixedPrompt } from './utils/build-prompter-prefix.js';
+import { emitServiceEvent } from './utils/emit-service-event.js';
 import {
   redactMCPServerSecrets,
   shouldExposeMCPServerSecrets,
@@ -146,7 +151,7 @@ import { type SessionTurnLocks, withSessionTurnLock } from './utils/session-turn
 import { normalizeMessageSource, runExistingTask } from './utils/task-runner.js';
 import {
   createTenantDatabaseScopeAroundHook,
-  deferWithTenantDatabaseScope,
+  deferWithTenantContext,
 } from './utils/tenant-db-scope.js';
 import {
   createUploadMiddleware,
@@ -294,15 +299,22 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
   const tasksService = app.service('tasks') as unknown as TasksServiceImpl;
   const reposService = app.service('repos') as unknown as ReposServiceImpl;
   const tenantDatabaseScopeAround = createTenantDatabaseScopeAroundHook({ db, config, jwtSecret });
+  const tenantIdentityAround = createTenantDatabaseScopeAroundHook({
+    db,
+    config,
+    jwtSecret,
+    transaction: false,
+  });
+  const inTenantDatabaseScope = <T>(hook: (context: HookContext) => T) =>
+    async function scopedHook(context: HookContext): Promise<Awaited<T>> {
+      return runWithTenantDatabaseScope(db, context.params.tenant?.tenant_id, async () =>
+        hook(context)
+      ) as Promise<Awaited<T>>;
+    };
 
-  /**
-   * Schedule fn in a new event-loop tick with a fresh tenant DB scope.
-   * Always use this instead of bare setImmediate inside route/service code —
-   * bare setImmediate inherits the active transaction ALS store, while a plain
-   * ALS exit loses Postgres RLS tenant context for session/task lookups.
-   */
+  /** Schedule orchestration after commit with tenant identity but no open transaction. */
   function deferInFreshTenantScope(params: RouteParams, fn: () => Promise<void>): void {
-    deferWithTenantDatabaseScope(db, params, fn);
+    deferWithTenantContext(params, fn);
   }
 
   const registerAuthenticatedRoute: typeof registerAuthenticatedRouteBase = (
@@ -316,6 +328,19 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     registerAuthenticatedRouteBase(routeApp, path, service, authConfig, routeRequireAuth, {
       ...options,
       around: [tenantDatabaseScopeAround, ...(options.around ?? [])],
+    });
+
+  const registerLongAuthenticatedRoute: typeof registerAuthenticatedRouteBase = (
+    routeApp,
+    path,
+    service,
+    authConfig,
+    routeRequireAuth,
+    options = {}
+  ) =>
+    registerAuthenticatedRouteBase(routeApp, path, service, authConfig, routeRequireAuth, {
+      ...options,
+      around: [tenantIdentityAround, ...(options.around ?? [])],
     });
 
   // Helper: safely get a service (returns undefined if not registered due to tier=off)
@@ -1076,10 +1101,15 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     },
     params: RouteParams
   ): Promise<Task> {
-    const session = await sessionsService.get(task.session_id, params);
-
-    // Recompute message_range.start_index against the live message count.
-    const messageStartIndex = await sessionsRepository.countMessages(task.session_id);
+    const { messageStartIndex, session } = await runWithTenantDatabaseScope(
+      db,
+      getCurrentTenantId(),
+      async () => ({
+        session: await sessionsService.get(task.session_id, params),
+        // Recompute message_range.start_index against the live message count.
+        messageStartIndex: await sessionsRepository.countMessages(task.session_id),
+      })
+    );
     const startTimestamp = new Date().toISOString();
 
     // The daemon transitions the task to RUNNING and writes required sentinel
@@ -1182,7 +1212,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
       rawPrompt: task.full_prompt,
       sessionCreatedBy: session.created_by,
       prompterUserId: task.created_by,
-      usersRepo: new UsersRepository(db),
+      usersRepo: bindRepositoryToTenantUnitOfWork(db, new UsersRepository(db)),
     });
 
     const useStreaming = options.stream !== false;
@@ -1545,7 +1575,13 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
             });
             // Bypassing the service means no native 'created' emit; do it here
             // so reactive clients see the new task before the executor spawns.
-            app.service('tasks').emit('created', task);
+            emitServiceEvent(app, {
+              path: 'tasks',
+              event: 'created',
+              data: task,
+              params,
+              id: task.task_id,
+            });
 
             return await spawnTaskExecutor(
               task,
@@ -1882,7 +1918,9 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
 
       ensureMinimumRole(params, ROLES.MEMBER, 'upload files');
 
-      const session = await sessionsService.get(sessionId, params);
+      const session = await runWithTenantDatabaseScope(db, params.tenant?.tenant_id, () =>
+        sessionsService.get(sessionId, params)
+      );
       if (!session) {
         console.error(`❌ [Upload Authz] Session not found: ${shortId(sessionId)}`);
         return res.status(404).json({ error: 'Session not found' });
@@ -1899,12 +1937,17 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
         if (!session.branch_id) {
           return res.status(403).json({ error: 'Not authorized to upload to this session' });
         }
-        const wt = await branchRepo.findById(session.branch_id);
-        if (!wt) {
+        const access = await runWithTenantDatabaseScope(db, params.tenant?.tenant_id, async () => {
+          const wt = await branchRepo.findById(session.branch_id);
+          if (!wt) return null;
+          const isOwner = await branchRepo.isOwner(wt.branch_id, userId);
+          const branchPermission = await branchRepo.resolveUserPermission(wt, userId);
+          return { branchPermission, isOwner, wt };
+        });
+        if (!access) {
           return res.status(404).json({ error: 'Branch not found' });
         }
-        const isOwner = await branchRepo.isOwner(wt.branch_id, userId);
-        const branchPermission = await branchRepo.resolveUserPermission(wt, userId);
+        const { branchPermission, isOwner, wt } = access;
         const effectiveLevel = resolveBranchPermission(
           wt,
           userId,
@@ -1999,6 +2042,8 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
           const promptParams: any = {
             route: { id: sessionId },
             user: params.user,
+            authentication: params.authentication,
+            tenant: params.tenant,
           };
           await promptService.create({ prompt: promptText }, promptParams);
         } catch (error) {
@@ -2069,10 +2114,19 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
         console.log('   User:', result.user?.user_id ? shortId(result.user.user_id) : 'unknown');
       }
 
-      req.feathers = {
+      const authParams = {
         user: result.user,
         provider: 'rest',
         authentication: result.authentication,
+        headers: req.headers,
+      };
+      req.feathers = {
+        ...authParams,
+        tenant: resolveTenantContext(multiTenancy, {
+          params: authParams,
+          authPayload: result.authentication?.payload,
+          headers: req.headers,
+        }),
       };
 
       next();
@@ -2347,7 +2401,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     sessionId: SessionID,
     params: RouteParams
   ): Promise<void> {
-    const taskRepo = new TaskRepository(db);
+    const taskRepo = bindRepositoryToTenantUnitOfWork(db, new TaskRepository(db));
     const nextTask = await taskRepo.getNextQueued(sessionId);
 
     if (!nextTask) {
@@ -2356,7 +2410,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     }
 
     const userId = nextTask.metadata?.queued_by_user_id;
-    const userRepo = new UsersRepository(db);
+    const userRepo = bindRepositoryToTenantUnitOfWork(db, new UsersRepository(db));
     const queuedByUser = userId ? await userRepo.findById(userId) : undefined;
 
     const taskParams: RouteParams = queuedByUser
@@ -2372,11 +2426,10 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
         `with user context: ${queuedByUser ? shortId(queuedByUser.user_id) : 'none'}`
     );
 
-    const session = await reconcileSessionPromptStateIfStuck(
-      await sessionsService.get(sessionId, taskParams),
-      taskRepo,
-      taskParams
+    const queuedSession = await runWithTenantDatabaseScope(db, getCurrentTenantId(), () =>
+      sessionsService.get(sessionId, taskParams)
     );
+    const session = await reconcileSessionPromptStateIfStuck(queuedSession, taskRepo, taskParams);
 
     if (!sessionCanStartTask(session.status, session.ready_for_prompt)) {
       console.log(
@@ -2817,7 +2870,13 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
           if (!data.user_id) throw new Error('user_id required');
           if (!data.emoji) throw new Error('emoji required');
           const updated = await boardCommentsService.toggleReaction(id, data, params);
-          app.service('board-comments').emit('patched', updated);
+          emitServiceEvent(app, {
+            path: 'board-comments',
+            event: 'patched',
+            data: updated,
+            params,
+            id: updated.comment_id,
+          });
           return updated;
         },
       },
@@ -2843,7 +2902,13 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
           if (!callerId) throw new Error('Authentication required');
           data.created_by = callerId as import('@agor/core/types').UserID;
           const reply = await boardCommentsService.createReply(id, data, params);
-          app.service('board-comments').emit('created', reply);
+          emitServiceEvent(app, {
+            path: 'board-comments',
+            event: 'created',
+            data: reply,
+            params,
+            id: reply.comment_id,
+          });
           return reply;
         },
       },
@@ -2859,7 +2924,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
 
   const branchesService = app.service('branches') as unknown as BranchesServiceImpl;
 
-  registerAuthenticatedRoute(
+  registerLongAuthenticatedRoute(
     app,
     '/branches/:id/start',
     {
@@ -2878,7 +2943,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     requireAuth
   );
 
-  registerAuthenticatedRoute(
+  registerLongAuthenticatedRoute(
     app,
     '/branches/:id/stop',
     {
@@ -2895,7 +2960,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     requireAuth
   );
 
-  registerAuthenticatedRoute(
+  registerLongAuthenticatedRoute(
     app,
     '/branches/:id/restart',
     {
@@ -2915,7 +2980,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     requireAuth
   );
 
-  registerAuthenticatedRoute(
+  registerLongAuthenticatedRoute(
     app,
     '/branches/:id/nuke',
     {
@@ -2932,7 +2997,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     requireAuth
   );
 
-  registerAuthenticatedRoute(
+  registerLongAuthenticatedRoute(
     app,
     '/branches/:id/render-environment',
     {
@@ -2953,7 +3018,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
     requireAuth
   );
 
-  registerAuthenticatedRoute(
+  registerLongAuthenticatedRoute(
     app,
     '/branches/:id/health',
     {
@@ -2988,11 +3053,12 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
   });
 
   app.service('/branches/:id/archive-or-delete').hooks({
+    around: { all: [tenantIdentityAround] },
     before: {
       create: [
         requireAuth,
         requireMinimumRole(ROLES.MEMBER, 'archive or delete branches'),
-        async (context: HookContext) => {
+        inTenantDatabaseScope(async (context: HookContext) => {
           const id = context.params.route?.id;
           if (!id) throw new Error('Branch ID required');
 
@@ -3004,7 +3070,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
           await cacheBranchAccess(context.params, branchRepository, branch);
 
           return context;
-        },
+        }),
         branchRbacEnabled
           ? ensureBranchPermission('all', 'archive or delete branches', superadminOpts)
           : (context: HookContext) => {
@@ -3033,11 +3099,12 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
   });
 
   app.service('/branches/:id/unarchive').hooks({
+    around: { all: [tenantIdentityAround] },
     before: {
       create: [
         requireAuth,
         requireMinimumRole(ROLES.MEMBER, 'unarchive branches'),
-        async (context: HookContext) => {
+        inTenantDatabaseScope(async (context: HookContext) => {
           const id = context.params.route?.id;
           if (!id) throw new Error('Branch ID required');
 
@@ -3049,7 +3116,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
           await cacheBranchAccess(context.params, branchRepository, branch);
 
           return context;
-        },
+        }),
         branchRbacEnabled
           ? ensureBranchPermission('all', 'unarchive branches', superadminOpts)
           : (context: HookContext) => {
@@ -3116,7 +3183,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
   });
 
   app.service('/schedules/:id/run-now').hooks({
-    around: { all: [tenantDatabaseScopeAround] },
+    around: { all: [tenantIdentityAround] },
     before: {
       create: [
         requireAuth,
@@ -3124,7 +3191,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
         // Reuse the canonical hook so caching semantics (params.schedule
         // / params.branch / params.isBranchOwner) match every other
         // schedule-touching path.
-        loadScheduleAndBranch(scheduleRepository, branchRepository),
+        inTenantDatabaseScope(loadScheduleAndBranch(scheduleRepository, branchRepository)),
         ensureScheduleRunsAsCaller(superadminOpts),
         branchRbacEnabled
           ? ensureBranchPermission('all', 'run schedule', superadminOpts)
@@ -3164,10 +3231,16 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
         throw new NotAuthenticated('Authentication required to trigger schedule.');
       }
 
-      const branch = await branchRepository.findById(branchId);
-      if (!branch) throw new NotFound(`Branch not found: ${branchId}`);
-
-      const branchSchedules = await scheduleRepository.findByBranchId(branch.branch_id);
+      const { branch, branchSchedules } = await runWithTenantDatabaseScope(
+        db,
+        (params as AuthenticatedParams).tenant?.tenant_id,
+        async () => {
+          const branch = await branchRepository.findById(branchId);
+          if (!branch) throw new NotFound(`Branch not found: ${branchId}`);
+          const branchSchedules = await scheduleRepository.findByBranchId(branch.branch_id);
+          return { branch, branchSchedules };
+        }
+      );
       if (branchSchedules.length === 0) {
         throw new BadRequest(
           `Branch "${branch.name}" has no schedules. Create one and call POST /schedules/:id/run-now instead.`,
@@ -3208,12 +3281,12 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
   });
 
   app.service('/branches/:id/execute-schedule-now').hooks({
-    around: { all: [tenantDatabaseScopeAround] },
+    around: { all: [tenantIdentityAround] },
     before: {
       create: [
         requireAuth,
         requireMinimumRole(ROLES.MEMBER, 'execute scheduled runs'),
-        async (context: HookContext) => {
+        inTenantDatabaseScope(async (context: HookContext) => {
           const id = context.params.route?.id;
           if (!id) throw new BadRequest('Branch ID required');
 
@@ -3224,7 +3297,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
 
           await cacheBranchAccess(context.params, branchRepository, branch);
           return context;
-        },
+        }),
         branchRbacEnabled
           ? ensureBranchPermission('all', 'execute scheduled runs', superadminOpts)
           : (context: HookContext) => {
@@ -3242,7 +3315,7 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
   });
 
   // Branch logs
-  registerAuthenticatedRoute(
+  registerLongAuthenticatedRoute(
     app,
     '/branches/logs',
     {
@@ -3454,7 +3527,12 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
             enabled: true,
             added_at: new Date(),
           };
-          app.service('session-mcp-servers').emit('created', relationship);
+          emitServiceEvent(app, {
+            path: 'session-mcp-servers',
+            event: 'created',
+            data: relationship,
+            params,
+          });
 
           return relationship;
         },
@@ -3474,7 +3552,12 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
             session_id: id,
             mcp_server_id: mcpId,
           };
-          app.service('session-mcp-servers').emit('removed', relationship);
+          emitServiceEvent(app, {
+            path: 'session-mcp-servers',
+            event: 'removed',
+            data: relationship,
+            params,
+          });
 
           return relationship;
         },
@@ -3570,7 +3653,12 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
           env_var_name: name,
         };
         try {
-          app.service('session-env-selections').emit('created', relationship);
+          emitServiceEvent(app, {
+            path: 'session-env-selections',
+            event: 'created',
+            data: relationship,
+            params,
+          });
         } catch {
           // Event emission is non-fatal
         }
@@ -3587,7 +3675,12 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
           env_var_name: name,
         };
         try {
-          app.service('session-env-selections').emit('removed', relationship);
+          emitServiceEvent(app, {
+            path: 'session-env-selections',
+            event: 'removed',
+            data: relationship,
+            params,
+          });
         } catch {
           // Event emission is non-fatal
         }
@@ -3600,9 +3693,12 @@ export async function registerRoutes(ctx: RegisterRoutesContext): Promise<void> 
         await requireSessionScopedConfigOwnerOrAdmin(id, params);
         await sessionEnvSelectionsService.setAll(id as SessionID, envVarNames, params);
         try {
-          app
-            .service('session-env-selections')
-            .emit('patched', { session_id: id, env_var_names: envVarNames });
+          emitServiceEvent(app, {
+            path: 'session-env-selections',
+            event: 'patched',
+            data: { session_id: id, env_var_names: envVarNames },
+            params,
+          });
         } catch {
           // Event emission is non-fatal
         }

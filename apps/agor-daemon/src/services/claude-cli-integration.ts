@@ -56,6 +56,7 @@ import {
   generateId,
   getCurrentTenantId,
   runWithoutTenantDatabaseScope,
+  runWithTenantContext,
   runWithTenantDatabaseScope,
   SessionRepository,
   shortId,
@@ -79,6 +80,7 @@ import {
 } from '@agor/core/unix';
 import { DrizzleService } from '../adapters/drizzle';
 import { buildInitialUserMessage } from '../utils/build-initial-user-message.js';
+import { emitServiceEvent } from '../utils/emit-service-event.js';
 import { canControlCliSession } from '../utils/mcp-token-authorization.js';
 import { getDaemonUrl } from '../utils/spawn-executor.js';
 import {
@@ -123,6 +125,15 @@ async function runCliCallbackDatabaseScope<T>(
   if (!db) return work();
   const tenantId = cliWatcherTenantBySession.get(sessionId) ?? captureCliWatcherTenantId(app);
   return runWithTenantDatabaseScope(db, tenantId, work);
+}
+
+async function runCliCallbackTenantContext<T>(
+  app: Application,
+  sessionId: string,
+  work: () => Promise<T>
+): Promise<T> {
+  const tenantId = cliWatcherTenantBySession.get(sessionId) ?? captureCliWatcherTenantId(app);
+  return runWithTenantContext(tenantId, work);
 }
 
 /** Per-turn accumulator used by the sink between `user_message` and `turn_end`. */
@@ -352,7 +363,7 @@ function startTaskWatchdog(app: Application, sessionId: SessionID): void {
   stopTaskWatchdog(sessionId);
   runWithoutTenantDatabaseScope(() => {
     const timer = setInterval(() => {
-      void runCliCallbackDatabaseScope(app, sessionId, async () => {
+      void runCliCallbackTenantContext(app, sessionId, async () => {
         const active = activeCliTurn.get(sessionId);
         if (!active) {
           // Turn already closed by some other path — stop watching.
@@ -563,7 +574,12 @@ export function buildCliEventSink(app: Application): CliWatcherEventSink {
         tool_use_count: 0,
         metadata: { source: 'cli-repl' },
       })) as Task;
-      app.service('tasks').emit('created', task);
+      emitServiceEvent(app, {
+        path: 'tasks',
+        event: 'created',
+        data: task,
+        id: task.task_id,
+      });
       // Patch session: RUNNING + append task id. The watcher's turn_end
       // handler flips it back to IDLE.
       await app
