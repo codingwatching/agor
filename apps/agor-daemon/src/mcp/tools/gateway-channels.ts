@@ -10,11 +10,13 @@ import {
 import {
   buildSlackManifest,
   getConnector,
+  isSlackFileSourceAllowed,
   isSlackWriteTargetAllowed,
   requiredBotEvents,
   requiredBotScopes,
   type SlackChannelHistoryRequest,
   type SlackChannelHistoryResult,
+  type SlackFileInfo,
   type SlackThreadHistoryMessage,
   type SlackThreadHistoryRequest,
   type SlackThreadHistoryResult,
@@ -48,6 +50,7 @@ import {
   isPathInsideRoot,
   resolveBranchWorkspacePath,
 } from '../../utils/branch-workspace-path.js';
+import { ingestInboundAttachments, isIngestableFile } from '../../utils/gateway-attachments.js';
 import { getUploadDirectory, MAX_UPLOAD_FILE_SIZE } from '../../utils/upload.js';
 import {
   mcpLimit,
@@ -499,6 +502,12 @@ function slackHistoryMessageLines(messages: SlackThreadHistoryMessage[]): string
       message.text || '_No text_',
       ''
     );
+    for (const file of message.files ?? []) {
+      lines.push(
+        `_Attached file ${file.id}: ${file.name} (${file.mimetype}, ${file.size} bytes)_`,
+        ''
+      );
+    }
   }
   return lines;
 }
@@ -535,6 +544,16 @@ function normalizeSlackHistoryMessages(messages: SlackThreadHistoryMessage[]) {
     is_mention: message.is_mention === true,
     ...(message.user_id ? { user_id: message.user_id } : {}),
     ...(message.user_name ? { user_name: message.user_name } : {}),
+    ...(message.files?.length
+      ? {
+          files: message.files.map((file) => ({
+            id: file.id,
+            name: file.name,
+            mimetype: file.mimetype,
+            size: file.size,
+          })),
+        }
+      : {}),
   }));
 }
 
@@ -808,6 +827,12 @@ const slackManifestGenerateSchema = z.strictObject({
     .describe(
       'Let session agents upload files/images to a channel or thread via agor_gateway_slack_file_upload (adds the files:write scope). Maps to config.agent_tools.file_upload.'
     ),
+  fileDownload: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Let session agents download files referenced in Slack history via agor_gateway_slack_file_download (adds the files:read scope). Maps to config.agent_tools.file_download.'
+    ),
   restrictToChannelIds: z
     .array(z.string().min(1))
     .optional()
@@ -833,6 +858,7 @@ function toSlackWizardOptions(
       channel_history: args.channelHistory,
       reactions: args.reactions,
       file_upload: args.fileUpload,
+      file_download: args.fileDownload,
     },
   };
 }
@@ -857,6 +883,7 @@ function toCreateChannelConfigHint(args: z.infer<typeof slackManifestGenerateSch
       channel_history: args.channelHistory,
       reactions: args.reactions,
       file_upload: args.fileUpload,
+      file_download: args.fileDownload,
     },
   };
   if (args.restrictToChannelIds && args.restrictToChannelIds.length > 0) {
@@ -922,6 +949,7 @@ function assertSlackFileUploadConnector(
  */
 const SLACK_CHANNEL_ID_PATTERN = /^[A-Z0-9]+$/;
 const SLACK_TIMESTAMP_PATTERN = /^\d+\.\d+$/;
+const SLACK_FILE_ID_PATTERN = /^F[A-Z0-9]+$/;
 
 function slackConversationIdSchema(fieldName: string, description: string) {
   return z
@@ -1002,18 +1030,54 @@ const slackFileUploadSchema = z.strictObject({
   comment: mcpOptionalNonEmptyString('comment', 'Optional message text introducing the file.'),
 });
 
+const slackFileDownloadSchema = z.strictObject({
+  gatewayChannelId: mcpOptionalId(
+    'gatewayChannelId',
+    'Gateway channel',
+    'Slack gateway channel ID (UUIDv7 or short ID). Optional when called from a gateway-created session, which defaults to its own gateway channel.'
+  ),
+  fileId: z
+    .string()
+    .regex(
+      SLACK_FILE_ID_PATTERN,
+      'fileId must look like a Slack file ID, e.g. F0123ABC456 (as returned in history file metadata).'
+    )
+    .describe(
+      'Slack file ID to download, e.g. F0123ABC456 — from the files metadata returned by the Slack history tools.'
+    ),
+});
+
+interface SlackFileInfoConnector {
+  getFileInfo(fileId: string): Promise<SlackFileInfo>;
+}
+
+function assertSlackFileInfoConnector(
+  connector: unknown
+): asserts connector is SlackFileInfoConnector {
+  if (
+    !connector ||
+    typeof (connector as Partial<SlackFileInfoConnector>).getFileInfo !== 'function'
+  ) {
+    throw new Error('Slack file download is not available for this gateway connector.');
+  }
+}
+
 /**
  * Shared capability-gate + branch-binding resolver for agent-callable Slack
- * tools that target a Slack conversation (channel_history, reactions, file
- * upload) so every one of them enforces the same rules: capability toggle on
- * the TARGET gateway channel, branch-bound to the calling session, admin/'all'
- * branch permission required for callers without session context.
+ * gateway tools: capability toggle on the TARGET gateway channel, branch-bound
+ * to the calling session, admin/'all' branch permission required for callers
+ * without session context. Tools that additionally target a Slack conversation
+ * layer {@link resolveGatewaySlackToolTarget} on top.
  */
-async function resolveGatewaySlackToolTarget(
+async function resolveGatewaySlackChannelTarget(
   ctx: McpContext,
-  args: { gatewayChannelId?: string; slackChannelId?: string },
+  args: { gatewayChannelId?: string },
   capability: SlackAgentToolCapability
-): Promise<{ channel: GatewayChannel; branch: Branch | null; slackChannelId: string }> {
+): Promise<{
+  channel: GatewayChannel;
+  branch: Branch | null;
+  gatewaySource: GatewaySource | null;
+}> {
   const channelRepo = bindMcpRepositoryToTenantUnitOfWork(
     ctx,
     (db) => new GatewayChannelRepository(db)
@@ -1058,6 +1122,25 @@ async function resolveGatewaySlackToolTarget(
     throw new Error(`Gateway channel ${channel.id} is disabled.`);
   }
   requireGatewayCapability(channel, capability);
+
+  return { channel, branch, gatewaySource };
+}
+
+/**
+ * {@link resolveGatewaySlackChannelTarget} plus resolution of the Slack
+ * conversation the tool targets (channel_history, reactions, file upload),
+ * defaulting to the calling gateway session's own conversation.
+ */
+async function resolveGatewaySlackToolTarget(
+  ctx: McpContext,
+  args: { gatewayChannelId?: string; slackChannelId?: string },
+  capability: SlackAgentToolCapability
+): Promise<{ channel: GatewayChannel; branch: Branch | null; slackChannelId: string }> {
+  const { channel, branch, gatewaySource } = await resolveGatewaySlackChannelTarget(
+    ctx,
+    args,
+    capability
+  );
 
   const slackChannelId = args.slackChannelId ?? slackChannelIdFromGatewaySource(gatewaySource);
   if (!slackChannelId) {
@@ -1595,6 +1678,69 @@ export function registerGatewayChannelTools(server: McpServer, ctx: McpContext):
         slack_channel_id: target.slackChannelId,
         ...(args.threadTs ? { thread_ts: args.threadTs } : {}),
         file: uploaded,
+      });
+    }
+  );
+
+  server.registerTool(
+    'agor_gateway_slack_file_download',
+    {
+      description:
+        "Download a Slack file by fileId (from the files metadata in the Slack history tools) into the session upload directory, returning the stored path for the agent to Read. Gated by the channel's agent_tools.file_download capability; only files shared in a conversation permitted by the channel's allowed_channel_ids (DMs exempt), and only image/text-like types under the same limits as inbound attachment ingestion.",
+      annotations: { destructiveHint: false, idempotentHint: true },
+      inputSchema: slackFileDownloadSchema,
+    },
+    async (args) => {
+      const target = await resolveGatewaySlackChannelTarget(ctx, args, 'file_download');
+      const connector = getConnector('slack', target.channel.config);
+      assertSlackFileInfoConnector(connector);
+      const { file, sourceConversationIds } = await connector.getFileInfo(args.fileId);
+      // files.info resolves any file the bot can see workspace-wide, so the
+      // channel's allowed_channel_ids whitelist must bind the file's SOURCE
+      // conversations, exactly like every other gateway tool binds its target.
+      // Checked before any metadata-bearing error so a denied caller learns
+      // nothing about the file. The error deliberately omits where the file
+      // lives.
+      if (!isSlackFileSourceAllowed(target.channel.config, sourceConversationIds)) {
+        throw new Error(
+          `Slack file ${args.fileId} is not shared in any conversation permitted by this gateway channel's allowed_channel_ids whitelist.`
+        );
+      }
+      if (!isIngestableFile(file)) {
+        throw new Error(
+          `Slack file "${file.name}" has type ${file.mimetype}, which the gateway does not download. Only image and text-like files (png/jpeg/gif/webp, plain text, markdown, CSV, JSON) are supported.`
+        );
+      }
+      if (file.size > MAX_UPLOAD_FILE_SIZE) {
+        throw new Error(
+          `Slack file "${file.name}" is ${file.size} bytes, exceeding the ${MAX_UPLOAD_FILE_SIZE}-byte download limit.`
+        );
+      }
+      const botToken = target.channel.config?.bot_token;
+      if (typeof botToken !== 'string' || !botToken) {
+        throw new Error(`Gateway channel ${target.channel.id} has no bot token configured.`);
+      }
+      const { paths } = await ingestInboundAttachments({ files: [file], botToken });
+      const storedPath = paths[0];
+      if (!storedPath) {
+        throw new Error(
+          `Failed to download Slack file "${file.name}" (${args.fileId}); see daemon logs for details.`
+        );
+      }
+      return textResult({
+        downloaded: true,
+        gateway_channel: {
+          id: target.channel.id,
+          name: target.channel.name,
+          target_branch_id: target.channel.target_branch_id,
+        },
+        file: {
+          id: file.id,
+          name: file.name,
+          mimetype: file.mimetype,
+          size: file.size,
+          path: storedPath,
+        },
       });
     }
   );
