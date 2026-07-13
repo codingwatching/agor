@@ -1869,8 +1869,18 @@ export class BranchesService extends DrizzleService<Branch, Partial<Branch>, Bra
       }
     }
 
-    // Check if environment state actually changed (ignoring timestamp-only updates)
-    // For health checks, we only care about status and message changes, not timestamp
+    // Distinguish persisted observations from user-visible state changes. A
+    // successful re-probe advances last_health_check.timestamp in storage, but
+    // that bookkeeping alone must not emit a full `branches.patched` payload to
+    // every authorized browser every five seconds.
+    const hasPersistedChange =
+      JSON.stringify(existing.environment_instance) !== JSON.stringify(updatedEnvironment);
+    if (!hasPersistedChange) {
+      return existing;
+    }
+
+    // For realtime publication, health status and message matter; the
+    // observation timestamp does not.
     const oldState = { ...existing.environment_instance };
     const newState = { ...updatedEnvironment };
 
@@ -1886,9 +1896,17 @@ export class BranchesService extends DrizzleService<Branch, Partial<Branch>, Bra
 
     const hasChanged = JSON.stringify(oldState) !== JSON.stringify(newState);
 
-    // Only emit WebSocket event if state changed
+    // Observation-only persistence deliberately bypasses Feathers publication.
+    // It also preserves branch.updated_at so health bookkeeping does not affect
+    // branch ordering or modification semantics every five seconds.
     if (!hasChanged) {
-      return existing;
+      return this.withTenantDatabase(resolvedParams, () =>
+        this.branchRepo.update(
+          id,
+          { environment_instance: updatedEnvironment },
+          { preserveUpdatedAt: true }
+        )
+      );
     }
 
     const branch = await this.withTenantDatabase(resolvedParams, () =>
