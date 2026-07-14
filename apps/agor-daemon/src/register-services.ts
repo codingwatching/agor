@@ -89,6 +89,7 @@ import { createFileService } from './services/file.js';
 import { createFilesService } from './services/files.js';
 import { createGatewayService } from './services/gateway.js';
 import { createGatewayChannelsService } from './services/gateway-channels.js';
+import { createGatewayChannelsAppInfoService } from './services/gateway-channels-app-info.js';
 import { createGatewayChannelsTestService } from './services/gateway-channels-test.js';
 import { registerGitHubAppSetupRoutes } from './services/github-app-setup.js';
 import {
@@ -494,6 +495,22 @@ export async function registerServices(ctx: RegisterServicesContext): Promise<Re
         create: [ctx.requireAuth, requireMinimumRole(ROLES.ADMIN, 'test gateway channels')],
       },
     });
+    // Request/response probe — its default `created` event would otherwise fall
+    // through the global publisher's `global` scope and broadcast the probe
+    // result to every authenticated socket. Publish to no one.
+    app.service('gateway-channels/test').publish(() => []);
+
+    // Sub-path service resolving the Slack app id behind a channel's stored
+    // bot token (auth.test → bots.info). Same gating rationale as /test above:
+    // reads decrypted tokens via the repository, returns no token values.
+    app.use('/gateway-channels/app-info', createGatewayChannelsAppInfoService(db));
+    app.service('gateway-channels/app-info').hooks({
+      before: {
+        create: [ctx.requireAuth, requireMinimumRole(ROLES.ADMIN, 'read gateway app info')],
+      },
+    });
+    // Request/response read — same broadcast fall-through as /test above.
+    app.service('gateway-channels/app-info').publish(() => []);
 
     app.use('/thread-session-map', createThreadSessionMapService(db));
     app.use('/gateway', createGatewayService(db, app), {
