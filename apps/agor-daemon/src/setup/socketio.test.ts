@@ -48,6 +48,8 @@ interface FakeSocket {
   connected: boolean;
   joined: Set<string>;
   left: Set<string>;
+  /** Events actually delivered TO this socket (models room fanout). */
+  received: Array<{ event: string; data: unknown }>;
   handlers: Map<string, (...args: any[]) => void>;
   on(event: string, fn: (...args: any[]) => void): void;
   join(channel: string): void;
@@ -56,11 +58,16 @@ interface FakeSocket {
     emit: (event: string, data: unknown) => void;
     to: (channel: string) => { emit: (event: string, data: unknown) => void };
   };
+  // socket.to(room) — broadcasts to a room EXCLUDING this socket. Mirrors the
+  // real socket.io semantics used by the terminal:output relay.
+  to: (channel: string) => { emit: (event: string, data: unknown) => void };
 }
 
 interface FakeIO {
   connectionHandler?: (socket: FakeSocket) => void;
   emitted: Array<{ channel: string; event: string; data: unknown }>;
+  /** Sender ids passed through the sender-excluding `socket.to` path. */
+  excludedSenders: string[];
   sockets: { sockets: Map<string, FakeSocket> };
   middlewares: Array<(socket: FakeSocket, next: (err?: Error) => void) => void>;
   on(event: string, fn: any): void;
@@ -77,6 +84,7 @@ function makeSocket(id = 'sock1', io?: FakeIO): FakeSocket {
     connected: true,
     joined: new Set(),
     left: new Set(),
+    received: [],
     handlers,
     on(event, fn) {
       handlers.set(event, fn);
@@ -97,12 +105,43 @@ function makeSocket(id = 'sock1', io?: FakeIO): FakeSocket {
         },
       }),
     },
+    to: (channel: string) => ({
+      emit: (event: string, data: unknown) => {
+        io?.emitted.push({ channel, event, data });
+        io?.excludedSenders.push(id);
+        // socket.to fanout: deliver to every OTHER member of the room.
+        deliverToRoom(io, channel, event, data, id);
+      },
+    }),
   };
+}
+
+/**
+ * Fan an emit out to every socket currently joined to `channel`, optionally
+ * excluding the sender id (mirrors io.to vs socket.to). Records delivery on
+ * each recipient's `received` list so tests can assert real membership-based
+ * routing, not just that the emit API was called.
+ */
+function deliverToRoom(
+  io: FakeIO | undefined,
+  channel: string,
+  event: string,
+  data: unknown,
+  excludeId?: string
+) {
+  if (!io) return;
+  for (const member of io.sockets.sockets.values()) {
+    if (member.id === excludeId) continue;
+    if (member.joined.has(channel)) {
+      member.received.push({ event, data });
+    }
+  }
 }
 
 function makeIO(): FakeIO {
   const io: FakeIO = {
     emitted: [],
+    excludedSenders: [],
     sockets: { sockets: new Map() },
     middlewares: [],
     on(event, fn) {
@@ -114,10 +153,11 @@ function makeIO(): FakeIO {
       this.middlewares.push(fn);
     },
     to(channel: string) {
-      const emitted = this.emitted;
       return {
-        emit(event: string, data: unknown) {
-          emitted.push({ channel, event, data });
+        emit: (event: string, data: unknown) => {
+          io.emitted.push({ channel, event, data });
+          // io.to fanout: deliver to EVERY member of the room (no exclusion).
+          deliverToRoom(io, channel, event, data);
         },
       };
     },
@@ -461,7 +501,7 @@ describe('terminal:* handler authorization', () => {
       // client.authenticate() attaches `_isServiceAccount: true` to feathers.user
       // without ever setting socket.data.isService. Previous impl rejected this.
       const { io } = buildHarness();
-      const s = makeSocket('exec-sock');
+      const s = makeSocket('exec-sock', io);
       asServicePostConnect(s);
       connect(io, s);
       s.handlers.get('terminal:output')?.({ userId: ALICE, data: 'hello' });
@@ -474,10 +514,60 @@ describe('terminal:* handler authorization', () => {
       ]);
     });
 
+    it('terminal:output excludes the sending executor socket from the broadcast', () => {
+      // The executor joins its own `user/<id>/terminal` channel; relaying via
+      // `io.to` would echo every output frame back to it. The handler must use
+      // `socket.to` so the sender is excluded.
+      const { io } = buildHarness();
+      const s = makeSocket('exec-sock', io);
+      asServicePostConnect(s);
+      connect(io, s);
+      s.handlers.get('terminal:output')?.({ userId: ALICE, data: 'hello' });
+      expect(io.emitted).toEqual([
+        {
+          channel: `user/${ALICE}/terminal`,
+          event: 'terminal:output',
+          data: { userId: ALICE, data: 'hello' },
+        },
+      ]);
+      expect(io.excludedSenders).toEqual(['exec-sock']);
+    });
+
+    it('terminal:output reaches every other room member but not the sending executor', () => {
+      // Model the real topology: the executor and two browser tabs are all
+      // joined to `user/<id>/terminal`. The relay must reach both browsers
+      // while excluding the executor that produced the output.
+      const { io } = buildHarness();
+      const channel = `user/${ALICE}/terminal`;
+
+      const exec = makeSocket('exec-sock', io);
+      asServicePostConnect(exec);
+      connect(io, exec);
+      exec.join(channel);
+
+      const browserA = makeSocket('browser-a', io);
+      asUser(browserA, ALICE);
+      connect(io, browserA);
+      browserA.join(channel);
+
+      const browserB = makeSocket('browser-b', io);
+      asUser(browserB, ALICE);
+      connect(io, browserB);
+      browserB.join(channel);
+
+      exec.handlers.get('terminal:output')?.({ userId: ALICE, data: 'hello' });
+
+      const frame = { event: 'terminal:output', data: { userId: ALICE, data: 'hello' } };
+      expect(browserA.received).toEqual([frame]);
+      expect(browserB.received).toEqual([frame]);
+      // The executor is a member of the room but must NOT receive its own output.
+      expect(exec.received).toEqual([]);
+    });
+
     it('terminal:output also accepts handshake-token service sockets (socket.data.isService path)', () => {
       // Separately covers the fast-path: service token presented at handshake.
       const { io } = buildHarness();
-      const s = makeSocket('exec-sock');
+      const s = makeSocket('exec-sock', io);
       asServiceHandshake(s);
       connect(io, s);
       s.handlers.get('terminal:output')?.({ userId: ALICE, data: 'hi' });
