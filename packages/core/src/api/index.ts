@@ -20,6 +20,7 @@ import type {
   ContextFileDetail,
   ContextFileListItem,
   CreateAgenticToolPreset,
+  CreateSessionInput,
   Group,
   GroupMembership,
   KnowledgeDocument,
@@ -269,7 +270,7 @@ export type AgenticToolPresetsService = AgorService<
 /**
  * Sessions service with custom methods for forking, spawning, and genealogy
  */
-export interface SessionsService extends AgorService<Session> {
+export interface SessionsService extends AgorService<Session, CreatePayload<CreateSessionInput>> {
   /**
    * Fork a session at a decision point
    * Creates a new session branching from the parent at a specific task
