@@ -73,6 +73,7 @@ import { DrizzleService } from '../adapters/drizzle';
 import type { BranchesServiceImpl } from '../declarations.js';
 import { emitHaNativeSocketEvent, tenantChannelName } from '../realtime/routing.js';
 import { ensureCanControlBranchEnvironment } from '../utils/branch-authorization.js';
+import { resolveBranchExecutorSandboxMounts } from '../utils/branch-executor-sandbox.js';
 import { ensureBranchWorkspaceAccess } from '../utils/branch-workspace-path.js';
 import { shouldUseCloneReferencePath } from '../utils/clone-reference.js';
 import { emitServiceEvent } from '../utils/emit-service-event.js';
@@ -1529,27 +1530,45 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
       | UserID
       | undefined;
     if (!userId) throw new NotAuthenticated('Authentication required');
-    const branchFsAccess = await ensureBranchWorkspaceAccess(
-      new BranchRepository(this.db),
-      branch,
-      userId,
-      (serviceParams as Partial<AuthenticatedParams> | undefined)?.user?.role as
-        | UserRole
-        | undefined,
-      command === 'branch.agor-yml.export' ? 'session' : 'view',
-      command === 'branch.agor-yml.export' ? 'write' : 'read',
-      this.app.get('config').execution?.allow_superadmin === true
+    const tenantId = getCurrentTenantId();
+    if (!tenantId) throw new NotAuthenticated('Trusted tenant context is required');
+    // Long routes (export) carry tenant identity without a database scope, so
+    // prepare the launch in one short tenant unit and run the executor outside it.
+    const { branchFsAccess, delegatedHomeKey, sandboxMounts } = await this.withTenantDatabase(
+      serviceParams,
+      async () => ({
+        branchFsAccess: await ensureBranchWorkspaceAccess(
+          new BranchRepository(this.db),
+          branch,
+          userId,
+          (serviceParams as Partial<AuthenticatedParams> | undefined)?.user?.role as
+            | UserRole
+            | undefined,
+          command === 'branch.agor-yml.export' ? 'session' : 'view',
+          command === 'branch.agor-yml.export' ? 'write' : 'read',
+          this.app.get('config').execution?.allow_superadmin === true
+        ),
+        delegatedHomeKey: await resolveDelegatedExecutionHomeKey(
+          this.db,
+          userId,
+          this.app.get('config')
+        ),
+        // The caller is the execution principal for this stateless request, so
+        // a per-user sandbox mounts the caller's home store (not the owner's).
+        sandboxMounts: await resolveBranchExecutorSandboxMounts({
+          config: this.app.get('config'),
+          tenantId,
+          executionUserId: userId,
+          branch,
+          db: this.db,
+        }),
+      })
     );
     const sessionToken = await issueExecutorCommandToken(
       this.app,
       command,
       userId,
       branch.branch_id
-    );
-    const delegatedHomeKey = await resolveDelegatedExecutionHomeKey(
-      this.db,
-      userId,
-      this.app.get('config')
     );
 
     const payload = {
@@ -1562,6 +1581,7 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
         ...params,
         cwd: branch.path,
         principalBranchAccess: branchFsAccess,
+        ...sandboxMounts,
       },
     };
     const options = {
@@ -1574,8 +1594,6 @@ export class ReposService extends DrizzleService<Repo, Partial<Repo>, RepoParams
       },
     };
     if (command !== 'branch.agor-yml.export') return requestExecutor(payload, options);
-    const tenantId = getCurrentTenantId();
-    if (!tenantId) throw new NotAuthenticated('Trusted tenant context is required');
     const scoped = <T>(work: (repository: BranchMaintenanceRepository) => Promise<T>) =>
       withFreshTenantWrite(this.db, tenantId, () => work(new BranchMaintenanceRepository(this.db)));
     const admitted = await scoped((repository) =>
